@@ -29,18 +29,6 @@ func canonicalTempDir(t *testing.T) string {
 	return dir
 }
 
-// sessionHookFlags mirrors the `-c` hook config appendSessionHookFlags emits,
-// asserted literally so accidental format drift fails loudly: Codex parses
-// these values as TOML.
-func sessionHookFlags() []string {
-	return []string{
-		"-c", `hooks.SessionStart=[{hooks=[{type="command",command="ao hooks codex session-start",timeout=5}]}]`,
-		"-c", `hooks.UserPromptSubmit=[{hooks=[{type="command",command="ao hooks codex user-prompt-submit",timeout=5}]}]`,
-		"-c", `hooks.PermissionRequest=[{hooks=[{type="command",command="ao hooks codex permission-request",timeout=5}]}]`,
-		"-c", `hooks.Stop=[{hooks=[{type="command",command="ao hooks codex stop",timeout=5}]}]`,
-	}
-}
-
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
 	plugin := &Plugin{}
 	if got := plugin.ExitDetectionMode(); got != ports.AgentExitDetectionSupervisor {
@@ -65,14 +53,14 @@ func TestGetLaunchCommandBuildsCrossPlatformArgv(t *testing.T) {
 
 	want := []string{
 		"codex",
+		"exec", "--ignore-user-config", "--ephemeral", "--strict-config",
+		"--disable", "hooks",
+		"--disable", "apps",
+		"--disable", "plugins",
+		"--disable", "multi_agent",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--dangerously-bypass-approvals-and-sandbox",
-	}
-	want = append(want, sessionHookFlags()...)
-	if runtime.GOOS == "windows" {
-		want = append(want, "--no-alt-screen")
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
@@ -96,8 +84,13 @@ func TestGetLaunchCommandWithoutWorkspaceOmitsTrustFlag(t *testing.T) {
 			t.Fatalf("command %#v contains a projects trust flag without a workspace", cmd)
 		}
 	}
-	if !containsSubsequence(cmd, sessionHookFlags()) {
-		t.Fatalf("command %#v missing session hook flags", cmd)
+	if !containsSubsequence(cmd, []string{"exec", "--ignore-user-config", "--ephemeral", "--strict-config", "--disable", "hooks"}) {
+		t.Fatalf("command %#v missing worker isolation flags", cmd)
+	}
+	for _, arg := range cmd {
+		if strings.Contains(arg, "hooks.") || arg == "--dangerously-bypass-hook-trust" {
+			t.Fatalf("command %#v contains a hook launch path", cmd)
+		}
 	}
 }
 
@@ -534,21 +527,20 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 	want := []string{
 		"codex",
-		"resume",
+		"exec", "--ignore-user-config", "--ephemeral", "--strict-config",
+		"--disable", "hooks",
+		"--disable", "apps",
+		"--disable", "plugins",
+		"--disable", "multi_agent",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--dangerously-bypass-hook-trust",
 		"--ask-for-approval", "on-request",
 		"-c", `approvals_reviewer="auto_review"`,
-	}
-	want = append(want, sessionHookFlags()...)
-	if runtime.GOOS == "windows" {
-		want = append(want, "--no-alt-screen")
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
 		"-c", "developer_instructions="+codexTOMLConfigString("restore inline wins"),
-		"thread-123",
+		"resume", "thread-123",
 	)
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
@@ -706,16 +698,16 @@ func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
 	if len(probes) != 2 {
 		t.Fatalf("probes = %d, want 2", len(probes))
 	}
-	if !reflect.DeepEqual(probes[0], []string{"--dangerously-bypass-hook-trust", "--version"}) {
-		t.Fatalf("flag probe = %#v", probes[0])
+	if len(probes[0]) < 4 || !reflect.DeepEqual(probes[0][:3], []string{"exec", "--ignore-user-config", "--ephemeral"}) {
+		t.Fatalf("exec probe = %#v", probes[0])
 	}
 	override := probes[1]
-	if len(override) < 2 || override[0] != "features" || override[1] != "list" {
+	if len(override) < 2 || override[len(override)-2] != "features" || override[len(override)-1] != "list" {
 		t.Fatalf("override probe must ride `features list`, got %#v", override)
 	}
-	joined := strings.Join(override, " ")
+	joined := strings.Join(probes[0], " ") + " " + strings.Join(override, " ")
 	for _, want := range []string{
-		"hooks.SessionStart=", "hooks.UserPromptSubmit=", "hooks.PermissionRequest=", "hooks.Stop=",
+		"--disable hooks", "--disable apps", "--disable plugins", "--disable multi_agent",
 		"notice.hide_rate_limit_model_nudge=true",
 		`projects={`,
 	} {
