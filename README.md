@@ -1,3 +1,22 @@
+# DCP Orchestrator managed source
+
+This private repository is the canonical application-code source for the
+bounded DCP Orchestrator laboratory. It preserves Agent Orchestrator `v0.12.1`
+history at exact upstream commit
+`1df40e93772c2c48e916870d9c3ddf8f29a69f84`, then carries the exact reviewed
+DCP I3-I8 integration as ordinary commits. Runtime behavior remains the I8
+packaged-app contour; no DCP v1 target-design role or state machine is active.
+
+Architecture and integration policy remain authoritative in
+[`orenvlad-ai/dev-control-plane`](https://github.com/orenvlad-ai/dev-control-plane).
+See [DCP_PROVENANCE.md](DCP_PROVENANCE.md) and [NOTICE](NOTICE) for the exact
+source and license boundary. This repository has no release publishing,
+auto-update, telemetry, crash-reporting, landing deployment, or scheduled
+workflow. Its only GitHub workflow builds and tests source plus an unsigned,
+ephemeral package that is inspected and discarded inside CI.
+
+## Upstream README
+
 <div align="center">
   <img src="assets/ao-logo.svg" alt="Agent Orchestrator" width="160" height="160" />
 

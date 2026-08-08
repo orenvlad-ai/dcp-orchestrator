@@ -18,6 +18,8 @@ const config: ForgeConfig = {
 			"assets/trayIconTemplate.png",
 			"assets/trayIconTemplate@2x.png",
 			"../LICENSE",
+			"../NOTICE",
+			"../DCP_PROVENANCE.md",
 		],
 		extendInfo: {
 			DCPUpstreamCommit: "1df40e93772c2c48e916870d9c3ddf8f29a69f84",

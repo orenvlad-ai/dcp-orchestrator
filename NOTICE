@@ -1,0 +1,14 @@
+DCP Orchestrator
+
+This product includes software from Agent Orchestrator, Copyright 2026
+Untrivial, used under the Apache License, Version 2.0.
+
+DCP Orchestrator is based on Agent Orchestrator v0.12.1 at commit
+1df40e93772c2c48e916870d9c3ddf8f29a69f84 and contains modifications made in
+2026 by the DCP project. The exact modified-file history and source boundary
+are recorded in DCP_PROVENANCE.md and Git history. The upstream revision has
+no tracked NOTICE file.
+
+Agent Orchestrator and related upstream names remain the property of their
+respective owners. The Apache License does not grant trademark permission;
+the modified product is identified separately as DCP Orchestrator.
