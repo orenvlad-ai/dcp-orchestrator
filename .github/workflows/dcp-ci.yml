@@ -1,0 +1,95 @@
+name: DCP CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dcp-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.20.2
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      - name: Source, provenance, identity, and absence gates
+        run: ./scripts/dcp-ci-gates.sh source
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+      - name: Backend tests and build
+        run: |
+          cd backend
+          go test -p 1 ./...
+          go build ./...
+      - name: Renderer typecheck and I8 tests
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          npx vitest run --config vite.renderer.config.ts \
+            src/main/app-state.test.ts \
+            src/main/daemon-owner.test.ts \
+            src/shared/daemon-launch.test.ts \
+            src/renderer/lib/spawn-orchestrator.test.ts \
+            src/renderer/__tests__/integration/board-empty-states.test.tsx \
+            src/renderer/components/RestoreUnavailableDialog.test.tsx
+
+  package:
+    name: package
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.20.2
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+      - name: Build ephemeral arm64 package
+        working-directory: frontend
+        env:
+          AO_TELEMETRY_RENDERER: off
+          AO_TELEMETRY_EVENTS: off
+          AO_TELEMETRY_METRICS: off
+          AO_TELEMETRY_REMOTE: off
+          VITE_AO_POSTHOG_KEY: ""
+        run: npm run package -- --arch=arm64
+      - name: Sign and inspect ephemeral package
+        run: |
+          app="$GITHUB_WORKSPACE/frontend/out/DCP Orchestrator-darwin-arm64/DCP Orchestrator.app"
+          codesign --force --deep --sign - "$app"
+          ./scripts/dcp-ci-gates.sh artifact "$app"
