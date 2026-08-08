@@ -66,7 +66,7 @@ import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
-import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
+import { keepDaemonAlive, requiredAppOwnerError, shouldLinkOnAttach } from "./main/daemon-owner";
 import {
 	readMigrationState,
 	resolveElectronUserDataPath,
@@ -592,6 +592,12 @@ async function readDaemonProbe(port: number, endpoint: "healthz" | "readyz"): Pr
 }
 
 function daemonIdentityError(launch: DaemonLaunchSpec, probe: DaemonProbe): string | null {
+	if (launch.source === "configured") {
+		const expected = process.env.DCP_AO_EXPECTED_DAEMON_EXECUTABLE?.trim();
+		if (expected && (!probe.executablePath || !samePath(probe.executablePath, expected))) {
+			return `Another daemon is running from ${probe.executablePath ?? "an unknown executable"}; expected the canonical DCP daemon at ${expected}.`;
+		}
+	}
 	if (launch.source === "dev") {
 		const cwdMatches = probe.workingDirectory ? samePath(probe.workingDirectory, launch.cwd) : false;
 		const startupCwdMatches = probe.startupWorkingDirectory
@@ -711,6 +717,21 @@ async function inspectExistingDaemon(
 	});
 	if (!status) return null;
 	const owner = runFileContents ? (parseRunFile(runFileContents)?.owner ?? undefined) : undefined;
+	const ownerError =
+		status.state === "ready"
+			? requiredAppOwnerError(owner, process.env.DCP_AO_REQUIRE_APP_OWNER === "1")
+			: null;
+	if (ownerError) {
+		return {
+			owner,
+			status: {
+				...status,
+				state: "error",
+				message: ownerError,
+				code: "identity_mismatch",
+			},
+		};
+	}
 	return { status, owner };
 }
 
@@ -839,6 +860,19 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			} catch {
 				// run-file absent or unreadable: treat as headless, skip link.
 			}
+		}
+		const ownerError =
+			directDaemon.state === "ready"
+				? requiredAppOwnerError(portAttachOwner, process.env.DCP_AO_REQUIRE_APP_OWNER === "1")
+				: null;
+		if (ownerError) {
+			setDaemonStatus({
+				...directDaemon,
+				state: "error",
+				message: ownerError,
+				code: "identity_mismatch",
+			});
+			return daemonStatus;
 		}
 		if (shouldLinkOnAttach(portAttachOwner)) {
 			establishSupervisorLink();

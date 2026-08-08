@@ -27,3 +27,9 @@ export function keepDaemonAlive(env: { AO_KEEP_DAEMON?: string }): boolean {
 export function shouldLinkOnAttach(owner: string | undefined): boolean {
 	return owner === "app";
 }
+
+/** DCP's canonical source contour never attaches its UI to a headless daemon. */
+export function requiredAppOwnerError(owner: string | undefined, required: boolean): string | null {
+	if (!required || owner === "app") return null;
+	return "A daemon is running without the canonical source UI owner identity. Use the DCP submit entrypoint; no process was replaced.";
+}
