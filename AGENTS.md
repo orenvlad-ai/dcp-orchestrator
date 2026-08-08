@@ -1,137 +1,127 @@
-# AGENTS.md
+# DCP Orchestrator repository rules
 
-Operational guidance for coding agents working in this repository. Keep changes small, match the current rewrite architecture, and prefer the documented daemon/API boundaries over behavior from the old TypeScript implementation.
+This private managed fork owns DCP Orchestrator application source. It is not
+ordinary Agent Orchestrator, not a production control plane, and not an
+independent source of DCP architecture policy.
 
-## Repo layout
+## Required authority before any change
 
-- `backend/` — Go rewrite of Agent Orchestrator: Cobra `ao` CLI, loopback HTTP daemon, services, SQLite storage, lifecycle/reaper, runtime/workspace/agent/tracker adapters, terminal mux, and tests.
-- `frontend/` — Electron + React supervisor wired to the daemon via the generated typed client. Treat it as a thin supervisor/UI surface; do not move daemon logic into it.
-- `docs/` — current architecture/status notes. Start here before changing lifecycle, CLI, agents, storage, or daemon behavior.
-- `test/` — external smoke/e2e assets, including the CLI fresh-install container check.
-- `.github/workflows/` — CI definitions. Mirror these commands locally when possible.
+Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
+or editing this repository:
 
-## Commands
+1. [root repository rules at `eb9ca41f23b2cfef51bda37f291cd44d6d29c173`](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/AGENTS.md)
+2. [current operating contract revision `2026-08-08.10`](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/docs/TARGET_ARCHITECTURE_V1.md)
+4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/upstream/dcp-orchestrator.lock)
 
-From the repo root unless noted:
+Those pinned documents are the implementation authority for the current I11
+change. The live `dev-control-plane` repository remains the authority for later
+architecture, operating, integration, qualification, and exact-pin changes.
+Do not copy or reinterpret those contracts here as a competing source of
+truth. Before beginning later work, confirm that the checked-out fork revision
+is the exact immutable revision pinned by current `dev-control-plane`.
 
-```bash
-npm run lint                         # backend go test ./... + golangci-lint v2.12.2
-npm run frontend:typecheck           # frontend TypeScript check
-npm run sqlc                         # regenerate backend/internal/storage/sqlite/gen from queries/schema
-npm run api                          # regenerate OpenAPI spec + frontend TS types (see API contract changes below)
-npx @redwoodjs/agent-ci run --all    # local workflow validation; requires Docker socket
+## Repository and runtime boundary
+
+- `orenvlad-ai/dcp-orchestrator` is the private application-source repository.
+  Official `Untrivial-ai/agent-orchestrator` is read-only provenance. Integrate
+  only an explicitly reviewed immutable upstream commit; never treat a branch,
+  tag lookup, feed, installed application, or upstream state as authority.
+- `dev-control-plane` owns DCP architecture/integration policy and the exact
+  approved fork pin. Do not vendor this application into it or establish a
+  second application source tree there.
+- The only runtime identity is `DCP Orchestrator`, bundle id
+  `pro.devcontrol.dcp-orchestrator`, executable `dcp-orchestrator`, daemon
+  `dcp-orchestratord`, service `dcp-orchestrator-daemon`, and loopback port
+  `43231`.
+- The canonical, explicitly supplied `DCP_AO_LAB_ROOT` is
+  `~/Library/Application Support/DCP Orchestrator`. Durable state/data, managed
+  source, builds, evidence, worktrees, and the disposable target remain below
+  that root. Electron caches use
+  `~/Library/Caches/pro.devcontrol.dcp-orchestrator`; logs use
+  `~/Library/Logs/DCP Orchestrator`.
+- Never read, run, discover, import, migrate, or modify installed upstream Agent
+  Orchestrator, its home-directory state, or its application data. Never use an
+  upstream launcher/bootstrap path for DCP.
+- The only allowed target in this stage is the disposable, remote-free
+  `dcp-lab` repository beneath the explicit lab root. Real repositories,
+  remotes, `wb-core`, WBC, production, hosted systems, and public distribution
+  are out of scope.
+- The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
+  crash collection/upload, release, or external service path. Do not restore
+  inherited upstream paths for any of them.
+- Existing standard Codex authentication is the only external credential
+  input. Never copy/expose credentials or load user Codex configuration into a
+  lab worker.
+
+## Current implemented scope
+
+I11 implements one model-free foundation only: the existing daemon and its
+existing SQLite may durably submit, read, list events for, restore, and display
+one synthetic DCP task in exact state `SUBMITTED`. Submission is idempotent,
+target-restricted, and records an atomic per-task event. The board may project
+that synthetic lab task in Working with its stable task id and exact substate.
+
+I11 does not activate or imply task execution, executor dispatch/wake, reviewer,
+arbiter, Admission Controller, Release Train, action/lease, retry/recovery,
+scheduler, queue, watcher, webhook, monitoring, model slots/calls, HumanGate,
+acceptance, reverse delivery, hosted projection, production, or real-target
+mechanisms. Do not add speculative tables or UI for those future stages. Keep
+the existing I8 worker/session mechanisms intact, but do not exercise them as
+I11 proof. Never synthesize owner acceptance.
+
+Manual Spawn/Open Orchestrator affordances are absent from normal DCP UI. Keep
+the existing daemon/API/programmatic agent and orchestrator capability needed
+by possible future approved roles; do not expose a second manual operating
+flow and do not delete legacy sessions/state.
+
+## Code and storage rules
+
+- Keep changes surgical. Avoid drive-by cleanup, broad renames, formatting
+  churn, speculative abstractions, and architecture refactors.
+- Preserve package boundaries: domain vocabulary in `backend/internal/domain`,
+  ports in `backend/internal/ports`, service logic in
+  `backend/internal/service`, loopback controllers/DTOs in
+  `backend/internal/httpd/controllers`, and SQLite in
+  `backend/internal/storage/sqlite`.
+- The CLI and renderer are thin daemon clients. They never open SQLite, spawn a
+  runtime, or create an alternate state/display authority.
+- SQLite is the sole local authority. Add a new additive migration; never edit
+  a merged migration. Use one transaction for task state and its event, reject
+  stale compare-and-set revisions, and reuse trigger-backed `change_log`
+  conventions rather than emitting parallel manual change events.
+- Do not persist full chat/model transcripts, chain-of-thought, secrets,
+  credentials, authentication material, or user Codex configuration.
+- Change SQL sources/migrations and run `npm run sqlc`; never hand-edit
+  `backend/internal/storage/sqlite/gen/*`.
+- API changes are code-first in controller DTOs and API spec registration. Run
+  `npm run api` and commit both generated OpenAPI and frontend TypeScript
+  artifacts. Do not hand-edit generated API artifacts.
+- Keep the daemon listener loopback-only for this stage. Add no LAN/mobile,
+  webhook, hosted, or other external listener/service.
+- Preserve legacy session/activity derivation and existing I8 sessions. A DCP
+  task id is not an AO session id and must not be silently merged with it.
+
+## Required checks
+
+Run the narrowest relevant tests first, then all applicable fork gates:
+
+```text
+./scripts/dcp-ci-gates.sh source
+cd backend && go test -p 1 ./... && go build ./...
+cd frontend && npm run typecheck
+cd frontend && npx vitest run --config vite.renderer.config.ts <relevant tests>
+npm run sqlc
+npm run api
 ```
 
-Backend-specific checks:
+For packaged proof, build only an isolated temporary arm64 bundle/state first
+and run `./scripts/dcp-ci-gates.sh artifact /absolute/path/to/DCP Orchestrator.app`.
+Do not touch the canonical installed app/state until migration, compatibility,
+rollback, identity, updater/telemetry/crash, and zero-model-call gates are all
+green. Build/install only exact merged fork and `dev-control-plane` pins.
 
-```bash
-cd backend
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
-go run ./cmd/ao start
-```
-
-Frontend-specific checks:
-
-```bash
-cd frontend
-npm run typecheck
-npm run build
-```
-
-When showing or demoing frontend changes, run `ao preview [url]` from inside the session so the change renders in the desktop browser panel (the inspector rail's Browser tab); do not just describe it.
-
-## Where to look first
-
-- `README.md` — current run/config/test quickstart.
-- `docs/README.md` — docs index.
-- `docs/architecture.md` — backend mental model, package layout, lifecycle/session/service boundaries, and load-bearing rules.
-- `docs/STATUS.md` — what is shipped on `main` today and what is still in flight.
-- `docs/cli/README.md` — intended CLI shape: thin Cobra client over daemon HTTP, never direct storage/runtime access.
-- `CLAUDE.md` — compatibility pointer for Claude Code; it directs agents back to `AGENTS.md`.
-
-For code entry points:
-
-- CLI commands: `backend/internal/cli/*.go`; follow nearby command/test patterns before adding a new style.
-- HTTP controllers and DTOs: `backend/internal/httpd/controllers/`.
-- Service read/write boundaries: `backend/internal/service/`.
-- Domain vocabulary: `backend/internal/domain/`.
-- Port contracts: `backend/internal/ports/`.
-- SQLite queries/migrations/store: `backend/internal/storage/sqlite/`.
-- Generated sqlc code: `backend/internal/storage/sqlite/gen/`.
-
-## Distribution
-
-- The **desktop app** (GitHub Releases) is the canonical, auto-updating install path. Point users there first.
-- **npm still works but is no longer recommended.** `0.10.0` is the final version published to npm; the `@aoagents/ao` package is frozen and will not receive further updates. It remains a legacy on-ramp for users who already have `ao` on their PATH, where `ao start` fetches and opens the desktop build. Do not add features, docs, or flows that treat npm as the intended way to install AO.
-- **Exactly one publisher.** Only the designated release conductor runs a real publish, on any channel. Divergent artifacts from multiple publishers made the 28-29 Jul macOS incident unreadable. Use the fork dev loop for test builds. Full rule and rationale: `frontend/docs/desktop-release.md`, "Hard rule: exactly one publisher".
-- **Verify macOS artifacts with `frontend/scripts/verify-mac-artifact.sh`, never by hand.** It extracts with `ditto -x -k` and runs `codesign --verify --deep --strict`, `spctl -a -vv -t exec`, `xcrun stapler validate`. Plain `unzip` breaks the seal and yields a convincing false failure; `spctl` without `-vv` prints nothing at all on success.
-- **macOS ships both a `.zip` and a `.dmg`.** The dmg is first install only. The zip and `latest-mac.yml` must keep publishing forever: electron-updater cannot install an update from a dmg. macOS differential updates are permanently disabled (full download only); see issues #3151 and #3267.
-
-## Coding conventions
-
-- Keep every change surgical and directly tied to the task. Avoid drive-by cleanup, broad renames, formatting churn, speculative abstractions, and architectural refactors unless the task explicitly asks for them.
-- Follow existing Go package boundaries. CLI code should call daemon HTTP routes through shared CLI client helpers; it should not open SQLite, spawn runtimes, or call adapters directly.
-- Keep Cobra commands in the relevant command file and table-test them in the style of `backend/internal/cli/*_test.go`.
-- Mirror existing response/request DTOs in the CLI instead of importing HTTP controller packages into CLI code, unless the package already establishes that dependency.
-- Return usage errors as `usageError` so CLI misuse exits 2; runtime/daemon failures should exit 1.
-- Preserve API error envelopes and request IDs when surfacing daemon errors.
-- Use `context.Context` as the first argument for functions that do I/O or blocking work.
-- Do not add abstractions for one-off use cases. Add helpers only when they remove duplication across real call sites.
-- Tests should cover the user-visible behavior and boundary being changed: happy path, validation/missing args, daemon error envelopes, and any destructive confirmation path.
-
-## Hard rules and boundaries
-
-- The daemon's **primary (loopback) listener** stays bound to `127.0.0.1` and unauthenticated. Do not change its bind host or add auth to it.
-- The daemon MAY run a **second, opt-in LAN listener** (the "Connect Mobile" feature) that binds `0.0.0.0` **only while explicitly enabled**, **only** behind the bearer-password `authMiddleware`, serving the app API but never the loopback-gated control routes (`/shutdown`, telemetry, mobile control). It is plaintext and home-network-only by deliberate decision — see `docs/adr/0001-lan-listener-for-mobile.md` and `CONTEXT.md`. Do not add any other network-facing bind.
-- The CLI is a thin client. Do not port old in-process TypeScript CLI behavior that bypasses daemon HTTP routes.
-- Do not store derived/display session status. Status is derived from durable facts (`activity_state`, `is_terminated`, PR/check/comment facts) at service read time.
-- Do not treat failed/unknown runtime probes as proof a session is dead.
-- Do not force-delete dirty registered worktrees.
-- Do not modify already-merged SQLite migrations. Add a new migration instead.
-- Do not hand-edit `backend/internal/storage/sqlite/gen/*`; change `backend/internal/storage/sqlite/queries/*` or migrations and run `npm run sqlc`.
-- SQLite change events come from DB triggers into `change_log`; do not add parallel manual CDC emission from store methods unless the architecture changes explicitly.
-- Keep generated OpenAPI/API DTO drift in mind: controller response shapes live in `backend/internal/httpd/controllers/dto.go` and tests may assert CLI/HTTP wire compatibility.
-- Do not add network calls to tests unless the package already has an integration/e2e pattern for them. Prefer `httptest`, fakes, and injected dependencies.
-- Do not commit local run state, daemon data, temporary worktrees, build outputs, or credentials.
-- All app state lives under `~/.ao` only. The daemon's data dir, `running.json`, worktrees, and the Electron supervisor's `userData` (Chromium cache, cookies, local/session storage, crash dumps) must resolve under `~/.ao` (overridable via `AO_DATA_DIR`/`AO_RUN_FILE`). Never write to or read from `~/Library/Application Support` or any other OS default app-data location. `main.ts` pins Electron's `userData` to `~/.ao/electron`; do not remove that override or rely on Electron's default path.
-
-## API contract changes
-
-The daemon API is code-first. The OpenAPI spec and frontend TypeScript types are generated artifacts — edit the source, then regenerate.
-
-**Source files to edit:**
-
-- `backend/internal/httpd/controllers/dto.go` — request/response shapes.
-- `backend/internal/httpd/apispec/specgen/build.go` — operation registry; add a `schemaNames` entry for any new named type.
-
-**Regenerate after editing:**
-
-```bash
-npm run api          # runs api:spec then api:ts in sequence
-```
-
-This is equivalent to running:
-
-```bash
-npm run api:spec     # cd backend && go generate ./internal/httpd/apispec/...
-npm run api:ts       # npx openapi-typescript@7.4.4 backend/internal/httpd/apispec/openapi.yaml -o frontend/src/api/schema.ts
-```
-
-**Verify:**
-
-```bash
-cd backend && go test ./internal/httpd/...    # spec drift + route/spec parity tests (does not cover schema.ts — that is checked by the api-drift CI job)
-```
-
-Commit `openapi.yaml` and `frontend/src/api/schema.ts` together with the Go changes. CI will regenerate both files and fail if the committed versions are out of date. The CLI hand-mirrored DTOs remain a deliberate manual boundary and are not generated.
-
-## PR hygiene
-
-- Branch from `main` unless explicitly continuing an existing PR.
-- Keep one issue per PR. If asked for separate work, create a separate branch and PR.
-- Use conventional commit messages (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
-- Explain intentional omissions in the PR body, especially when the TypeScript original had more behavior than the Go rewrite domain currently supports.
-- Run the narrowest relevant tests first, then the repo/CI commands that match the touched area.
+Work from exact current `origin/main` in a separate branch/worktree. One direct
+executor owns one active DCP change, runs semantic/security self-review, and
+opens one ready PR. Use ordinary protected review and CI; never force-push.
+Technical completion is not owner acceptance.

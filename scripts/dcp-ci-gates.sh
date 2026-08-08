@@ -9,6 +9,8 @@ upstream_tree='36bf30cc4960c10f0d94fc63a8ff0a4dd22bb8a8'
 i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
+control_plane_commit='eb9ca41f23b2cfef51bda37f291cd44d6d29c173'
+operating_contract_revision='2026-08-08.10'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -50,6 +52,23 @@ source_gates() {
 	grep -Fq "$i8_parity_commit" DCP_PROVENANCE.md || fail 'provenance lacks I8 parity anchor'
 	grep -Fq "$i8_patch_sha256" DCP_PROVENANCE.md || fail 'provenance lacks exact I8 patch digest'
 
+	[[ -s AGENTS.md && -s CLAUDE.md ]] || fail 'DCP coding-agent operational entry is absent'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/CURRENT_OPERATING_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane operating contract'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/TARGET_ARCHITECTURE_V1.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane target contract'
+	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
+	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
+	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
+	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
+	grep -Fq 'I11 does not activate or imply task execution' AGENTS.md || fail 'AGENTS.md does not keep future I9 roles inactive'
+	grep -Fq 'Read and follow [`AGENTS.md`](AGENTS.md)' CLAUDE.md || fail 'compatibility agent entry does not defer to DCP AGENTS.md'
+	if grep -Fq 'All app state lives under `~/.ao` only' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'canonical, auto-updating install path' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'Hard rule: exactly one publisher' AGENTS.md CLAUDE.md \
+		|| grep -Fq '`0.0.0.0` **only while explicitly enabled**' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'go run ./cmd/ao start' AGENTS.md CLAUDE.md; then
+		fail 'conflicting upstream operational rules returned'
+	fi
+
 	workflow_list="$(find .github/workflows -maxdepth 1 -type f -print | sort)"
 	[[ "$workflow_list" == '.github/workflows/dcp-ci.yml' ]] || fail 'only the bounded DCP CI workflow may be active'
 	! grep -Eiq 'workflow_dispatch|pull_request_target|repository_dispatch|^[[:space:]]*schedule:|^[[:space:]]*release:|gh[[:space:]]+release|upload-artifact|electron-forge[[:space:]]+publish' .github/workflows/dcp-ci.yml || fail 'release, schedule, privileged PR, or publishing path is active'
@@ -84,7 +103,7 @@ source_gates() {
 	grep -Fq '"exec", "--ignore-user-config", "--ephemeral", "--strict-config"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker isolation flags are absent'
 	! grep -Fq 'appendHookTrustBypassFlag(&cmd)' backend/internal/adapters/agent/codex/codex.go || fail 'forbidden hook-trust bypass is reachable'
 
-	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/|DCP_PROVENANCE\.md$|NOTICE$|README\.md$|scripts/dcp-ci-gates\.sh$|frontend/forge\.config\.ts$|frontend/package(-lock)?\.json$)' || true)"
+	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/|AGENTS\.md$|CLAUDE\.md$|DCP_PROVENANCE\.md$|NOTICE$|README\.md$|scripts/dcp-ci-gates\.sh$|frontend/forge\.config\.ts$|frontend/package(-lock)?\.json$)' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check
