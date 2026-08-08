@@ -82,6 +82,30 @@ func TestServiceDerivesStatusFromSessionFactsAndPR(t *testing.T) {
 	}
 }
 
+func TestOneShotLifecycleKeepsExistingDisplayPrecedence(t *testing.T) {
+	tests := []struct {
+		name  string
+		state domain.ActivityState
+		prs   []domain.PRFacts
+		want  domain.SessionStatus
+	}{
+		{"running process", domain.ActivityActive, nil, domain.StatusWorking},
+		{"successful exit", domain.ActivityIdle, nil, domain.StatusIdle},
+		{"failed exit", domain.ActivityExited, nil, domain.StatusExited},
+		{"waiting input", domain.ActivityWaitingInput, nil, domain.StatusNeedsInput},
+		{"blocked", domain.ActivityBlocked, nil, domain.StatusNeedsInput},
+		{"successful exit with review", domain.ActivityIdle, statusPR(domain.PRFacts{Review: domain.ReviewRequired}), domain.StatusReviewPending},
+		{"successful exit with merged PR", domain.ActivityIdle, statusPR(domain.PRFacts{Merged: true}), domain.StatusMerged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deriveStatus(statusRec(tt.state, false), tt.prs, statusNow, true); got != tt.want {
+				t.Fatalf("deriveStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeriveStatusActivityPrecedence(t *testing.T) {
 	tests := []struct {
 		name     string

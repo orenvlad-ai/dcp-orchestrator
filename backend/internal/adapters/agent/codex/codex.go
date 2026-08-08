@@ -48,10 +48,11 @@ func (p *Plugin) EmitsSubmitActivity() bool { return false }
 // ports.ActivitySignaler.
 func (p *Plugin) EmitsBlockedActivity() bool { return false }
 
-// ExitDetectionMode opts Codex into AO's process supervisor. Codex hooks
-// expose turn boundaries but no reliable session-end event.
+// ExitDetectionMode opts the DCP one-shot Codex worker into AO's process
+// supervisor. A zero process exit is an ordinary completed turn; every other
+// machine outcome remains exited.
 func (p *Plugin) ExitDetectionMode() ports.AgentExitDetectionMode {
-	return ports.AgentExitDetectionSupervisor
+	return ports.AgentExitDetectionSupervisorIdleOnSuccess
 }
 
 // SteersActiveTurn is true: submitting input to the codex TUI mid-turn steers

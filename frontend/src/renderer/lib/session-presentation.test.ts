@@ -87,6 +87,19 @@ describe("session presentation", () => {
 		expect(getSessionStatusView("exited").className).toBe("text-status-exited");
 	});
 
+	it("presents a successful one-shot exit as ordinary Idle and a failure as red Exited", () => {
+		expect(getSessionStatusView("idle")).toMatchObject({
+			label: "Idle",
+			className: "text-status-idle",
+		});
+		expect(getSessionStatusView("exited")).toMatchObject({
+			label: "Exited",
+			className: "text-status-exited",
+		});
+		expect(attentionZone(sessionWith({ status: "idle" }))).toBe("working");
+		expect(attentionZone(sessionWith({ status: "exited" }))).toBe("action");
+	});
+
 	it.each([
 		["approved", "merge", "Ready to merge"],
 		["mergeable", "merge", "Ready to merge"],

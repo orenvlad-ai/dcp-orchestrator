@@ -344,11 +344,25 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 		m.mu.Unlock()
 		return nil
 	}
+	successfulProcessExit := s.Event == "process-exited" && s.State == domain.ActivityIdle &&
+		s.LaunchID != "" && s.LaunchID == rec.Metadata.RuntimeLaunchID
+	// A successful one-shot process exit is an idle boundary, but it must not
+	// hide an authoritative pause that already says the user owes input or a
+	// decision. Clear the generation atomically so later workload-dead polling
+	// cannot reinterpret the completed process as a failure. A factual
+	// unsuccessful outcome still reports exited below.
+	if successfulProcessExit && rec.Activity.State.NeedsInput() {
+		rec.Metadata.RuntimeLaunchID = ""
+		rec.UpdatedAt = now
+		err := m.store.UpdateSession(ctx, rec)
+		m.mu.Unlock()
+		return err
+	}
 	// An explicit prompt submission is proof that an agent was relaunched in the
 	// preserved shell. Other same-generation callbacks may have been delayed
 	// behind the process-exit report and cannot resurrect an exited workload.
 	if rec.Activity.State == domain.ActivityExited && s.Valid && s.State != domain.ActivityExited &&
-		(s.State != domain.ActivityActive || s.Event != "user-prompt-submit") {
+		(s.State != domain.ActivityActive || s.Event != "user-prompt-submit") && !successfulProcessExit {
 		m.mu.Unlock()
 		return nil
 	}
@@ -398,6 +412,11 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	}
 	next := rec
 	next.Activity = act
+	if successfulProcessExit {
+		// RuntimeLaunchID denotes the currently active supervised generation.
+		// A zero process outcome closes it; the tmux shell/scrollback remains.
+		next.Metadata.RuntimeLaunchID = ""
+	}
 	if next.FirstSignalAt.IsZero() {
 		next.FirstSignalAt = timeOr(s.Timestamp, now)
 	}

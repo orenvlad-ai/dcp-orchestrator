@@ -27,6 +27,7 @@ func newAgentProcessCommand(ctx *commandContext) *cobra.Command {
 func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 	var sessionID string
 	var launchID string
+	var idleOnSuccess bool
 	cmd := &cobra.Command{
 		Use:    "supervise --session <id> --launch <id> -- <command> [args...]",
 		Short:  "Supervise one managed agent process (internal)",
@@ -46,16 +47,17 @@ func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 			if !sessionIDPattern.MatchString(launchID) {
 				return usageError{fmt.Errorf("invalid launch id")}
 			}
-			ctx.runSupervisedProcess(cmd.Context(), sessionID, launchID, args)
+			ctx.runSupervisedProcess(cmd.Context(), sessionID, launchID, idleOnSuccess, args)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&sessionID, "session", "", "AO session id")
 	cmd.Flags().StringVar(&launchID, "launch", "", "AO process launch id")
+	cmd.Flags().BoolVar(&idleOnSuccess, "idle-on-success", false, "report a zero process exit as idle")
 	return cmd
 }
 
-func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, launchID string, argv []string) {
+func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, launchID string, idleOnSuccess bool, argv []string) {
 	child := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is constructed by the selected agent adapter.
 	child.Stdin = c.deps.In
 	child.Stdout = c.deps.Out
@@ -63,8 +65,14 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 
 	if err := child.Start(); err != nil {
 		_, _ = fmt.Fprintf(c.deps.Err, "ao: start managed agent: %v\n", err)
-		c.reportSupervisedExit(sessionID, launchID)
+		c.reportSupervisedActivity(sessionID, launchID, "exited", "process-exited")
 		return
+	}
+	if idleOnSuccess {
+		// Starting the child is the exact machine fact that the bounded one-shot
+		// workload is active. Interactive supervisors preserve their upstream
+		// signal behavior by leaving idleOnSuccess disabled.
+		c.reportSupervisedActivity(sessionID, launchID, "active", "process-started")
 	}
 
 	// The child shares the terminal foreground process group and therefore
@@ -72,20 +80,25 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 	// alive long enough to reap the child and publish the exit observation.
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt)
-	_ = child.Wait()
+	waitErr := child.Wait()
 	signal.Stop(interrupts)
 
-	c.reportSupervisedExit(sessionID, launchID)
+	state := "exited"
+	if idleOnSuccess && waitErr == nil {
+		state = "idle"
+	}
+	c.reportSupervisedActivity(sessionID, launchID, state, "process-exited")
 }
 
-func (c *commandContext) reportSupervisedExit(sessionID, launchID string) {
+func (c *commandContext) reportSupervisedActivity(sessionID, launchID, state, event string) {
 	ctx, cancel := context.WithTimeout(context.Background(), supervisedExitReportTimeout)
 	defer cancel()
 	path := "sessions/" + sessionID + "/activity"
-	req := setActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID}
+	req := setActivityAPIRequest{State: state, Event: event, LaunchID: launchID}
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
-		// Reconciliation will recover this event from process absence. Keep the
-		// delivery failure visible without preventing the terminal's shell.
-		c.reportHookFailure("agent-process", "process-exited", sessionID, err)
+		// Workload-death reconciliation stays fail-closed as exited when exact
+		// outcome delivery fails. Keep the delivery failure visible without
+		// preventing the terminal's shell.
+		c.reportHookFailure("agent-process", event, sessionID, err)
 	}
 }

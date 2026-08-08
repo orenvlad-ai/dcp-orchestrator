@@ -3356,7 +3356,12 @@ func (m *Manager) validateRuntimePrerequisites() error {
 
 func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
 	detector, ok := agent.(ports.AgentExitDetector)
-	if !ok || detector.ExitDetectionMode() != ports.AgentExitDetectionSupervisor {
+	if !ok {
+		delete(env, EnvRuntimeLaunchID)
+		return argv, "", nil
+	}
+	mode := detector.ExitDetectionMode()
+	if mode != ports.AgentExitDetectionSupervisor && mode != ports.AgentExitDetectionSupervisorIdleOnSuccess {
 		delete(env, EnvRuntimeLaunchID)
 		return argv, "", nil
 	}
@@ -3370,7 +3375,11 @@ func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, 
 	}
 	env[EnvRuntimeLaunchID] = launchID
 	wrapped := make([]string, 0, 8+len(argv))
-	wrapped = append(wrapped, executable, "agent-process", "supervise", "--session", string(id), "--launch", launchID, "--")
+	wrapped = append(wrapped, executable, "agent-process", "supervise", "--session", string(id), "--launch", launchID)
+	if mode == ports.AgentExitDetectionSupervisorIdleOnSuccess {
+		wrapped = append(wrapped, "--idle-on-success")
+	}
+	wrapped = append(wrapped, "--")
 	wrapped = append(wrapped, argv...)
 	return wrapped, launchID, nil
 }

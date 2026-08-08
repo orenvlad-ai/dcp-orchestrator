@@ -31,8 +31,8 @@ func canonicalTempDir(t *testing.T) string {
 
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
 	plugin := &Plugin{}
-	if got := plugin.ExitDetectionMode(); got != ports.AgentExitDetectionSupervisor {
-		t.Fatalf("exit detection mode = %q, want %q", got, ports.AgentExitDetectionSupervisor)
+	if got := plugin.ExitDetectionMode(); got != ports.AgentExitDetectionSupervisorIdleOnSuccess {
+		t.Fatalf("exit detection mode = %q, want %q", got, ports.AgentExitDetectionSupervisorIdleOnSuccess)
 	}
 }
 

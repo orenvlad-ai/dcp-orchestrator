@@ -201,6 +201,70 @@ func TestActivity_InvalidIsIgnored(t *testing.T) {
 	}
 }
 
+func TestActivity_OneShotSuccessDoesNotMaskNeedsInput(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		t.Run(string(state), func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Activity.State = state
+			rec.Metadata.RuntimeLaunchID = "launch-1"
+			st.sessions["mer-1"] = rec
+
+			if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+				Valid: true, State: domain.ActivityIdle, Event: "process-exited", LaunchID: "launch-1",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := st.sessions["mer-1"]
+			if got.Activity.State != state || got.Metadata.RuntimeLaunchID != "" {
+				t.Fatalf("successful one-shot exit masked %q or left a live generation: %+v", state, got)
+			}
+
+			got.Metadata.RuntimeLaunchID = "launch-2"
+			st.sessions["mer-1"] = got
+			if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+				Valid: true, State: domain.ActivityExited, Event: "process-exited", LaunchID: "launch-2",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := st.sessions["mer-1"].Activity.State; got != domain.ActivityExited {
+				t.Fatalf("unsuccessful one-shot outcome = %q, want exited", got)
+			}
+		})
+	}
+}
+
+func TestActivity_OneShotSuccessClosesGenerationAndWinsReaperRace(t *testing.T) {
+	for _, initial := range []domain.ActivityState{domain.ActivityActive, domain.ActivityExited} {
+		t.Run(string(initial), func(t *testing.T) {
+			m, st, _ := newManager()
+			rec := working("mer-1")
+			rec.Activity.State = initial
+			rec.Metadata.RuntimeLaunchID = "launch-1"
+			st.sessions["mer-1"] = rec
+
+			if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+				Valid: true, State: domain.ActivityIdle, Event: "process-exited", LaunchID: "launch-1",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := st.sessions["mer-1"]
+			if got.Activity.State != domain.ActivityIdle || got.Metadata.RuntimeLaunchID != "" {
+				t.Fatalf("successful one-shot outcome = %+v, want idle with no active generation", got)
+			}
+
+			if err := m.ApplyRuntimeObservation(ctx, "mer-1", ports.RuntimeFacts{
+				Runtime: ports.ProbeAlive, Workload: ports.ProbeDead, LaunchID: "launch-1",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if after := st.sessions["mer-1"]; after.Activity.State != domain.ActivityIdle {
+				t.Fatalf("stale reaper observation overwrote successful outcome: %+v", after)
+			}
+		})
+	}
+}
+
 func TestActivity_MetadataOnlyStoresAgentSessionIDWithoutChangingActivity(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
