@@ -1,12 +1,5 @@
-import posthog from "posthog-js/dist/module.full.no-external";
-import { aoBridge } from "./bridge";
 import { isLoopbackHostname } from "./loopback";
 import { ORCHESTRATOR_SPAWN_SOURCES } from "./orchestrator-spawn-sources";
-import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "../../shared/posthog-config";
-
-const POSTHOG_KEY = import.meta.env.VITE_AO_POSTHOG_KEY?.trim() || DEFAULT_POSTHOG_PROJECT_KEY;
-const POSTHOG_HOST = import.meta.env.VITE_AO_POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST;
-const RELEASE_TAG = "2026-01-30";
 const TELEMETRY_SCHEMA_VERSION = 2;
 const REDACTED_LOCAL_URL = "[redacted-local-url]";
 const REDACTED_LOCAL_PATH = "[redacted-local-path]";
@@ -22,8 +15,6 @@ const POSTHOG_EVENT_NAME_ALIASES: Record<string, string> = {
 	"ao.renderer.daemon_failure": "ao.v2.renderer.daemon_failure",
 };
 
-let initPromise: Promise<boolean> | null = null;
-let errorHandlersBound = false;
 let telemetryContext: TelemetryProperties = {};
 let fallbackActiveDate = "";
 let fallbackActiveSlots = new Set<number>();
@@ -218,14 +209,6 @@ export function reserveRouteViewCapture(
 	}
 }
 
-function telemetryStorage(): DailyActiveStorage | undefined {
-	try {
-		return window.localStorage;
-	} catch {
-		return undefined;
-	}
-}
-
 export function startDailyActiveHeartbeat({
 	storage,
 	now = () => new Date(),
@@ -273,16 +256,6 @@ export function startDailyActiveHeartbeat({
 			document.removeEventListener(event, maybeCapture);
 		}
 	};
-}
-
-function normalizeException(reason: unknown): Error {
-	if (reason instanceof Error) return reason;
-	if (typeof reason === "string") return new Error(reason);
-	try {
-		return new Error(JSON.stringify(reason));
-	} catch {
-		return new Error("Unknown renderer exception");
-	}
 }
 
 function routeSurface(pathname: string): string {
@@ -489,29 +462,25 @@ export async function sanitizeRendererExceptionProperties(
 	return { ...safe, ...(await sanitizeRendererContextProperties(properties)) };
 }
 
-function bindErrorHandlers() {
-	if (errorHandlersBound) return;
-	errorHandlersBound = true;
-	window.addEventListener("error", (event) => {
-		void captureRendererException(event.error ?? new Error(event.message), {
-			source: "window-error",
-			unhandled: true,
-		});
-	});
-	window.addEventListener("unhandledrejection", (event) => {
-		void captureRendererException(normalizeException(event.reason), {
-			source: "unhandledrejection",
-			unhandled: true,
-		});
-	});
-}
-
-type PostHogInitOptions = NonNullable<Parameters<typeof posthog.init>[1]>;
+type PostHogInitOptions = {
+	autocapture: false;
+	capture_pageview: false;
+	capture_exceptions: false;
+	capture_performance: false;
+	disable_session_recording: true;
+	advanced_disable_flags: true;
+	disable_surveys: true;
+	persistence: "memory";
+	person_profiles: "never";
+	bootstrap: { distinctID: string; isIdentifiedID: false };
+	before_send: <T>(event: T | null) => T | null;
+	session_recording: {
+		maskCapturedNetworkRequestFn: <T extends { name?: string }>(request: T) => T;
+	};
+};
 
 export function buildPostHogConfig(distinctId: string): PostHogInitOptions {
 	return {
-		api_host: POSTHOG_HOST,
-		defaults: RELEASE_TAG,
 		autocapture: false,
 		capture_pageview: false,
 		capture_exceptions: false,
@@ -549,78 +518,19 @@ export function buildPostHogConfig(distinctId: string): PostHogInitOptions {
 }
 
 export async function initTelemetry(): Promise<boolean> {
-	if (initPromise) return initPromise;
-	initPromise = (async () => {
-		if (!POSTHOG_KEY) return false;
-		const bootstrap = await aoBridge.telemetry.getBootstrap();
-		// Null means the supervisor withheld it: no key, no data dir, or an
-		// unpackaged build that has not opted in. The client is never created.
-		if (!bootstrap) return false;
-		disabledEventMatchers = bootstrap.disabledEvents ?? [];
-		telemetryContext = buildTelemetryContext(bootstrap.appVersion, bootstrap.platform);
-		posthog.init(POSTHOG_KEY, buildPostHogConfig(bootstrap.distinctId));
-		posthog.register({
-			...telemetryContext,
-			surface: "renderer",
-		});
-		bindErrorHandlers();
-		startDailyActiveHeartbeat({
-			storage: telemetryStorage(),
-			window,
-			document,
-			capture: async () =>
-				isDeniedEvent("ao.app.active")
-					? true
-					: Boolean(
-					posthog.capture(
-						postHogEventName("ao.app.active"),
-						withTelemetryContext(await sanitizeRendererProperties("ao.app.active", { channel: "renderer" })),
-						{ send_instantly: true },
-					),
-				),
-		});
-		if (!isDeniedEvent("ao.renderer.loaded")) {
-			posthog.capture(
-				postHogEventName("ao.renderer.loaded"),
-				withTelemetryContext(await sanitizeRendererProperties("ao.renderer.loaded")),
-			);
-		}
-		return true;
-	})().catch(() => false);
-	return initPromise;
+	return false;
 }
 
-export async function captureRendererEvent(event: string, properties?: Record<string, unknown>): Promise<void> {
-	// Checked before the reservations so a silenced stream does not consume a
-	// rate-limit slot on its way to being discarded, matching the daemon, where
-	// the denylist sits outermost.
-	if (isDeniedEvent(event)) return;
-	const sanitizedProperties = await sanitizeRendererProperties(event, properties);
-	if (event === "ao.renderer.route_viewed") {
-		const surface = typeof sanitizedProperties.surface === "string" ? sanitizedProperties.surface : "other";
-		if (!reserveRouteViewCapture(telemetryStorage(), surface)) return;
-	} else if (!reserveCapture(event)) {
-		return;
-	}
-	if (!(await initTelemetry())) return;
-	const safeProperties = withTelemetryContext(sanitizedProperties);
-	posthog.capture(postHogEventName(event), safeProperties);
+export async function captureRendererEvent(_event: string, _properties?: Record<string, unknown>): Promise<void> {
+	return;
 }
 
-export async function captureRendererException(error: unknown, properties?: Record<string, unknown>): Promise<void> {
-	// "$exception" is the name this lands under in PostHog, so that is what an
-	// operator would type to silence a crash loop.
-	if (isDeniedEvent("$exception")) return;
-	if (!reserveCapture(`exception:${exceptionName(error)}`)) return;
-	if (!(await initTelemetry())) return;
-	const safeProperties = withTelemetryContext(await sanitizeRendererExceptionProperties(error, properties));
-	posthog.captureException(normalizeException(error), safeProperties);
+export async function captureRendererException(_error: unknown, _properties?: Record<string, unknown>): Promise<void> {
+	return;
 }
 
-export async function addRendererExceptionStep(message: string, properties?: Record<string, unknown>): Promise<void> {
-	if (!(await initTelemetry())) return;
-	const safeProperties = withTelemetryContext(await sanitizeRendererContextProperties(properties));
-	posthog.addExceptionStep(message, safeProperties);
+export async function addRendererExceptionStep(_message: string, _properties?: Record<string, unknown>): Promise<void> {
+	return;
 }
 
 export { routeSurface };

@@ -1056,7 +1056,7 @@ function AttachedTerminal({
 		(!replaySettled || replayPaintPending) &&
 		(state === "connecting" || state === "attached");
 	const showEndedState = state === "exited" || canRestoreSession;
-	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
+	const emptyStateTitle = session ? t("terminal.startingSession") : "DCP Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
 			? t("terminal.preparingOrchestrator")

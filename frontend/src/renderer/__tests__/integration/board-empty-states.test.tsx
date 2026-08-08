@@ -135,10 +135,10 @@ describe("global board first launch", () => {
 		);
 
 		expect(await screen.findByTestId("daemon-startup-loader")).toHaveClass("ao-startup-screen");
-		expect(screen.getByRole("status", { name: "Agent Orchestrator is starting" })).toBeInTheDocument();
-		expect(screen.getByText("Agent Orchestrator")).toBeInTheDocument();
+		expect(screen.getByRole("status", { name: "DCP Orchestrator is starting" })).toBeInTheDocument();
+		expect(screen.getByText("DCP Orchestrator")).toBeInTheDocument();
 		expect(screen.getByText("Starting local services")).toHaveAttribute("aria-hidden", "true");
-		expect(screen.queryByText("Import to Agent Orchestrator")).not.toBeInTheDocument();
+		expect(screen.queryByText("Import to DCP Orchestrator")).not.toBeInTheDocument();
 		expect(columnCount()).toBe(0);
 	});
 
@@ -146,7 +146,7 @@ describe("global board first launch", () => {
 		respondWith([], []);
 		renderBoard(<SessionsBoard />);
 
-		expect(await screen.findByText("Import to Agent Orchestrator")).toBeInTheDocument();
+		expect(await screen.findByText("Import to DCP Orchestrator")).toBeInTheDocument();
 		expect(screen.getByText("What are you importing?")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Project" })).toBeInTheDocument();
@@ -190,7 +190,7 @@ describe("global board first launch", () => {
 		renderBoard(<SessionsBoard />);
 
 		expect(await screen.findByText("fix the bug")).toBeInTheDocument();
-		expect(screen.queryByText("Import to Agent Orchestrator")).not.toBeInTheDocument();
+		expect(screen.queryByText("Import to DCP Orchestrator")).not.toBeInTheDocument();
 		expect(columnCount()).toBe(4);
 	});
 
@@ -238,7 +238,7 @@ describe("project board with no sessions", () => {
 		// Board header + empty state each offer the pair; the orchestrator is primary in both.
 		expect(screen.getAllByRole("button", { name: "Spawn Orchestrator" }).length).toBeGreaterThan(0);
 		expect(screen.getAllByRole("button", { name: "New task" }).length).toBeGreaterThan(0);
-		expect(screen.queryByText("Import to Agent Orchestrator")).not.toBeInTheDocument();
+		expect(screen.queryByText("Import to DCP Orchestrator")).not.toBeInTheDocument();
 		expect(columnCount()).toBe(0);
 	});
 

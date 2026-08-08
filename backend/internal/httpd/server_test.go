@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
@@ -87,7 +88,10 @@ func TestHealthProbesIncludeDaemonIdentity(t *testing.T) {
 // clean shutdown that removes the handshake file.
 func TestServerLifecycle(t *testing.T) {
 	t.Setenv("DCP_AO_CONTOUR_ID", "dcp-test-contour")
-	t.Setenv("DCP_AO_UI_INSTANCE_ID", "dcp-ui-1-2-3")
+	t.Setenv("DCP_AO_APP_PID", "12345")
+	t.Setenv("DCP_AO_APP_INSTANCE_ID", "dcp-app-test")
+	t.Setenv("DCP_AO_APP_BUNDLE_ID", "pro.devcontrol.dcp-orchestrator")
+	t.Setenv("DCP_AO_APP_BUNDLE_PATH", "/Users/test/Applications/DCP Orchestrator.app")
 	runPath := filepath.Join(t.TempDir(), "running.json")
 	cfg := config.Config{
 		Host:            "127.0.0.1",
@@ -121,8 +125,10 @@ func TestServerLifecycle(t *testing.T) {
 	if info.Port == 0 {
 		t.Error("run-file recorded port 0; want the actual bound port")
 	}
-	if info.DCPContourID != "dcp-test-contour" || info.DCPUIInstanceID != "dcp-ui-1-2-3" {
-		t.Errorf("run-file DCP identity = %q/%q", info.DCPContourID, info.DCPUIInstanceID)
+	if info.Service != daemonmeta.ServiceName || info.DCPContourID != "dcp-test-contour" || info.DCPAppPID != 12345 ||
+		info.DCPAppInstanceID != "dcp-app-test" || info.DCPAppBundleID != "pro.devcontrol.dcp-orchestrator" ||
+		info.DCPAppBundlePath != "/Users/test/Applications/DCP Orchestrator.app" {
+		t.Errorf("run-file packaged DCP identity = %#v", info)
 	}
 
 	cancel()
@@ -230,5 +236,21 @@ func TestNewFallsBackOnPortConflict(t *testing.T) {
 	}
 	if second.boundPort() == 0 {
 		t.Fatal("second server bound port 0; want a real fallback port")
+	}
+}
+
+func TestNewDCPContourFailsClosedOnPortConflict(t *testing.T) {
+	t.Setenv("DCP_AO_FAIL_CLOSED_DAEMON_REPLACEMENT", "1")
+	cfg := config.Config{Host: "127.0.0.1", Port: 0, RunFilePath: filepath.Join(t.TempDir(), "r.json")}
+	first, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	defer first.listen.Close()
+
+	conflict := config.Config{Host: "127.0.0.1", Port: first.boundPort(), RunFilePath: cfg.RunFilePath}
+	if second, err := NewWithDeps(conflict, discardLogger(), nil, APIDeps{}); err == nil {
+		second.listen.Close()
+		t.Fatal("DCP contour accepted an ephemeral fallback on port conflict")
 	}
 }

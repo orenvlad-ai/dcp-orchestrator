@@ -49,6 +49,34 @@ func TestAgentProcessSuperviseOneShotSuccessReportsActiveThenIdle(t *testing.T) 
 	assertSupervisedStates(t, capture, "active", "idle")
 }
 
+func TestAgentProcessSupervisorConnectionIsNotInheritedByChild(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		In:           strings.NewReader(""),
+		ProcessAlive: func(int) bool { return true },
+	}, "agent-process", "supervise", "--session", "ao-7", "--launch", "launch-3",
+		"--supervisor-data-dir", cfg.dataDir, "--supervisor-run-file", cfg.runFile,
+		"--idle-on-success", "--", "sh", "-c", `printf '%s|%s' "${AO_DATA_DIR-unset}" "${AO_RUN_FILE-unset}"`)
+	if err != nil {
+		t.Fatalf("supervise failed: %v\nstderr=%s", err, errOut)
+	}
+	if out != "unset|unset" {
+		t.Fatalf("child connection env = %q, want unset|unset", out)
+	}
+	assertSupervisedStates(t, capture, "active", "idle")
+}
+
+func TestAgentProcessSupervisorConnectionRequiresExactPair(t *testing.T) {
+	_, _, err := executeCLI(t, Deps{}, "agent-process", "supervise", "--session", "ao-7", "--launch", "launch-3",
+		"--supervisor-data-dir", "/absolute/data", "--", "true")
+	if err == nil || !strings.Contains(err.Error(), "exact absolute data-dir and run-file") {
+		t.Fatalf("partial supervisor connection error = %v", err)
+	}
+}
+
 func TestAgentProcessSuperviseOneShotNonZeroReportsActiveThenExited(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)

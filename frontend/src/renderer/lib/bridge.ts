@@ -141,7 +141,7 @@ export const aoBridge: AoBridge =
 			onOpenSession: () => () => undefined,
 		},
 		appState: {
-			getMigration: async () => ({ status: "pending" }),
+			getMigration: async () => ({ status: "declined" }),
 			setMigration: async () => undefined,
 		},
 		updateSettings: {

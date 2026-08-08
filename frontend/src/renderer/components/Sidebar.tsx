@@ -10,14 +10,12 @@ import {
 	Pin,
 	PinOff,
 	Plus,
-	RefreshCw,
 	Search,
 	Settings,
 	Trash2,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import type { UpdateStatus } from "../../main/update-settings";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
@@ -36,7 +34,6 @@ import { renameSession } from "../lib/rename-session";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
 import { useShellMaybe } from "../lib/shell-context";
-import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -189,8 +186,6 @@ export function Sidebar({
 	const { state, setOpen } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	const [expandedChromeVisible, setExpandedChromeVisible] = useState(!isCollapsed);
-	// One IPC subscription for both footer variants of the restart-to-update prompt.
-	const updateStatus = useUpdateStatus();
 	// Daemon status for the smoke suite's sr-only mirror in the footer. Null when
 	// rendered outside the shell (unit tests) — the mirror simply doesn't render.
 	const daemonStatus = useShellMaybe()?.daemonStatus ?? null;
@@ -309,7 +304,7 @@ export function Sidebar({
 						</TooltipContent>
 					</Tooltip>
 					<span className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden">
-						Agent Orchestrator
+						DCP Orchestrator
 					</span>
 					{isNightly && (
 						<span className="sidebar-expanded-chrome shrink-0 rounded-full bg-purple-subtle px-1.5 py-0.5 text-micro font-semibold leading-none text-purple-accent group-data-[collapsible=icon]:hidden">
@@ -453,7 +448,6 @@ export function Sidebar({
 					aria-hidden={isCollapsed || undefined}
 					className="sidebar-expanded-chrome relative flex w-full min-w-46.5 flex-col gap-0.5 transition-[opacity,transform] duration-150 ease-out group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:-translate-x-2 group-data-[collapsible=icon]:opacity-0"
 				>
-					<RestartToUpdateRow status={updateStatus} tabIndex={isCollapsed ? -1 : 0} />
 					<button
 						aria-label={t("shell.settings")}
 						className={cn(
@@ -472,7 +466,6 @@ export function Sidebar({
 					aria-hidden={!isCollapsed || undefined}
 					className="pointer-events-none absolute inset-x-1.5 bottom-0 top-auto flex min-h-row-md flex-col items-center justify-end gap-1 opacity-0 transition-opacity duration-150 ease-out group-data-[collapsible=icon]:pointer-events-auto group-data-[collapsible=icon]:opacity-100"
 				>
-					<RestartToUpdateRailButton status={updateStatus} tabIndex={isCollapsed ? 0 : -1} />
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<button
@@ -1018,85 +1011,6 @@ function SessionRow({
 				</button>
 			</div>
 		</SidebarMenuSubItem>
-	);
-}
-
-// RestartToUpdateRow sits directly above the Settings row when an update is
-// downloaded and staged. Transparent while fresh; orange (working tokens) once
-// the main-process evaluator flags it escalated. Clicking installs immediately;
-// the row itself is the prompt, so no confirmation dialog. Renders nothing in
-// every other update state.
-function RestartToUpdateRow({ status, tabIndex }: { status: UpdateStatus; tabIndex: number }) {
-	const { t } = useTranslation();
-	if (status.state !== "downloaded") return null;
-	const escalated = status.escalated === true;
-	return (
-		<button
-			aria-label={
-				status.version
-					? t("shell.restartInstallUpdateVersion", { version: status.version })
-					: t("shell.restartInstallUpdate")
-			}
-			className={cn(
-				"flex w-full items-center gap-2.5 rounded-lg p-2.5 text-left text-control font-medium transition-colors",
-				escalated
-					? "border border-working/35 bg-working/12 text-working hover:bg-working/18 [&_svg]:text-working"
-					: "text-passive hover:bg-interactive-hover hover:text-foreground [&_svg]:text-passive",
-			)}
-			onClick={() => void aoBridge.updates.install()}
-			tabIndex={tabIndex}
-			type="button"
-		>
-			<RefreshCw aria-hidden="true" className="size-icon-lg shrink-0" />
-			<span className="min-w-0 flex-1">
-				<span className="block truncate tracking-tight">{t("shell.restartToUpdate")}</span>
-				{status.version && (
-					<span className={cn("block truncate text-caption font-normal", escalated ? "text-working" : "text-passive")}>
-						{t("shell.versionReady", { version: status.version })}
-					</span>
-				)}
-			</span>
-			<span
-				aria-hidden="true"
-				className={cn("h-1.5 w-1.5 shrink-0 rounded-full", escalated ? "bg-working" : "bg-passive")}
-			/>
-		</button>
-	);
-}
-
-// Icon-rail variant of RestartToUpdateRow for the collapsed sidebar: icon-only
-// with the two-line copy in the tooltip.
-function RestartToUpdateRailButton({ status, tabIndex }: { status: UpdateStatus; tabIndex: number }) {
-	const { t } = useTranslation();
-	if (status.state !== "downloaded") return null;
-	const escalated = status.escalated === true;
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<button
-					aria-label={
-						status.version
-							? t("shell.restartInstallUpdateVersion", { version: status.version })
-							: t("shell.restartInstallUpdate")
-					}
-					className={cn(
-						"grid size-9 place-items-center rounded-lg transition-colors [&_svg]:size-4",
-						escalated
-							? "bg-working/12 text-working hover:bg-working/18"
-							: "text-passive hover:bg-interactive-hover hover:text-foreground",
-					)}
-					onClick={() => void aoBridge.updates.install()}
-					tabIndex={tabIndex}
-					type="button"
-				>
-					<RefreshCw aria-hidden="true" />
-				</button>
-			</TooltipTrigger>
-			<TooltipContent side="right">
-				{t("shell.restartToUpdate")}
-				{status.version ? ` · ${t("shell.versionReady", { version: status.version })}` : ""}
-			</TooltipContent>
-		</Tooltip>
 	);
 }
 

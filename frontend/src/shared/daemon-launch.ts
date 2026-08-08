@@ -11,7 +11,7 @@ function joinPath(...segments: string[]): string {
 }
 
 export function bundledDaemonBinaryName(platform: NodeJS.Platform): string {
-	return platform === "win32" ? "ao.exe" : "ao";
+	return platform === "win32" ? "dcp-orchestratord.exe" : "dcp-orchestratord";
 }
 
 export function resolveDaemonLaunch(
@@ -46,7 +46,7 @@ export function resolveDaemonLaunch(
 	return {
 		command: joinPath(resourcesPath, "daemon", bundledDaemonBinaryName(platform)),
 		args: ["daemon"],
-		cwd: joinPath(homeDir, ".ao"),
+		cwd: env.AO_DATA_DIR ?? joinPath(homeDir, "Library", "Application Support", "DCP Orchestrator", "data"),
 		shell: false,
 		source: "bundled",
 	};

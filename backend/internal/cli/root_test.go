@@ -97,11 +97,9 @@ func TestVersionEmitsCLIInvocationBestEffort(t *testing.T) {
 	}
 	select {
 	case body := <-called:
-		if body["actorType"] != "user" {
-			t.Fatalf("telemetry actorType = %q, want user", body["actorType"])
-		}
+		t.Fatalf("version emitted forbidden CLI telemetry: %#v", body)
 	default:
-		t.Fatal("version did not emit CLI invocation")
+		// DCP deliberately emits no CLI telemetry.
 	}
 }
 
@@ -225,11 +223,9 @@ func TestUsageErrorEmitsCLIUsageTelemetryBestEffort(t *testing.T) {
 	}
 	select {
 	case path := <-called:
-		if path != "/internal/telemetry/cli-usage-error" {
-			t.Fatalf("telemetry path = %q, want /internal/telemetry/cli-usage-error", path)
-		}
+		t.Fatalf("usage error emitted forbidden telemetry to %q", path)
 	default:
-		t.Fatal("usage error did not emit CLI usage telemetry")
+		// DCP deliberately emits no CLI telemetry.
 	}
 }
 
@@ -245,6 +241,36 @@ func TestStatusStoppedJSON(t *testing.T) {
 	}
 	if strings.Contains(out, "startedAt") {
 		t.Fatalf("stopped JSON should omit startedAt:\n%s", out)
+	}
+}
+
+func TestStatusReadyIncludesServiceNamespace(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q,"pid":%d}`, daemonmeta.ServiceName, os.Getpid())
+		case "/readyz":
+			_, _ = fmt.Fprintf(w, `{"status":"ready","service":%q,"pid":%d}`, daemonmeta.ServiceName, os.Getpid())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := runfile.Write(cfg.runFile, runfile.Info{
+		Service: daemonmeta.ServiceName, PID: os.Getpid(), Port: serverPort(t, srv.URL), StartedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := executeCLI(t, Deps{ProcessAlive: func(pid int) bool { return pid == os.Getpid() }}, "status", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"state": "ready"`, `"service": "dcp-orchestrator-daemon"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status missing %s:\n%s", want, out)
+		}
 	}
 }
 

@@ -151,7 +151,7 @@ type cliUsageErrorRequest struct {
 }
 
 func mountTelemetry(r chi.Router, cfg config.Config, sink ports.EventSink) {
-	if sink == nil {
+	if sink == nil || !cfg.Telemetry.Events {
 		return
 	}
 	// CLI telemetry is capped to bounded uniques: ao.app.active once per UTC

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 )
 
 const supervisedExitReportTimeout = 5 * time.Second
+
+const (
+	supervisorDataDirEnv = "AO_DATA_DIR"
+	supervisorRunFileEnv = "AO_RUN_FILE"
+)
 
 func newAgentProcessCommand(ctx *commandContext) *cobra.Command {
 	root := &cobra.Command{
@@ -28,6 +34,8 @@ func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 	var sessionID string
 	var launchID string
 	var idleOnSuccess bool
+	var supervisorDataDir string
+	var supervisorRunFile string
 	cmd := &cobra.Command{
 		Use:    "supervise --session <id> --launch <id> -- <command> [args...]",
 		Short:  "Supervise one managed agent process (internal)",
@@ -47,6 +55,11 @@ func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 			if !sessionIDPattern.MatchString(launchID) {
 				return usageError{fmt.Errorf("invalid launch id")}
 			}
+			restoreConnection, err := applySupervisorConnection(supervisorDataDir, supervisorRunFile)
+			if err != nil {
+				return usageError{err}
+			}
+			defer restoreConnection()
 			ctx.runSupervisedProcess(cmd.Context(), sessionID, launchID, idleOnSuccess, args)
 			return nil
 		},
@@ -54,11 +67,58 @@ func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 	cmd.Flags().StringVar(&sessionID, "session", "", "AO session id")
 	cmd.Flags().StringVar(&launchID, "launch", "", "AO process launch id")
 	cmd.Flags().BoolVar(&idleOnSuccess, "idle-on-success", false, "report a zero process exit as idle")
+	cmd.Flags().StringVar(&supervisorDataDir, "supervisor-data-dir", "", "AO data directory used only by the process supervisor")
+	cmd.Flags().StringVar(&supervisorRunFile, "supervisor-run-file", "", "AO run-file used only by the process supervisor")
 	return cmd
+}
+
+func applySupervisorConnection(dataDir, runFile string) (func(), error) {
+	if dataDir == "" && runFile == "" {
+		return func() {}, nil
+	}
+	if dataDir == "" || runFile == "" || !filepath.IsAbs(dataDir) || !filepath.IsAbs(runFile) ||
+		filepath.Clean(dataDir) != dataDir || filepath.Clean(runFile) != runFile {
+		return nil, fmt.Errorf("supervisor connection requires exact absolute data-dir and run-file paths")
+	}
+	type previousEnv struct {
+		value   string
+		present bool
+	}
+	previous := map[string]previousEnv{}
+	restore := func() {
+		for key, old := range previous {
+			if old.present {
+				_ = os.Setenv(key, old.value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		}
+	}
+	for key, value := range map[string]string{supervisorDataDirEnv: dataDir, supervisorRunFileEnv: runFile} {
+		old, present := os.LookupEnv(key)
+		previous[key] = previousEnv{value: old, present: present}
+		if err := os.Setenv(key, value); err != nil {
+			restore()
+			return nil, fmt.Errorf("set supervisor connection: %w", err)
+		}
+	}
+	return restore, nil
+}
+
+func supervisedChildEnv(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		if strings.HasPrefix(entry, supervisorDataDirEnv+"=") || strings.HasPrefix(entry, supervisorRunFileEnv+"=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, launchID string, idleOnSuccess bool, argv []string) {
 	child := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is constructed by the selected agent adapter.
+	child.Env = supervisedChildEnv(os.Environ())
 	child.Stdin = c.deps.In
 	child.Stdout = c.deps.Out
 	child.Stderr = c.deps.Err

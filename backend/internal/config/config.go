@@ -35,9 +35,6 @@ const (
 	// daemon validates it at startup, but worker/orchestrator spawns resolve from
 	// explicit requests or project role config instead of falling back to it.
 	DefaultAgent = "claude-code"
-	// DefaultTelemetryPostHogHost is the default PostHog ingestion host when
-	// remote telemetry is enabled and AO_TELEMETRY_POSTHOG_HOST is unset.
-	DefaultTelemetryPostHogHost = "https://us.i.posthog.com"
 )
 
 // TelemetryRemote selects the remote telemetry exporter.
@@ -46,8 +43,6 @@ type TelemetryRemote string
 const (
 	// TelemetryRemoteOff disables remote telemetry export.
 	TelemetryRemoteOff TelemetryRemote = "off"
-	// TelemetryRemotePostHog exports allowlisted events to PostHog.
-	TelemetryRemotePostHog TelemetryRemote = "posthog"
 )
 
 // TelemetryConfig controls local and remote telemetry behavior.
@@ -142,11 +137,9 @@ func (c Config) Addr() string {
 //	AO_APP_RUN_ID        desktop-app launch id, set by the Electron supervisor
 //	                     (default: a fresh id minted per daemon boot)
 //	AO_ALLOWED_ORIGINS   CORS origins, comma-separated (default DefaultAllowedOrigins)
-//	AO_TELEMETRY_EVENTS  local event capture off|on (default off)
-//	AO_TELEMETRY_METRICS local metric capture off|on (default off)
-//	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
-//	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
-//	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
+//
+// Telemetry environment variables are intentionally ignored by the DCP build.
+// The packaged application has no local or remote telemetry mode.
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -157,10 +150,7 @@ func Load() (Config, error) {
 		ShutdownTimeout: DefaultShutdownTimeout,
 		Agent:           DefaultAgent,
 		AllowedOrigins:  DefaultAllowedOrigins,
-		Telemetry: TelemetryConfig{
-			Remote:      TelemetryRemoteOff,
-			PostHogHost: DefaultTelemetryPostHogHost,
-		},
+		Telemetry:       TelemetryConfig{Remote: TelemetryRemoteOff},
 	}
 
 	if raw := os.Getenv("AO_PORT"); raw != "" {
@@ -222,40 +212,6 @@ func Load() (Config, error) {
 		cfg.AllowedOrigins = origins
 	}
 
-	if raw := os.Getenv("AO_TELEMETRY_EVENTS"); raw != "" {
-		v, err := parseToggleEnv("AO_TELEMETRY_EVENTS", raw)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Telemetry.Events = v
-	}
-	if raw := os.Getenv("AO_TELEMETRY_METRICS"); raw != "" {
-		v, err := parseToggleEnv("AO_TELEMETRY_METRICS", raw)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Telemetry.Metrics = v
-	}
-	if raw := os.Getenv("AO_TELEMETRY_REMOTE"); raw != "" {
-		remote, err := parseTelemetryRemote(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid AO_TELEMETRY_REMOTE %q: %w", raw, err)
-		}
-		cfg.Telemetry.Remote = remote
-	}
-	if raw := os.Getenv("AO_TELEMETRY_POSTHOG_KEY"); raw != "" {
-		cfg.Telemetry.PostHogKey = raw
-	}
-	if raw := os.Getenv("AO_TELEMETRY_POSTHOG_HOST"); raw != "" {
-		cfg.Telemetry.PostHogHost = raw
-	}
-	if raw := os.Getenv("AO_TELEMETRY_DISABLED_EVENTS"); raw != "" {
-		cfg.Telemetry.DisabledEvents = parseTelemetryDisabledEvents(raw)
-	}
-	if raw := os.Getenv("AO_TELEMETRY_APP_VERSION"); raw != "" {
-		cfg.Telemetry.AppVersion = strings.TrimSpace(raw)
-	}
-
 	runFile, err := resolveRunFilePath()
 	if err != nil {
 		return Config{}, err
@@ -269,43 +225,6 @@ func Load() (Config, error) {
 	cfg.DataDir = dataDir
 
 	return cfg, nil
-}
-
-func parseToggleEnv(name, raw string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "on", "true", "1", "yes":
-		return true, nil
-	case "off", "false", "0", "no":
-		return false, nil
-	default:
-		return false, fmt.Errorf("%s must be off|on", name)
-	}
-}
-
-func parseTelemetryRemote(raw string) (TelemetryRemote, error) {
-	switch TelemetryRemote(strings.ToLower(strings.TrimSpace(raw))) {
-	case TelemetryRemoteOff:
-		return TelemetryRemoteOff, nil
-	case TelemetryRemotePostHog:
-		return TelemetryRemotePostHog, nil
-	default:
-		return "", fmt.Errorf("must be off|posthog")
-	}
-}
-
-// parseTelemetryDisabledEvents reads the comma-separated kill-switch list.
-// Unlike the other telemetry env vars this never fails: an unparseable or
-// misspelled entry must not stop the daemon from booting, because the whole
-// point of the switch is to be usable in a hurry during an incident. An entry
-// that matches no event name is simply inert.
-func parseTelemetryDisabledEvents(raw string) []string {
-	var names []string
-	for _, part := range strings.Split(raw, ",") {
-		if name := strings.TrimSpace(part); name != "" {
-			names = append(names, name)
-		}
-	}
-	return names
 }
 
 // parsePositiveDuration rejects zero and negative durations: a zero

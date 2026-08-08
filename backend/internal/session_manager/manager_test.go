@@ -944,6 +944,8 @@ func TestSpawn_WrapsSupervisedAgentAndPersistsGeneration(t *testing.T) {
 	m := New(Deps{
 		Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
 		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		DataDir:     "/ao/data",
+		RunFilePath: "/ao/state/running.json",
 		LookPath:    func(string) (string, error) { return "/bin/true", nil },
 		Executable:  func() (string, error) { return "/opt/ao", nil },
 		NewLaunchID: func() string { return "launch-7" },
@@ -953,12 +955,18 @@ func TestSpawn_WrapsSupervisedAgentAndPersistsGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgv := []string{"/opt/ao", "agent-process", "supervise", "--session", "mer-1", "--launch", "launch-7", "--idle-on-success", "--", "codex", "exec", "--ignore-user-config", "--ephemeral"}
+	wantArgv := []string{"/opt/ao", "agent-process", "supervise", "--session", "mer-1", "--launch", "launch-7", "--supervisor-data-dir", "/ao/data", "--supervisor-run-file", "/ao/state/running.json", "--idle-on-success", "--", "codex", "exec", "--ignore-user-config", "--ephemeral"}
 	if !reflect.DeepEqual(rt.lastCfg.Argv, wantArgv) {
 		t.Fatalf("runtime argv = %#v, want %#v", rt.lastCfg.Argv, wantArgv)
 	}
 	if got := rt.lastCfg.Env[EnvRuntimeLaunchID]; got != "launch-7" {
 		t.Fatalf("runtime launch env = %q, want launch-7", got)
+	}
+	if _, ok := rt.lastCfg.Env[EnvDataDir]; ok {
+		t.Fatal("runtime shell/worker inherited supervisor data-dir connection")
+	}
+	if _, ok := rt.lastCfg.Env[EnvRunFile]; ok {
+		t.Fatal("runtime shell/worker inherited supervisor run-file connection")
 	}
 	if rec.Metadata.RuntimeLaunchID != "launch-7" {
 		t.Fatalf("stored launch id = %q, want launch-7", rec.Metadata.RuntimeLaunchID)
@@ -1015,10 +1023,12 @@ func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports
 		},
 	}
 	ws := &fakeWorkspace{}
+	dataDir := t.TempDir()
 	m := New(Deps{
 		Runtime: runtime, Agents: singleAgent{agent: agent}, Workspace: ws, Store: st,
 		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
-		DataDir:     t.TempDir(),
+		DataDir:     dataDir,
+		RunFilePath: filepath.Join(dataDir, "state", "running.json"),
 		LookPath:    func(string) (string, error) { return "/bin/true", nil },
 		Executable:  func() (string, error) { return "/opt/ao", nil },
 		NewLaunchID: func() string { return "launch-new" },
@@ -1051,7 +1061,7 @@ func TestResumeAgent_RestartsRuntimeWithManagedGeneration(t *testing.T) {
 	if ws.lastCfg.SessionID != "" || len(ws.calls) != 0 {
 		t.Fatalf("resume should not restore or recreate workspace: cfg=%+v calls=%v", ws.lastCfg, ws.calls)
 	}
-	wantArgv := []string{"/opt/ao", "agent-process", "supervise", "--session", "mer-1", "--launch", "launch-new", "--", "codex", "resume", "agent-x"}
+	wantArgv := []string{"/opt/ao", "agent-process", "supervise", "--session", "mer-1", "--launch", "launch-new", "--supervisor-data-dir", m.dataDir, "--supervisor-run-file", m.runFilePath, "--", "codex", "resume", "agent-x"}
 	if !reflect.DeepEqual(baseRuntime.lastCfg.Argv, wantArgv) {
 		t.Fatalf("resumed runtime argv = %#v, want %#v", baseRuntime.lastCfg.Argv, wantArgv)
 	}
