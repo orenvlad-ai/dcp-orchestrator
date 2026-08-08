@@ -34,6 +34,29 @@ const SCHEMA_VERSION = 2;
 /** File name of the marker under the ~/.ao state dir. */
 export const APP_STATE_FILE_NAME = "app-state.json";
 
+/**
+ * Resolve Electron's userData root without changing AO's default layout.
+ * DCP's source-run lab sets an explicit absolute override so Chromium state,
+ * caches, cookies, local storage, and crash dumps never touch an installed AO
+ * profile. Upstream behavior remains unchanged when the override is absent.
+ */
+export function resolveElectronUserDataPath(
+	env: Record<string, string | undefined>,
+	isPackaged: boolean,
+	homeDir: string,
+): string {
+	const override = env.AO_ELECTRON_USER_DATA_DIR?.trim();
+	if (override) {
+		if (!path.isAbsolute(override)) {
+			throw new Error("AO_ELECTRON_USER_DATA_DIR must be an absolute path");
+		}
+		return path.normalize(override);
+	}
+	return isPackaged
+		? path.join(homeDir, ".ao", "electron")
+		: path.join(homeDir, ".ao", "dev", "electron");
+}
+
 export interface WriteAppStateOptions {
 	/** Directory the marker lives in (dirname of running.json, i.e. ~/.ao). */
 	stateDir: string;

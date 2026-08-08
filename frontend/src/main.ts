@@ -67,7 +67,13 @@ import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
-import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
+import {
+	readMigrationState,
+	resolveElectronUserDataPath,
+	updateMigration,
+	writeAppStateMarker,
+	type MigrationState,
+} from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
 import { shouldSignalAttention, shouldToast } from "./main/notification-signals";
 import { buildWindowsAppMenuTemplate } from "./main/menu";
@@ -112,7 +118,7 @@ if (process.platform === "win32") {
 // the daemon data dir into ~/.ao/dev.
 app.setPath(
 	"userData",
-	app.isPackaged ? path.join(os.homedir(), ".ao", "electron") : path.join(os.homedir(), ".ao", "dev", "electron"),
+	resolveElectronUserDataPath(process.env, app.isPackaged, os.homedir()),
 );
 
 let mainWindow: BrowserWindow | null = null;
