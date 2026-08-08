@@ -66,7 +66,12 @@ import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
-import { keepDaemonAlive, requiredAppOwnerError, shouldLinkOnAttach } from "./main/daemon-owner";
+import {
+	failClosedReplacementError,
+	keepDaemonAlive,
+	requiredAppOwnerError,
+	shouldLinkOnAttach,
+} from "./main/daemon-owner";
 import {
 	readMigrationState,
 	resolveElectronUserDataPath,
@@ -909,7 +914,16 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			holderPidAlive = false;
 		}
 	}
-	if (shouldReplacePortHolder(orphanProbe, holderPidAlive)) {
+	const replacementNeeded = shouldReplacePortHolder(orphanProbe, holderPidAlive);
+	const replacementError = failClosedReplacementError(
+		replacementNeeded,
+		process.env.DCP_AO_FAIL_CLOSED_DAEMON_REPLACEMENT === "1",
+	);
+	if (replacementError) {
+		setDaemonStatus({ state: "error", message: replacementError, code: "identity_mismatch" });
+		return daemonStatus;
+	}
+	if (replacementNeeded) {
 		// Use the run-file PID when available; fall back to the probe's reported
 		// PID as a last resort (a wedged daemon may not have written a fresh run-file).
 		const pidToKill = runFilePid ?? orphanProbe?.pid ?? null;

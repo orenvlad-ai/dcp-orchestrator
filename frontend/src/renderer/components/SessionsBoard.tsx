@@ -47,6 +47,7 @@ import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
 import { AgentAvatar } from "./AgentAvatar";
 import { TopbarButton, TopbarKillError, topbarProjectLabelClass } from "./TopbarButton";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { showOrchestratorControl } from "../lib/orchestrator-spawn-sources";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { prBrowserUrl, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTimeCompact } from "../lib/format-time";
@@ -97,6 +98,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const boardLabel = workspace?.name ?? (projectId ? "" : t("shell.board"));
 	const sessions = workspaces.flatMap((w) => workerSessions(w.sessions));
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
+	const showOrchestratorAction = showOrchestratorControl(orchestrator !== undefined);
 	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
 	const [isSpawning, setIsSpawning] = useState(false);
 	const [spawnError, setSpawnError] = useState<string | null>(null);
@@ -252,7 +254,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	const actions = projectId ? (
 		<>
-			{visibleSpawnError && !showProjectEmpty && (
+			{showOrchestratorAction && visibleSpawnError && !showProjectEmpty && (
 				<TopbarKillError className="max-w-content-max truncate" title={visibleSpawnError}>
 					{visibleSpawnError}
 				</TopbarKillError>
@@ -266,7 +268,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				<Plus className="size-icon-md" aria-hidden="true" />
 				{t("shell.newTask")}
 			</TopbarButton>
-			<TopbarButton
+			{showOrchestratorAction ? <TopbarButton
 				aria-label={
 					orchestratorActivityLabel
 						? t("shell.orchestratorWithActivity", { activity: orchestratorActivityLabel })
@@ -285,7 +287,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						: orchestrator
 							? t("shell.orchestrator")
 							: t("shell.spawnOrchestrator")}
-			</TopbarButton>
+			</TopbarButton> : null}
 			{boardOwnsNotificationCenter ? <NotificationCenter /> : null}
 		</>
 	) : boardOwnsNotificationCenter ? (

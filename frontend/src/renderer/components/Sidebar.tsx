@@ -31,6 +31,7 @@ import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { usePinSession, useUnpinSession } from "../hooks/usePinSession";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { showOrchestratorControl } from "../lib/orchestrator-spawn-sources";
 import { renameSession } from "../lib/rename-session";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useResizable } from "../hooks/useResizable";
@@ -555,6 +556,7 @@ function ProjectItem({
 	// The project's live orchestrator (if any) backs the hover Orchestrator
 	// button: navigate to it when present, otherwise spawn one first.
 	const orchestrator = newestActiveOrchestrator(workspace.sessions);
+	const showOrchestratorAction = showOrchestratorControl(orchestrator !== undefined);
 
 	// Mirrors ShellTopbar's launcher: attach to the running orchestrator, or
 	// spawn one via the daemon and follow it once the workspace refetches.
@@ -713,7 +715,7 @@ function ProjectItem({
 			)}
 			data-project-actions=""
 		>
-			<Tooltip>
+			{showOrchestratorAction ? <Tooltip>
 				<TooltipTrigger asChild>
 					<button
 						aria-current={orchestratorActive ? "page" : undefined}
@@ -739,7 +741,7 @@ function ProjectItem({
 								? t("shell.orchestrator")
 								: t("shell.spawnOrchestratorLower")}
 				</TooltipContent>
-			</Tooltip>
+			</Tooltip> : null}
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
 					<button aria-label={t("shell.projectActions", { name: workspace.name })} className={HOVER_ACTION_CLASS} type="button">

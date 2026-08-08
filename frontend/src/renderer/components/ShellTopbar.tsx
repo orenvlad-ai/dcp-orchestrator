@@ -20,6 +20,7 @@ import {
 	useTerminateSessionState,
 } from "../hooks/useTerminateSession";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { showOrchestratorControl } from "../lib/orchestrator-spawn-sources";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { useUiStore } from "../stores/ui-store";
 import { OrchestratorIcon } from "./icons";
@@ -108,6 +109,7 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 	const project = projectId ? all.find((workspace) => workspace.id === projectId) : undefined;
 	const projectLabel = project?.name ?? session?.workspaceName ?? (projectId ? "" : t("shell.board"));
 	const orchestrator = projectId ? findProjectOrchestrator(all, projectId) : undefined;
+	const showOrchestratorAction = showOrchestratorControl(orchestrator !== undefined);
 	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
 	const isProjectRestarting = projectId ? restartingProjectIds.has(projectId) : false;
 
@@ -228,7 +230,7 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 			<div className="flex shrink-0 items-center gap-1.5">
 				{!boardActionsInPanel && isProjectBoardRoute ? (
 					<>
-						{boardSpawnError ? (
+						{showOrchestratorAction && boardSpawnError ? (
 							<TopbarKillError className="max-w-content-max truncate" title={boardSpawnError}>
 								{boardSpawnError}
 							</TopbarKillError>
@@ -243,7 +245,7 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 							<Plus className="size-icon-lg" aria-hidden="true" />
 							{t("shell.newTask")}
 						</TopbarButton>
-						<TopbarButton
+						{showOrchestratorAction ? <TopbarButton
 							aria-label={
 								orchestratorActivityLabel
 									? t("shell.orchestratorWithActivity", { activity: orchestratorActivityLabel })
@@ -263,7 +265,7 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 									: orchestrator
 										? t("shell.orchestrator")
 										: t("shell.spawnOrchestrator")}
-						</TopbarButton>
+						</TopbarButton> : null}
 					</>
 				) : null}
 				{isSessionRoute ? (
@@ -306,7 +308,7 @@ export function ShellTopbar({ embedded = false }: { embedded?: boolean } = {}) {
 								}}
 							/>
 						) : null}
-						{!isOrchestrator && (
+						{!isOrchestrator && showOrchestratorAction && (
 							<TopbarButton
 								aria-label={t("shell.openOrchestrator")}
 								disabled={isSpawning || isProjectRestarting}

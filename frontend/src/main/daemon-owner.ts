@@ -33,3 +33,9 @@ export function requiredAppOwnerError(owner: string | undefined, required: boole
 	if (!required || owner === "app") return null;
 	return "A daemon is running without the canonical source UI owner identity. Use the DCP submit entrypoint; no process was replaced.";
 }
+
+/** DCP never lets the desktop's upstream wedged-daemon path kill and replace a process. */
+export function failClosedReplacementError(replacementNeeded: boolean, required: boolean): string | null {
+	if (!replacementNeeded || !required) return null;
+	return "The daemon contour is stale, wedged, or ambiguous. Use the DCP submit entrypoint; no process was killed or replaced.";
+}

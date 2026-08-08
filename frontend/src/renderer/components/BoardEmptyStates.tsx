@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useShell } from "../lib/shell-context";
+import { showOrchestratorControl } from "../lib/orchestrator-spawn-sources";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { TopbarButton } from "./TopbarButton";
 import { WelcomePanel } from "./WelcomePanel";
@@ -46,6 +47,7 @@ export function ProjectBoardEmpty({
 	spawnError?: string | null;
 }) {
 	const { t } = useTranslation();
+	const showOrchestratorAction = showOrchestratorControl(hasOrchestrator);
 	const orchestratorLabel = hasOrchestrator ? t("shell.orchestrator") : t("shell.spawnOrchestrator");
 	const busyLabel = isProjectRestarting
 		? t("shell.restartingDots")
@@ -57,9 +59,11 @@ export function ProjectBoardEmpty({
 		<div className="flex h-full min-h-0 items-center justify-center overflow-y-auto">
 			<div className="flex w-full max-w-preview-content flex-col items-center pb-empty-offset-y text-center">
 				<h2 className="text-subtitle font-semibold tracking-tight text-foreground">{t("board.empty.title")}</h2>
-				<p className="mt-2 text-md-sm leading-relaxed text-muted-foreground">{t("board.empty.body")}</p>
+				{showOrchestratorAction ? (
+					<p className="mt-2 text-md-sm leading-relaxed text-muted-foreground">{t("board.empty.body")}</p>
+				) : null}
 				<div className="mt-5 flex items-center gap-2">
-					<TopbarButton
+					{showOrchestratorAction ? <TopbarButton
 						aria-label={orchestratorLabel}
 						disabled={isSpawning || isProjectRestarting}
 						onClick={onOpenOrchestrator}
@@ -67,13 +71,13 @@ export function ProjectBoardEmpty({
 					>
 						<OrchestratorIcon className="size-icon-md" aria-hidden="true" />
 						{busyLabel}
-					</TopbarButton>
+					</TopbarButton> : null}
 					<TopbarButton aria-label={t("shell.newTask")} disabled={isProjectRestarting} onClick={onNewTask} variant="accent">
 						<Plus className="size-icon-md" aria-hidden="true" />
 						{t("shell.newTask")}
 					</TopbarButton>
 				</div>
-				{spawnError && (
+				{showOrchestratorAction && spawnError && (
 					<p className="mt-3 text-caption leading-body text-error" role="status">
 						{spawnError}
 					</p>

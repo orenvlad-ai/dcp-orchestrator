@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { manualOrchestratorSpawnHidden } from "../lib/orchestrator-spawn-sources";
 import { hasConfiguredOrchestratorAgent, isOrchestratorSession } from "../types/workspace";
 import type { WorkspaceSession } from "../types/workspace";
 import { Button } from "./ui/button";
@@ -29,6 +30,7 @@ export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecrea
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const orchestrator = isOrchestratorSession(session);
+	const hideManualOrchestratorSpawn = manualOrchestratorSpawnHidden();
 	const workspace = workspaceQuery.data?.find((candidate) => candidate.id === session.workspaceId);
 	const hasOrchestratorAgent = hasConfiguredOrchestratorAgent(workspace);
 	const checkingProject = workspaceQuery.isLoading && workspaceQuery.data === undefined;
@@ -75,7 +77,9 @@ export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecrea
 					<div className={settingsDialogHeaderClass}>
 						<Dialog.Title className="settings-dialog-title">{t("restoreUnavailable.title")}</Dialog.Title>
 						<Dialog.Description className="text-control text-settings-muted">
-							{orchestrator ? t("restoreUnavailable.orchestratorBody") : t("restoreUnavailable.sessionBody")}
+							{orchestrator && !hideManualOrchestratorSpawn
+								? t("restoreUnavailable.orchestratorBody")
+								: t("restoreUnavailable.sessionBody")}
 						</Dialog.Description>
 					</div>
 					{error ? (
@@ -87,7 +91,7 @@ export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecrea
 						<Button type="button" variant="footer" onClick={() => onOpenChange(false)} disabled={busy}>
 							{orchestrator ? t("confirm.cancel") : t("restoreUnavailable.close")}
 						</Button>
-						{orchestrator ? (
+						{orchestrator && !hideManualOrchestratorSpawn ? (
 							<Button
 								type="button"
 								variant="footer-primary"

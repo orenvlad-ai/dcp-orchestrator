@@ -105,6 +105,7 @@ function renderBoard(ui: ReactNode) {
 const columnCount = () => document.querySelectorAll("section").length;
 
 beforeEach(() => {
+	vi.unstubAllEnvs();
 	vi.clearAllMocks();
 	createProjectMock.mockResolvedValue(undefined);
 	initializeProjectRepositoryMock.mockResolvedValue(undefined);
@@ -217,6 +218,18 @@ describe("global board first launch", () => {
 });
 
 describe("project board with no sessions", () => {
+	it("hides manual orchestrator spawn controls in the DCP contour while keeping task creation", async () => {
+		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "1");
+		respondWith([project], []);
+		renderBoard(<SessionsBoard projectId="proj-1" />);
+
+		expect(await screen.findByText("No worker sessions yet")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Spawn Orchestrator" })).not.toBeInTheDocument();
+		expect(screen.queryByText(/the orchestrator plans it/i)).not.toBeInTheDocument();
+		expect(screen.getAllByRole("button", { name: "New task" }).length).toBeGreaterThan(0);
+		expect(spawnOrchestratorMock).not.toHaveBeenCalled();
+	});
+
 	it("shows the task invitation instead of empty columns", async () => {
 		respondWith([project], []);
 		renderBoard(<SessionsBoard projectId="proj-1" />);
