@@ -86,6 +86,8 @@ func TestHealthProbesIncludeDaemonIdentity(t *testing.T) {
 // publish running.json, serve a request, then cancel the context and confirm a
 // clean shutdown that removes the handshake file.
 func TestServerLifecycle(t *testing.T) {
+	t.Setenv("DCP_AO_CONTOUR_ID", "dcp-test-contour")
+	t.Setenv("DCP_AO_UI_INSTANCE_ID", "dcp-ui-1-2-3")
 	runPath := filepath.Join(t.TempDir(), "running.json")
 	cfg := config.Config{
 		Host:            "127.0.0.1",
@@ -118,6 +120,9 @@ func TestServerLifecycle(t *testing.T) {
 	}
 	if info.Port == 0 {
 		t.Error("run-file recorded port 0; want the actual bound port")
+	}
+	if info.DCPContourID != "dcp-test-contour" || info.DCPUIInstanceID != "dcp-ui-1-2-3" {
+		t.Errorf("run-file DCP identity = %q/%q", info.DCPContourID, info.DCPUIInstanceID)
 	}
 
 	cancel()

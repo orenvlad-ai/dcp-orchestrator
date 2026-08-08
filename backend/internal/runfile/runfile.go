@@ -37,6 +37,11 @@ type Info struct {
 	// BrowserRuntimeAddress is the exact Unix socket or Windows named-pipe
 	// address selected by the backend for this daemon launch.
 	BrowserRuntimeAddress string `json:"browserRuntimeAddress,omitempty"`
+	// DCPContourID and DCPUIInstanceID are optional managed-contour identity
+	// facts inherited from the app-owned source UI. Upstream launches leave them
+	// empty; DCP uses them to bind the UI singleton to this daemon run-file.
+	DCPContourID    string `json:"dcpContourId,omitempty"`
+	DCPUIInstanceID string `json:"dcpUiInstanceId,omitempty"`
 }
 
 // Write atomically writes running.json at path, creating parent directories
