@@ -8,10 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
 )
@@ -47,6 +49,9 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 	if err != nil {
 		if !isAddrInUse(err) {
 			return nil, fmt.Errorf("bind %s: %w", cfg.Addr(), err)
+		}
+		if os.Getenv("DCP_AO_FAIL_CLOSED_DAEMON_REPLACEMENT") == "1" {
+			return nil, fmt.Errorf("bind canonical DCP address %s: %w", cfg.Addr(), err)
 		}
 		// Configured port is taken by a non-AO process: retry on an ephemeral port.
 		fallback, ferr := net.Listen("tcp", net.JoinHostPort(cfg.Host, "0"))
@@ -89,13 +94,20 @@ func (s *Server) Handler() http.Handler { return s.http.Handler }
 // running.json before serving and removes it on the way out. Run blocks until
 // shutdown is complete.
 func (s *Server) Run(ctx context.Context) error {
+	dcpAppPID, _ := strconv.Atoi(os.Getenv("DCP_AO_APP_PID"))
 	info := runfile.Info{
+		Service:               daemonmeta.ServiceName,
 		PID:                   os.Getpid(),
 		Port:                  s.boundPort(),
 		StartedAt:             time.Now().UTC(),
 		Owner:                 os.Getenv("AO_OWNER"),
 		BrowserRuntimeToken:   os.Getenv("AO_BROWSER_RUNTIME_TOKEN"),
 		BrowserRuntimeAddress: os.Getenv("AO_BROWSER_RUNTIME_ADDRESS"),
+		DCPContourID:          os.Getenv("DCP_AO_CONTOUR_ID"),
+		DCPAppPID:             dcpAppPID,
+		DCPAppInstanceID:      os.Getenv("DCP_AO_APP_INSTANCE_ID"),
+		DCPAppBundleID:        os.Getenv("DCP_AO_APP_BUNDLE_ID"),
+		DCPAppBundlePath:      os.Getenv("DCP_AO_APP_BUNDLE_PATH"),
 	}
 	if err := runfile.Write(s.cfg.RunFilePath, info); err != nil {
 		_ = s.listen.Close()

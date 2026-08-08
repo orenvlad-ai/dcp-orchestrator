@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+cd "$repo_root"
+
+upstream_commit='1df40e93772c2c48e916870d9c3ddf8f29a69f84'
+upstream_tree='36bf30cc4960c10f0d94fc63a8ff0a4dd22bb8a8'
+i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
+i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
+license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
+
+fail() {
+	printf 'DCP CI gate: %s\n' "$*" >&2
+	exit 1
+}
+
+sha256_file() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		sha256sum "$1" | awk '{print $1}'
+	fi
+}
+
+sha256_stream() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 | awk '{print $1}'
+	else
+		sha256sum | awk '{print $1}'
+	fi
+}
+
+source_gates() {
+	git cat-file -e "$upstream_commit^{commit}" 2>/dev/null || fail 'upstream commit is absent from Git history'
+	git cat-file -e "$i8_parity_commit^{commit}" 2>/dev/null || fail 'I8 parity anchor is absent from Git history'
+	[[ "$(git rev-parse "$upstream_commit^{tree}")" == "$upstream_tree" ]] || fail 'upstream tree mismatch'
+	git merge-base --is-ancestor "$upstream_commit" "$i8_parity_commit" || fail 'I8 parity anchor does not descend from upstream'
+	git merge-base --is-ancestor "$i8_parity_commit" HEAD || fail 'current source does not descend from the I8 parity anchor'
+	[[ "$(git rev-list --count "$upstream_commit..$i8_parity_commit")" -eq 7 ]] || fail 'I8 queue is not the seven reviewed commits'
+	actual_patch_sha256="$(git diff "$upstream_commit" "$i8_parity_commit" --binary --full-index --no-ext-diff | sha256_stream)"
+	[[ "$actual_patch_sha256" == "$i8_patch_sha256" ]] || fail 'I8 parity diff digest mismatch'
+
+	[[ "$(sha256_file LICENSE)" == "$license_sha256" ]] || fail 'Apache-2.0 LICENSE digest mismatch'
+	if git ls-tree -r --name-only "$upstream_commit" | awk 'BEGIN{IGNORECASE=1} /(^|\/)NOTICE([^\/]*$)/ {found=1} END{exit found?0:1}'; then
+		fail 'upstream NOTICE result changed'
+	fi
+	[[ -s NOTICE && -s DCP_PROVENANCE.md ]] || fail 'NOTICE or provenance is absent'
+	grep -Fq "$upstream_commit" NOTICE || fail 'NOTICE lacks exact upstream commit'
+	grep -Fq "$i8_parity_commit" DCP_PROVENANCE.md || fail 'provenance lacks I8 parity anchor'
+	grep -Fq "$i8_patch_sha256" DCP_PROVENANCE.md || fail 'provenance lacks exact I8 patch digest'
+
+	workflow_list="$(find .github/workflows -maxdepth 1 -type f -print | sort)"
+	[[ "$workflow_list" == '.github/workflows/dcp-ci.yml' ]] || fail 'only the bounded DCP CI workflow may be active'
+	! grep -Eiq 'workflow_dispatch|pull_request_target|repository_dispatch|^[[:space:]]*schedule:|^[[:space:]]*release:|gh[[:space:]]+release|upload-artifact|electron-forge[[:space:]]+publish' .github/workflows/dcp-ci.yml || fail 'release, schedule, privileged PR, or publishing path is active'
+	! grep -Eq '^[[:space:]]+(actions|contents|deployments|id-token|issues|packages|pages|pull-requests|statuses):[[:space:]]*write' .github/workflows/dcp-ci.yml || fail 'workflow requests write permission'
+
+	grep -Fq '"name": "dcp-orchestrator"' frontend/package.json || fail 'frontend package identity mismatch'
+	grep -Fq '"productName": "DCP Orchestrator"' frontend/package.json || fail 'product name mismatch'
+	grep -Fq 'https://github.com/orenvlad-ai/dcp-orchestrator' frontend/package.json || fail 'repository metadata mismatch'
+	! grep -Eq '"(electron-updater|posthog-js|@electron-forge/publisher-github)"[[:space:]]*:' frontend/package.json || fail 'forbidden updater, analytics, or publisher dependency is declared'
+	! grep -Eq '"publish"[[:space:]]*:' frontend/package.json || fail 'publish script is present'
+	! grep -Eq '"node_modules/(electron-updater|posthog-js|@electron-forge/publisher-github)"[[:space:]]*:' frontend/package-lock.json || fail 'forbidden desktop dependency remains locked'
+
+	grep -Fq 'appBundleId: "pro.devcontrol.dcp-orchestrator"' frontend/forge.config.ts || fail 'bundle id mismatch'
+	grep -Fq 'executableName: "dcp-orchestrator"' frontend/forge.config.ts || fail 'executable identity mismatch'
+	grep -Fq 'makers: []' frontend/forge.config.ts || fail 'maker is configured'
+	grep -Fq 'publishers: []' frontend/forge.config.ts || fail 'publisher is configured'
+	grep -Fq '"../LICENSE"' frontend/forge.config.ts || fail 'LICENSE is not packaged'
+	grep -Fq '"../NOTICE"' frontend/forge.config.ts || fail 'NOTICE is not packaged'
+	grep -Fq '"../DCP_PROVENANCE.md"' frontend/forge.config.ts || fail 'provenance is not packaged'
+	[[ ! -e frontend/src/main/auto-updater.ts && ! -e frontend/src/main/auto-updater.test.ts ]] || fail 'auto-updater source remains active'
+
+	grep -Fq 'app.commandLine.appendSwitch("disable-breakpad")' frontend/src/main.ts || fail 'breakpad disable switch is absent'
+	grep -Fq 'app.commandLine.appendSwitch("disable-crash-reporter")' frontend/src/main.ts || fail 'crash reporter disable switch is absent'
+	! grep -Eq 'crashReporter[[:space:]]*\.[[:space:]]*(start|submit)' frontend/src/main.ts || fail 'crash reporter initialization is active'
+	grep -Fq 'export async function initTelemetry(): Promise<boolean>' frontend/src/renderer/lib/telemetry.ts || fail 'renderer telemetry seam is absent'
+	grep -A2 -F 'export async function initTelemetry(): Promise<boolean>' frontend/src/renderer/lib/telemetry.ts | grep -Fq 'return false;' || fail 'renderer telemetry can initialize'
+	grep -Fq 'return disabledEventSink{}' backend/internal/daemon/telemetry_wiring.go || fail 'daemon telemetry sink is not disabled'
+	grep -Fq 'Telemetry environment variables are intentionally ignored by the DCP build.' backend/internal/config/config.go || fail 'telemetry environment isolation is absent'
+	grep -Fq 'if sink == nil || !cfg.Telemetry.Events {' backend/internal/httpd/router.go || fail 'telemetry control routes are not fail-closed'
+
+	grep -Fq 'const ServiceName = "dcp-orchestrator-daemon"' backend/internal/daemonmeta/meta.go || fail 'daemon service namespace mismatch'
+	grep -Fq '"exec", "--ignore-user-config", "--ephemeral", "--strict-config"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker isolation flags are absent'
+	! grep -Fq 'appendHookTrustBypassFlag(&cmd)' backend/internal/adapters/agent/codex/codex.go || fail 'forbidden hook-trust bypass is reachable'
+
+	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/|DCP_PROVENANCE\.md$|NOTICE$|README\.md$|scripts/dcp-ci-gates\.sh$|frontend/forge\.config\.ts$|frontend/package(-lock)?\.json$)' || true)"
+	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
+
+	git diff --check
+	printf 'PASS DCP source, provenance, identity, and absence gates\n'
+}
+
+artifact_gates() {
+	local app="$1" plist executable daemon resources arch
+	[[ -d "$app" ]] || fail "app bundle is absent: $app"
+	plist="$app/Contents/Info.plist"
+	executable="$app/Contents/MacOS/dcp-orchestrator"
+	daemon="$app/Contents/Resources/daemon/dcp-orchestratord"
+	resources="$app/Contents/Resources"
+	[[ -f "$plist" && -x "$executable" && -x "$daemon" ]] || fail 'app bundle is incomplete'
+
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == 'pro.devcontrol.dcp-orchestrator' ]] || fail 'artifact bundle id mismatch'
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")" == 'DCP Orchestrator' ]] || fail 'artifact bundle name mismatch'
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")" == 'dcp-orchestrator' ]] || fail 'artifact executable identity mismatch'
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :DCPUpstreamCommit' "$plist")" == "$upstream_commit" ]] || fail 'artifact upstream identity mismatch'
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :DCPContour' "$plist")" == 'dcp-i8-packaged-app-v1' ]] || fail 'artifact contour mismatch'
+	arch="$(lipo -archs "$executable")"; [[ "$arch" == arm64 ]] || fail "main executable is not exact arm64: $arch"
+	arch="$(lipo -archs "$daemon")"; [[ "$arch" == arm64 ]] || fail "daemon is not exact arm64: $arch"
+
+	[[ "$(sha256_file "$resources/LICENSE")" == "$license_sha256" ]] || fail 'bundled LICENSE mismatch'
+	cmp -s NOTICE "$resources/NOTICE" || fail 'bundled NOTICE mismatch'
+	cmp -s DCP_PROVENANCE.md "$resources/DCP_PROVENANCE.md" || fail 'bundled provenance mismatch'
+	[[ ! -e "$resources/app-update.yml" ]] || fail 'updater feed is packaged'
+	if find "$app" \( -iname '*electron-updater*' -o -iname '*posthog*' -o -iname '*sentry*' \) -print -quit | grep -q .; then
+		fail 'updater, analytics, or crash-reporting module is packaged'
+	fi
+	if strings "$resources/app.asar" | grep -Eiq 'us(-assets)?\.i\.posthog\.com|eu\.i\.posthog\.com|phc_[[:alnum:]]+|electron-updater|app-update\.yml|sentry\.io|crashReporter[[:space:]]*\.[[:space:]]*(start|submit)'; then
+		fail 'forbidden updater, analytics, or crash-reporting path is present in app.asar'
+	fi
+	if strings "$daemon" | grep -Eiq 'us\.i\.posthog\.com|eu\.i\.posthog\.com|phc_[[:alnum:]]+|sentry\.io'; then
+		fail 'forbidden analytics or crash-reporting endpoint is present in daemon'
+	fi
+	codesign --verify --deep --strict "$app" >/dev/null 2>&1 || fail 'bundle signature verification failed'
+	printf 'PASS DCP arm64 package and artifact absence gates\n'
+}
+
+case "${1:-}" in
+	source)
+		[[ "$#" -eq 1 ]] || fail 'source mode takes no additional arguments'
+		source_gates
+		;;
+	artifact)
+		[[ "$#" -eq 2 ]] || fail 'artifact mode requires exactly one app path'
+		artifact_gates "$2"
+		;;
+	*)
+		fail 'usage: scripts/dcp-ci-gates.sh source | artifact /absolute/path/to/app'
+		;;
+esac

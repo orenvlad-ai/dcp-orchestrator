@@ -19,7 +19,6 @@ import type { MigrationState } from "./main/app-state";
 import type { UpdateSettings, UpdateStatus } from "./main/update-settings";
 import type { UpdateOutcome } from "./shared/update-telemetry";
 import type { UiSettings } from "./main/ui-settings";
-import type { UpdateCheckOptions } from "./main/auto-updater";
 import type { FeatureBuild } from "./main/feature-builds";
 import type {
 	BrowserAnnotationCancelPayload,
@@ -40,6 +39,7 @@ export type BrowserNavigateInput = {
 };
 
 export type ImportFolderMode = "project" | "workspace";
+export type UpdateCheckOptions = { settings?: UpdateSettings; requestId?: string };
 
 export type ImportRepoScan = {
 	name: string;
@@ -175,7 +175,7 @@ const api = {
 		},
 	},
 	telemetry: {
-		getBootstrap: () => ipcRenderer.invoke("telemetry:getBootstrap") as Promise<TelemetryBootstrap | null>,
+		getBootstrap: async () => null as TelemetryBootstrap | null,
 	},
 	browser: {
 		ensure: (sessionId: string) => ipcRenderer.invoke("browser:ensure", sessionId) as Promise<BrowserNavState>,
@@ -258,13 +258,12 @@ const api = {
 		},
 	},
 	appState: {
-		getMigration: () => ipcRenderer.invoke("appState:getMigration") as Promise<MigrationState>,
-		setMigration: (migration: MigrationState) =>
-			ipcRenderer.invoke("appState:setMigration", migration) as Promise<void>,
+		getMigration: async () => ({ status: "declined" }) as MigrationState,
+		setMigration: async (_migration: MigrationState) => undefined,
 	},
 	updateSettings: {
-		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
-		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }) as UpdateSettings,
+		set: async (_settings: UpdateSettings) => undefined,
 	},
 	uiSettings: {
 		get: () => ipcRenderer.invoke("uiSettings:get") as Promise<UiSettings>,
@@ -277,31 +276,17 @@ const api = {
 		setRecording: (active: boolean) => ipcRenderer.invoke("keybindings:setRecording", active) as Promise<void>,
 	},
 	updates: {
-		getStatus: () => ipcRenderer.invoke("updates:getStatus") as Promise<UpdateStatus>,
-		check: (options?: UpdateCheckOptions) => ipcRenderer.invoke("updates:check", options) as Promise<void>,
-		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
-		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
-		install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
-		onStatus: (listener: (status: UpdateStatus) => void) => {
-			const wrapped = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
-			ipcRenderer.on("updates:status", wrapped);
-			return () => {
-				ipcRenderer.off("updates:status", wrapped);
-			};
-		},
-		// Separate from onStatus: the main process suppresses the *status* for
-		// automatic failures but still reports the outcome here.
-		onTelemetry: (listener: (outcome: UpdateOutcome) => void) => {
-			const wrapped = (_event: Electron.IpcRendererEvent, outcome: UpdateOutcome) => listener(outcome);
-			ipcRenderer.on("updates:telemetry", wrapped);
-			return () => {
-				ipcRenderer.off("updates:telemetry", wrapped);
-			};
-		},
+		getStatus: async () => ({ state: "idle" }) as UpdateStatus,
+		check: async (_options?: UpdateCheckOptions) => undefined,
+		returnHome: async (_requestId?: string) => undefined,
+		download: async (_requestId?: string) => undefined,
+		install: async () => undefined,
+		onStatus: (_listener: (status: UpdateStatus) => void) => () => undefined,
+		onTelemetry: (_listener: (outcome: UpdateOutcome) => void) => () => undefined,
 	},
 	featureBuilds: {
-		list: () => ipcRenderer.invoke("featureBuilds:list") as Promise<FeatureBuild[]>,
-		getActive: () => ipcRenderer.invoke("featureBuilds:getActive") as Promise<{ pr: number } | null>,
+		list: async () => [] as FeatureBuild[],
+		getActive: async () => null as { pr: number } | null,
 	},
 };
 

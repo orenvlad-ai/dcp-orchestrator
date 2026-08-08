@@ -815,8 +815,13 @@ func isSupervisorCommand(command, sessionID, launchID string) bool {
 	for i := 0; i+6 < len(fields); i++ {
 		if fields[i] == "agent-process" && fields[i+1] == "supervise" &&
 			fields[i+2] == "--session" && fields[i+3] == sessionID &&
-			fields[i+4] == "--launch" && fields[i+5] == launchID && fields[i+6] == "--" {
-			return true
+			fields[i+4] == "--launch" && fields[i+5] == launchID {
+			if fields[i+6] == "--" {
+				return true
+			}
+			if i+7 < len(fields) && fields[i+6] == "--idle-on-success" && fields[i+7] == "--" {
+				return true
+			}
 		}
 	}
 	return false

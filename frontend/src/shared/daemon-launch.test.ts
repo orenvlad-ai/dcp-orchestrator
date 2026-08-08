@@ -29,15 +29,15 @@ describe("resolveDaemonLaunch", () => {
 			resolveDaemonLaunch(
 				{},
 				true,
-				"/Applications/Agent Orchestrator.app/Contents/Resources",
+				"/Users/alice/Applications/DCP Orchestrator.app/Contents/Resources",
 				"/app",
 				"/Users/alice",
 				"darwin",
 			),
 		).toEqual({
-			command: "/Applications/Agent Orchestrator.app/Contents/Resources/daemon/ao",
+			command: "/Users/alice/Applications/DCP Orchestrator.app/Contents/Resources/daemon/dcp-orchestratord",
 			args: ["daemon"],
-			cwd: "/Users/alice/.ao",
+			cwd: "/Users/alice/Library/Application Support/DCP Orchestrator/data",
 			shell: false,
 			source: "bundled",
 		});
@@ -54,9 +54,9 @@ describe("resolveDaemonLaunch", () => {
 				"win32",
 			),
 		).toEqual({
-			command: "C:\\Program Files\\AO\\resources/daemon/ao.exe",
+			command: "C:\\Program Files\\AO\\resources/daemon/dcp-orchestratord.exe",
 			args: ["daemon"],
-			cwd: "C:\\Users\\alice/.ao",
+			cwd: "C:\\Users\\alice/Library/Application Support/DCP Orchestrator/data",
 			shell: false,
 			source: "bundled",
 		});

@@ -735,6 +735,26 @@ func TestIsSupervisedProcessAliveFindsExactDescendant(t *testing.T) {
 	}
 }
 
+func TestSupervisorCommandAcceptsOneShotOutcomeFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"interactive", "/opt/ao agent-process supervise --session sess-1 --launch launch-2 -- codex", true},
+		{"one-shot", "/opt/ao agent-process supervise --session sess-1 --launch launch-2 --idle-on-success -- codex exec", true},
+		{"unknown option", "/opt/ao agent-process supervise --session sess-1 --launch launch-2 --other -- codex", false},
+		{"missing separator", "/opt/ao agent-process supervise --session sess-1 --launch launch-2 --idle-on-success codex", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSupervisorCommand(tt.command, "sess-1", "launch-2"); got != tt.want {
+				t.Fatalf("isSupervisorCommand() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsSupervisedProcessAliveRejectsStaleAndUnrelatedProcesses(t *testing.T) {
 	entries, err := parseProcessTable("100 1 /bin/sh\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-old -- codex\n200 1 /opt/ao agent-process supervise --session sess-1 --launch launch-new -- codex\n")
 	if err != nil {

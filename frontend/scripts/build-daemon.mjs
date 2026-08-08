@@ -9,7 +9,10 @@ const frontendRoot = resolve(scriptsDir, "..");
 const repoRoot = resolve(frontendRoot, "..");
 const backendRoot = join(repoRoot, "backend");
 const outDir = join(frontendRoot, "daemon");
-const outPath = join(outDir, process.platform === "win32" ? "ao.exe" : "ao");
+// The packaged DCP daemon has a product-specific executable identity. The
+// source/dev Go command remains upstream's ao tool, but it is never the I8
+// runtime contour.
+const outPath = join(outDir, process.platform === "win32" ? "dcp-orchestratord.exe" : "dcp-orchestratord");
 const minimumGoVersion = parseMinimumGoVersion(readFileSync(join(backendRoot, "go.mod"), "utf8"));
 
 if (!minimumGoVersion) {

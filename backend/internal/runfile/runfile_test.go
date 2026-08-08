@@ -35,7 +35,7 @@ func TestWriteReadRoundTripOwner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "running.json")
 
 	// app-owned daemon: Owner round-trips as "app".
-	want := Info{PID: 1, Port: 3001, Owner: "app"}
+	want := Info{Service: "dcp-orchestrator-daemon", PID: 1, Port: 3001, Owner: "app"}
 	if err := Write(path, want); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -47,8 +47,8 @@ func TestWriteReadRoundTripOwner(t *testing.T) {
 		t.Fatal("Read returned nil for an existing file")
 		return
 	}
-	if got.Owner != "app" {
-		t.Errorf("Owner round trip: got %q, want %q", got.Owner, "app")
+	if got.Owner != "app" || got.Service != "dcp-orchestrator-daemon" {
+		t.Errorf("identity round trip: got %#v", got)
 	}
 
 	// headless daemon: Owner is empty (omitempty), round-trips as "".

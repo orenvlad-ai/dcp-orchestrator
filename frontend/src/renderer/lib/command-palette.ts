@@ -3,6 +3,7 @@ import {
 	attentionZone,
 	attentionZoneOrder,
 	isOrchestratorSession,
+	newestActiveOrchestrator,
 	openPRs,
 	sessionIsActive,
 	sessionNeedsAttention,
@@ -12,6 +13,7 @@ import {
 	type WorkspaceSummary,
 } from "../types/workspace";
 import { appI18n, type MessageKey } from "../i18n";
+import { showOrchestratorControl } from "./orchestrator-spawn-sources";
 
 export type CommandGroupId = "current" | "attention" | "projects" | "sessions" | "prs" | "global";
 
@@ -194,16 +196,21 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 	});
 
 	if (currentProject) {
-		items.push({
-			id: "current-open-orchestrator",
-			group: "current",
-			title: t("command.openOrchestrator"),
-			subtitle: currentProject.name,
-			keywords: ["orchestrator", "spawn", currentProject.name],
-			disabled: isProjectRestarting,
-			disabledReason: isProjectRestarting ? t("command.orchestratorRestarting") : undefined,
-			action: { kind: "open-orchestrator", projectId: currentProject.id },
-		});
+		const showOrchestratorAction = showOrchestratorControl(
+			newestActiveOrchestrator(currentProject.sessions) !== undefined,
+		);
+		if (showOrchestratorAction) {
+			items.push({
+				id: "current-open-orchestrator",
+				group: "current",
+				title: t("command.openOrchestrator"),
+				subtitle: currentProject.name,
+				keywords: ["orchestrator", "spawn", currentProject.name],
+				disabled: isProjectRestarting,
+				disabledReason: isProjectRestarting ? t("command.orchestratorRestarting") : undefined,
+				action: { kind: "open-orchestrator", projectId: currentProject.id },
+			});
+		}
 		items.push({
 			id: "current-project-settings",
 			group: "current",

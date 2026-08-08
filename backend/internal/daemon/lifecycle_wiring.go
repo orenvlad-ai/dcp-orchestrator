@@ -168,6 +168,7 @@ func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlit
 		Browser:             browserLifecycle,
 		BrowserCapabilities: browserCapabilities,
 		DataDir:             cfg.DataDir,
+		RunFilePath:         cfg.RunFilePath,
 		Logger:              log,
 	})
 	scmProvider, err := newGitHubSCMProvider(log)

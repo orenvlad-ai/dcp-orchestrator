@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
 	APP_STATE_FILE_NAME,
+	resolveElectronUserDataPath,
 	writeAppStateMarker,
 	readMigrationState,
 	updateMigration,
@@ -13,6 +14,24 @@ import {
 
 // The exact key set the Go reader (start.go `appState`) unmarshals.
 const GO_READER_KEYS = ["schemaVersion", "appPath", "version", "installedAt", "lastReconciledAt", "installSource"];
+
+describe("resolveElectronUserDataPath", () => {
+	it("uses an explicit absolute lab override for packaged and dev runs", () => {
+		const env = { AO_ELECTRON_USER_DATA_DIR: "/tmp/dcp-ao/electron" };
+		expect(resolveElectronUserDataPath(env, true, "/Users/example")).toBe("/tmp/dcp-ao/electron");
+		expect(resolveElectronUserDataPath(env, false, "/Users/example")).toBe("/tmp/dcp-ao/electron");
+	});
+
+	it("rejects a relative override", () => {
+		expect(() => resolveElectronUserDataPath({ AO_ELECTRON_USER_DATA_DIR: "relative" }, false, "/Users/example"))
+			.toThrow("must be an absolute path");
+	});
+
+	it("preserves upstream defaults without an override", () => {
+		expect(resolveElectronUserDataPath({}, true, "/Users/example")).toBe("/Users/example/.ao/electron");
+		expect(resolveElectronUserDataPath({}, false, "/Users/example")).toBe("/Users/example/.ao/dev/electron");
+	});
+});
 
 async function readMarker(dir: string): Promise<AppStateMarker> {
 	const raw = await readFile(path.join(dir, APP_STATE_FILE_NAME), "utf8");
@@ -34,7 +53,7 @@ describe("writeAppStateMarker", () => {
 		const t = new Date("2026-06-26T10:00:00.000Z");
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "0.0.0",
 			installedVia: "npm-bootstrap",
 			now: () => t,
@@ -42,7 +61,7 @@ describe("writeAppStateMarker", () => {
 
 		const m = await readMarker(dir);
 		expect(m.schemaVersion).toBe(2);
-		expect(m.appPath).toBe("/Applications/Agent Orchestrator.app");
+		expect(m.appPath).toBe("/Applications/DCP Orchestrator.app");
 		expect(m.version).toBe("0.0.0");
 		expect(m.installedAt).toBe("2026-06-26T10:00:00.000Z");
 		expect(m.lastReconciledAt).toBe("2026-06-26T10:00:00.000Z");
@@ -52,7 +71,7 @@ describe("writeAppStateMarker", () => {
 	it("second write PRESERVES installedAt/installSource and updates appPath/version/lastReconciledAt", async () => {
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/tmp/staging/Agent Orchestrator.app",
+			appPath: "/tmp/staging/DCP Orchestrator.app",
 			version: "0.0.0",
 			installedVia: "npm-bootstrap",
 			now: () => new Date("2026-06-26T10:00:00.000Z"),
@@ -61,7 +80,7 @@ describe("writeAppStateMarker", () => {
 		// Second launch: app relocated, version bumped, different install arg.
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "1.2.3",
 			installedVia: "github",
 			now: () => new Date("2026-06-26T11:30:00.000Z"),
@@ -72,7 +91,7 @@ describe("writeAppStateMarker", () => {
 		expect(m.installedAt).toBe("2026-06-26T10:00:00.000Z");
 		expect(m.installSource).toBe("npm-bootstrap");
 		// Refreshed.
-		expect(m.appPath).toBe("/Applications/Agent Orchestrator.app");
+		expect(m.appPath).toBe("/Applications/DCP Orchestrator.app");
 		expect(m.version).toBe("1.2.3");
 		expect(m.lastReconciledAt).toBe("2026-06-26T11:30:00.000Z");
 	});
@@ -80,7 +99,7 @@ describe("writeAppStateMarker", () => {
 	it("written JSON keys exactly match the Go reader struct", async () => {
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "0.0.0",
 			installedVia: "npm-bootstrap",
 			now: () => new Date("2026-06-26T10:00:00.000Z"),
@@ -96,7 +115,7 @@ describe("writeAppStateMarker", () => {
 	it("installedVia undefined => installSource 'unknown'", async () => {
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "0.0.0",
 			now: () => new Date("2026-06-26T10:00:00.000Z"),
 		});
@@ -108,7 +127,7 @@ describe("writeAppStateMarker", () => {
 	it("atomic write leaves no temp file behind", async () => {
 		await writeAppStateMarker({
 			stateDir: dir,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "0.0.0",
 			installedVia: "npm-bootstrap",
 			now: () => new Date("2026-06-26T10:00:00.000Z"),
@@ -123,13 +142,13 @@ describe("writeAppStateMarker", () => {
 		const nested = path.join(dir, "does", "not", "exist");
 		await writeAppStateMarker({
 			stateDir: nested,
-			appPath: "/Applications/Agent Orchestrator.app",
+			appPath: "/Applications/DCP Orchestrator.app",
 			version: "0.0.0",
 			now: () => new Date("2026-06-26T10:00:00.000Z"),
 		});
 
 		const m = await readMarker(nested);
-		expect(m.appPath).toBe("/Applications/Agent Orchestrator.app");
+		expect(m.appPath).toBe("/Applications/DCP Orchestrator.app");
 	});
 });
 

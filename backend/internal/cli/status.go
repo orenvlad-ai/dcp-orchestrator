@@ -32,6 +32,7 @@ const (
 
 type daemonStatus struct {
 	State     daemonState `json:"state"`
+	Service   string      `json:"service,omitempty"`
 	PID       int         `json:"pid,omitempty"`
 	Port      int         `json:"port,omitempty"`
 	StartedAt *time.Time  `json:"startedAt,omitempty"`
@@ -112,6 +113,7 @@ func (c *commandContext) inspectDaemon(ctx context.Context) (daemonStatus, error
 		return st, nil
 	}
 	st.owned = true
+	st.Service = health.Service
 	st.Health = health.Status
 	if health.Status != "ok" {
 		st.State = stateUnhealthy
@@ -182,6 +184,11 @@ func writeStatus(cmd *cobra.Command, st daemonStatus) error {
 	}
 	if st.PID != 0 {
 		if _, err := fmt.Fprintf(out, "  pid: %d\n", st.PID); err != nil {
+			return err
+		}
+	}
+	if st.Service != "" {
+		if _, err := fmt.Fprintf(out, "  service: %s\n", st.Service); err != nil {
 			return err
 		}
 	}

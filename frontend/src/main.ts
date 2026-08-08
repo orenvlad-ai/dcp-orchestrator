@@ -15,19 +15,6 @@ import {
 	webContents,
 	type OpenDialogOptions,
 } from "electron";
-import {
-	startAutoUpdates,
-	ensureUpdatePrefs,
-	checkForUpdatesNow,
-	downloadUpdateNow,
-	quitAndInstallUpdate,
-	getUpdateStatus,
-	setUpdateSettings,
-	returnToHome,
-	type UpdateCheckOptions,
-} from "./main/auto-updater";
-import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds";
-import { readUpdateSettings, type UpdateSettings, type UpdateStatus } from "./main/update-settings";
 import { readKeybindingOverrides, writeKeybindingOverrides } from "./main/keybinding-settings";
 import { coerceUiSettings, readUiSettings, writeUiSettings, type UiSettings } from "./main/ui-settings";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -61,13 +48,20 @@ import {
 } from "./shared/daemon-attach";
 import { shouldReplacePortHolder } from "./shared/daemon-takeover";
 import { buildDaemonEnv, resolveShellEnv, type ShellRunner } from "./shared/shell-env";
-import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
-import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/browser-runtime-link";
-import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
-import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
+import {
+	failClosedReplacementError,
+	keepDaemonAlive,
+	requiredAppOwnerError,
+	shouldLinkOnAttach,
+} from "./main/daemon-owner";
+import {
+	resolveElectronUserDataPath,
+	writeAppStateMarker,
+	type MigrationState,
+} from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
 import { shouldSignalAttention, shouldToast } from "./main/notification-signals";
 import { buildWindowsAppMenuTemplate } from "./main/menu";
@@ -89,15 +83,63 @@ const ignoreStdStreamError = (err: NodeJS.ErrnoException): void => {
 process.stdout.on("error", ignoreStdStreamError);
 process.stderr.on("error", ignoreStdStreamError);
 
-// Must run before app ready so the About panel and default-menu role labels use it.
-app.setName("Agent Orchestrator");
+const DCP_BUNDLE_ID = "pro.devcontrol.dcp-orchestrator";
+const DCP_CONTOUR_ID = "dcp-ao-1df40e93772c2c48e916870d9c3ddf8f29a69f84-packaged-v1";
+const DCP_APP_INSTANCE_ID = `dcp-app-${process.pid}-${randomUUID()}`;
+const DCP_APP_SUPPORT_ROOT = path.join(os.homedir(), "Library", "Application Support", "DCP Orchestrator");
+const DCP_STATE_ROOT = path.join(DCP_APP_SUPPORT_ROOT, "state");
+const DCP_DATA_ROOT = path.join(DCP_APP_SUPPORT_ROOT, "data");
+const DCP_CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", DCP_BUNDLE_ID);
+const DCP_LOG_ROOT = path.join(os.homedir(), "Library", "Logs", "DCP Orchestrator");
+const DCP_CANONICAL_BUNDLE = path.join(os.homedir(), "Applications", "DCP Orchestrator.app");
+
+// Packaged DCP owns a fixed, non-overridable contour. It never inherits an AO
+// updater, telemetry, daemon-command, keep-alive, or upstream-state override
+// from a shell or another product installation.
+if (app.isPackaged) {
+	Object.assign(process.env, {
+		AO_RUN_FILE: path.join(DCP_STATE_ROOT, "run", "running.json"),
+		AO_DATA_DIR: DCP_DATA_ROOT,
+		AO_PORT: "43231",
+		AO_AGENT: "codex",
+		AO_ELECTRON_USER_DATA_DIR: path.join(DCP_DATA_ROOT, "electron"),
+		AO_TELEMETRY_RENDERER: "off",
+		AO_TELEMETRY_EVENTS: "off",
+		AO_TELEMETRY_METRICS: "off",
+		AO_TELEMETRY_REMOTE: "off",
+		AO_TELEMETRY_DISABLED_EVENTS: "*",
+		CODEX_SQLITE_HOME: path.join(DCP_DATA_ROOT, "codex-state"),
+		DCP_AO_CODEX_ISOLATION: "exec-ignore-user-config",
+		DCP_AO_CONTOUR_ID: DCP_CONTOUR_ID,
+		DCP_AO_REQUIRE_APP_OWNER: "1",
+		DCP_AO_FAIL_CLOSED_DAEMON_REPLACEMENT: "1",
+		DCP_AO_APP_PID: String(process.pid),
+		DCP_AO_APP_INSTANCE_ID: DCP_APP_INSTANCE_ID,
+		DCP_AO_APP_BUNDLE_ID: DCP_BUNDLE_ID,
+		DCP_AO_APP_BUNDLE_PATH: DCP_CANONICAL_BUNDLE,
+		VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN: "1",
+	});
+	for (const key of [
+		"AO_DAEMON_COMMAND",
+		"AO_KEEP_DAEMON",
+		"AO_RELEASE_REPO",
+		"GH_TOKEN",
+	]) {
+		delete process.env[key];
+	}
+}
+
+// No Electron or Chromium crash reporter may initialize for this product.
+app.commandLine.appendSwitch("disable-breakpad");
+app.commandLine.appendSwitch("disable-crash-reporter");
+app.setName("DCP Orchestrator");
 
 // Windows shows native toasts only when the app declares an AppUserModelID that
 // matches its installer shortcut (the NSIS maker's appId). Without it,
 // Notification.isSupported() still returns true but show() silently drops the
 // toast, so notifications never appear. No-op on macOS/Linux.
 if (process.platform === "win32") {
-	app.setAppUserModelId("dev.agent-orchestrator.desktop");
+	app.setAppUserModelId(DCP_BUNDLE_ID);
 }
 
 // Pin ALL Electron-owned state (Chromium cache, cookies, local/session storage,
@@ -112,8 +154,14 @@ if (process.platform === "win32") {
 // the daemon data dir into ~/.ao/dev.
 app.setPath(
 	"userData",
-	app.isPackaged ? path.join(os.homedir(), ".ao", "electron") : path.join(os.homedir(), ".ao", "dev", "electron"),
+	resolveElectronUserDataPath(process.env, app.isPackaged, os.homedir()),
 );
+if (app.isPackaged) {
+	app.setPath("sessionData", path.join(DCP_CACHE_ROOT, "session"));
+	app.setPath("cache", DCP_CACHE_ROOT);
+	app.setPath("crashDumps", path.join(DCP_CACHE_ROOT, "disabled-crash-dumps"));
+	app.setAppLogsPath(DCP_LOG_ROOT);
+}
 
 let mainWindow: BrowserWindow | null = null;
 let trayController: TrayController | null = null;
@@ -280,7 +328,7 @@ function createWindow(): void {
 		height: 860,
 		minWidth: 960,
 		minHeight: 640,
-		title: "Agent Orchestrator",
+		title: "DCP Orchestrator",
 		icon: windowIconPath(),
 		backgroundColor: "#0f1014",
 		// Windows goes frameless with a Window Controls Overlay: Electron still draws
@@ -428,27 +476,14 @@ let cachedShellEnv: Record<string, string> | null = null;
 // Memoize the in-flight resolution so concurrent/repeat awaits are cheap.
 let shellEnvPromise: Promise<void> | null = null;
 
-// Telemetry defaults stamped on the daemon env on every platform; explicit env
-// always wins.
-//
-// Unpackaged builds keep local event recording but never export to PostHog: a
-// dev loop or a CI job driving the real app would otherwise bill production
-// events and inflate install/DAU counts. Set AO_TELEMETRY_REMOTE explicitly to
-// exercise the export path from a dev build.
+// The DCP package cannot opt into local or remote analytics. These values are
+// stamped at the daemon spawn choke point even after login-shell env merging.
 function telemetryOverrides(): Record<string, string> {
 	return {
-		AO_TELEMETRY_EVENTS: process.env.AO_TELEMETRY_EVENTS ?? "on",
-		AO_TELEMETRY_REMOTE: process.env.AO_TELEMETRY_REMOTE ?? (isDev ? "off" : "posthog"),
-		AO_TELEMETRY_POSTHOG_KEY: process.env.AO_TELEMETRY_POSTHOG_KEY ?? DEFAULT_POSTHOG_PROJECT_KEY,
-		AO_TELEMETRY_POSTHOG_HOST: process.env.AO_TELEMETRY_POSTHOG_HOST ?? DEFAULT_POSTHOG_HOST,
-		// The daemon binary has no version of its own that release tooling sets,
-		// so without this every daemon event lands unattributable to a release.
-		AO_TELEMETRY_APP_VERSION: process.env.AO_TELEMETRY_APP_VERSION ?? app.getVersion(),
-		// Kill switch: forwarded so a noisy stream can be silenced by env on an
-		// install that already exists, without shipping a new build.
-		...(process.env.AO_TELEMETRY_DISABLED_EVENTS
-			? { AO_TELEMETRY_DISABLED_EVENTS: process.env.AO_TELEMETRY_DISABLED_EVENTS }
-			: {}),
+		AO_TELEMETRY_EVENTS: "off",
+		AO_TELEMETRY_METRICS: "off",
+		AO_TELEMETRY_REMOTE: "off",
+		AO_TELEMETRY_DISABLED_EVENTS: "*",
 	};
 }
 
@@ -530,6 +565,11 @@ function daemonEnv(): NodeJS.ProcessEnv {
 		AO_OWNER,
 		AO_APP_RUN_ID: appRunId,
 		AO_BROWSER_RUNTIME_TOKEN: browserRuntimeToken,
+		DCP_AO_CONTOUR_ID: DCP_CONTOUR_ID,
+		DCP_AO_APP_PID: String(process.pid),
+		DCP_AO_APP_INSTANCE_ID: DCP_APP_INSTANCE_ID,
+		DCP_AO_APP_BUNDLE_ID: DCP_BUNDLE_ID,
+		DCP_AO_APP_BUNDLE_PATH: DCP_CANONICAL_BUNDLE,
 	};
 	// In dev mode, inject isolation defaults so the dev daemon never collides with
 	// the installed app. User-set env vars take priority (checked first).
@@ -586,6 +626,12 @@ async function readDaemonProbe(port: number, endpoint: "healthz" | "readyz"): Pr
 }
 
 function daemonIdentityError(launch: DaemonLaunchSpec, probe: DaemonProbe): string | null {
+	if (launch.source === "configured") {
+		const expected = process.env.DCP_AO_EXPECTED_DAEMON_EXECUTABLE?.trim();
+		if (expected && (!probe.executablePath || !samePath(probe.executablePath, expected))) {
+			return `Another daemon is running from ${probe.executablePath ?? "an unknown executable"}; expected the canonical DCP daemon at ${expected}.`;
+		}
+	}
 	if (launch.source === "dev") {
 		const cwdMatches = probe.workingDirectory ? samePath(probe.workingDirectory, launch.cwd) : false;
 		const startupCwdMatches = probe.startupWorkingDirectory
@@ -704,7 +750,32 @@ async function inspectExistingDaemon(
 		identityError: (probe) => daemonIdentityError(launch, probe),
 	});
 	if (!status) return null;
-	const owner = runFileContents ? (parseRunFile(runFileContents)?.owner ?? undefined) : undefined;
+	const runInfo = runFileContents ? parseRunFile(runFileContents) : null;
+	const owner = runInfo?.owner;
+	const dcpIdentityError =
+		app.isPackaged && status.state === "ready" &&
+		(runInfo?.dcpContourId !== DCP_CONTOUR_ID ||
+			runInfo?.dcpAppPid !== process.pid ||
+			runInfo?.dcpAppInstanceId !== DCP_APP_INSTANCE_ID ||
+			runInfo?.dcpAppBundleId !== DCP_BUNDLE_ID ||
+			runInfo?.dcpAppBundlePath !== DCP_CANONICAL_BUNDLE)
+			? "A daemon is running without this exact DCP application identity. No process was attached or replaced."
+			: null;
+	const ownerError =
+		status.state === "ready"
+			? dcpIdentityError ?? requiredAppOwnerError(owner, process.env.DCP_AO_REQUIRE_APP_OWNER === "1")
+			: null;
+	if (ownerError) {
+		return {
+			owner,
+			status: {
+				...status,
+				state: "error",
+				message: ownerError,
+				code: "identity_mismatch",
+			},
+		};
+	}
 	return { status, owner };
 }
 
@@ -826,13 +897,36 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		// linking a headless daemon, and establishSupervisorLink disposes any prior
 		// link so nothing leaks.
 		const rfp = runFilePath();
-		let portAttachOwner: string | undefined;
-		if (rfp) {
-			try {
-				portAttachOwner = parseRunFile(await readFile(rfp, "utf8"))?.owner ?? undefined;
+			let portAttachInfo: ReturnType<typeof parseRunFile> = null;
+			if (rfp) {
+				try {
+					portAttachInfo = parseRunFile(await readFile(rfp, "utf8"));
 			} catch {
 				// run-file absent or unreadable: treat as headless, skip link.
 			}
+		}
+			const portAttachOwner = portAttachInfo?.owner;
+			const dcpIdentityError =
+				app.isPackaged &&
+				(portAttachInfo?.dcpContourId !== DCP_CONTOUR_ID ||
+					portAttachInfo?.dcpAppPid !== process.pid ||
+					portAttachInfo?.dcpAppInstanceId !== DCP_APP_INSTANCE_ID ||
+					portAttachInfo?.dcpAppBundleId !== DCP_BUNDLE_ID ||
+					portAttachInfo?.dcpAppBundlePath !== DCP_CANONICAL_BUNDLE)
+					? "A daemon is running without this exact DCP application identity. No process was attached or replaced."
+					: null;
+			const ownerError =
+				directDaemon.state === "ready"
+					? dcpIdentityError ?? requiredAppOwnerError(portAttachOwner, process.env.DCP_AO_REQUIRE_APP_OWNER === "1")
+				: null;
+		if (ownerError) {
+			setDaemonStatus({
+				...directDaemon,
+				state: "error",
+				message: ownerError,
+				code: "identity_mismatch",
+			});
+			return daemonStatus;
 		}
 		if (shouldLinkOnAttach(portAttachOwner)) {
 			establishSupervisorLink();
@@ -869,7 +963,16 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			holderPidAlive = false;
 		}
 	}
-	if (shouldReplacePortHolder(orphanProbe, holderPidAlive)) {
+	const replacementNeeded = shouldReplacePortHolder(orphanProbe, holderPidAlive);
+	const replacementError = failClosedReplacementError(
+		replacementNeeded,
+		process.env.DCP_AO_FAIL_CLOSED_DAEMON_REPLACEMENT === "1",
+	);
+	if (replacementError) {
+		setDaemonStatus({ state: "error", message: replacementError, code: "identity_mismatch" });
+		return daemonStatus;
+	}
+	if (replacementNeeded) {
 		// Use the run-file PID when available; fall back to the probe's reported
 		// PID as a last resort (a wedged daemon may not have written a fresh run-file).
 		const pidToKill = runFilePid ?? orphanProbe?.pid ?? null;
@@ -1335,17 +1438,14 @@ ipcMain.handle("menu:action", (_event, action: string) => {
 		case "help.about":
 			void dialog.showMessageBox(win, {
 				type: "info",
-				title: "About Agent Orchestrator",
-				message: "Agent Orchestrator",
-				detail: `Version ${app.getVersion()}`,
+				title: "About DCP Orchestrator",
+				message: "DCP Orchestrator",
+				detail: `Version ${app.getVersion()}\nPinned DCP Orchestrator v0.12.1\nUpdates and telemetry are not included.`,
 				buttons: ["OK"],
 			});
 			return;
 	}
 });
-ipcMain.handle("telemetry:getBootstrap", () =>
-	buildTelemetryBootstrap(process.env, app.getVersion(), process.platform, os.homedir(), app.isPackaged),
-);
 async function chooseDirectory(title: string): Promise<string | null> {
 	const options: OpenDialogOptions = {
 		properties: ["openDirectory"],
@@ -1395,26 +1495,9 @@ ipcMain.handle("terminal:saveDroppedFile", async (_event, input: { name: string;
 });
 
 ipcMain.handle("appState:getMigration", async (): Promise<MigrationState> => {
-	const runFile = runFilePath();
-	if (!runFile) return { status: "pending" };
-	return readMigrationState(path.dirname(runFile));
+	return { status: "declined" };
 });
-ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState) => {
-	const runFile = runFilePath();
-	if (!runFile) return;
-	await updateMigration({ stateDir: path.dirname(runFile), migration, now: () => new Date() });
-});
-
-ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
-	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
-	return readUpdateSettings(path.dirname(runFile));
-});
-ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
-	const runFile = runFilePath();
-	if (!runFile) return;
-	await setUpdateSettings(path.dirname(runFile), settings);
-});
+ipcMain.handle("appState:setMigration", async (_event, _migration: MigrationState) => undefined);
 
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
 	const runFile = runFilePath();
@@ -1438,27 +1521,6 @@ ipcMain.handle("keybindings:set", async (_event, overrides: KeybindingOverrides)
 ipcMain.handle("keybindings:setRecording", (event, active: unknown): void => {
 	if (event.sender !== mainWindow?.webContents || typeof active !== "boolean") return;
 	keybindingRecordingActive = active;
-});
-
-ipcMain.handle("featureBuilds:list", () => listFeatureBuilds());
-ipcMain.handle("featureBuilds:getActive", () => getActiveFeatureBuild());
-
-ipcMain.handle("updates:getStatus", (): UpdateStatus => getUpdateStatus());
-ipcMain.handle("updates:check", async (_event, options?: UpdateCheckOptions) => {
-	const runFile = runFilePath();
-	if (!runFile) return;
-	await checkForUpdatesNow(path.dirname(runFile), options);
-});
-ipcMain.handle("updates:returnHome", async (_event, requestId?: string) => {
-	const runFile = runFilePath();
-	if (!runFile) return;
-	await returnToHome(path.dirname(runFile), requestId);
-});
-ipcMain.handle("updates:download", async (_event, requestId?: string) => {
-	await downloadUpdateNow(requestId);
-});
-ipcMain.handle("updates:install", () => {
-	quitAndInstallUpdate();
 });
 
 ipcMain.handle(
@@ -1564,25 +1626,8 @@ ipcMain.on(TRAY_SET_ATTENTION_STATE_CHANNEL, (event, state) => trayLifecycle.han
 
 ipcMain.on(TRAY_RENDERER_READY_CHANNEL, (event) => trayLifecycle.handleRendererReady(event));
 
-// Auto-update only runs for packaged builds reading the GitHub Releases feed
-// (see forge.config.ts publishers). In dev there is no feed, so it is skipped.
-// A live updater additionally requires a signed + notarized build — see
-// frontend/docs/desktop-release.md.
-function initAutoUpdates(): void {
-	if (!app.isPackaged) return;
-	const runFile = runFilePath();
-	if (!runFile) return;
-	const stateDir = path.dirname(runFile);
-	void ensureUpdatePrefs(stateDir).then(() => startAutoUpdates(stateDir));
-}
-
-// Resolve the bundle path `ao start` will later `open` and stat as a usable app.
-// On macOS process.execPath is .../Agent Orchestrator.app/Contents/MacOS/<exe>;
-// the thing `ao start` opens is the enclosing `.app` directory, so walk up three
-// levels (MacOS -> Contents -> .app). app.getAppPath() is WRONG here: it returns
-// the app.asar archive path inside the bundle, not the bundle itself.
-// On win32/linux there is no .app wrapper, so record execPath; a richer
-// resolveApp() for those platforms lands in T6/T7.
+// Resolve the exact macOS bundle that owns this process. The DCP gateway never
+// addresses the product by a common application name.
 function resolveBundlePath(): string {
 	if (process.platform === "darwin") {
 		return path.resolve(process.execPath, "..", "..", "..");
@@ -1590,66 +1635,46 @@ function resolveBundlePath(): string {
 	return process.execPath;
 }
 
-// `ao start` opens the app with `--installed-via=<value>` so the app can record
-// how it arrived on first marker creation. Parse it out of argv; absent => the
-// marker defaults installSource to "unknown".
-function parseInstalledVia(argv: string[]): string | undefined {
-	const flag = argv.find((a) => a.startsWith("--installed-via="));
-	return flag ? flag.slice("--installed-via=".length) : undefined;
-}
-
-// Write ~/.ao/app-state.json so `ao start`'s resolveApp() can find this bundle
-// (spec §7.1). The app is the sole writer (invariant 3) and writes every launch.
-// A failure here must NOT block startup, so the caller wraps this in try/catch;
-// we still surface it via the log.
+// Keep a local state marker for diagnostics. It is not an update/bootstrap
+// locator and is written only below DCP's state namespace.
 async function writeAppStateOnLaunch(): Promise<void> {
-	// Reuse the same ~/.ao resolution as running.json; the marker lives beside it
-	// (the Go side computes its dir as dirname(RunFilePath)). runFilePath() returns
-	// null only when the home dir is unresolvable, in which case we cannot place
-	// the marker; the caller's try/catch logs it.
 	const runFile = runFilePath();
 	if (!runFile) {
-		throw new Error("cannot resolve ~/.ao run-file path; skipping app-state marker");
+		throw new Error("cannot resolve the DCP run-file path");
 	}
 	const stateDir = path.dirname(runFile);
 	await writeAppStateMarker({
 		stateDir,
 		appPath: resolveBundlePath(),
 		version: app.getVersion(),
-		installedVia: parseInstalledVia(process.argv),
+		installedVia: "repo-owned-local-build",
 		now: () => new Date(),
 	});
 }
 
+let quitApproved = false;
+let quitCheckInFlight = false;
+const ownsSingleInstance = app.requestSingleInstanceLock({ bundleId: DCP_BUNDLE_ID, contour: DCP_CONTOUR_ID });
+if (!ownsSingleInstance) {
+	quitApproved = true;
+	app.quit();
+}
+
+app.on("second-instance", () => focusMainWindow());
+
 app.whenReady().then(async () => {
-	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
-	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
-	// code past a successful move never runs in this instance, so a post-move-only
-	// write would record installSource="unknown" and the sticky logic in
-	// writeAppStateMarker would then lock it there forever. Writing now (only when
-	// the arg is present, i.e. the npm-bootstrap launch) persists the source so the
-	// post-move instance preserves it while refreshing appPath to /Applications.
-	if (parseInstalledVia(process.argv)) {
-		try {
-			await writeAppStateOnLaunch();
-		} catch (err) {
-			console.error("failed to write pre-relocation app-state marker:", err);
-		}
+	if (!ownsSingleInstance) return;
+
+	if (app.isPackaged && (process.platform !== "darwin" || resolveBundlePath() !== DCP_CANONICAL_BUNDLE)) {
+		dialog.showErrorBox(
+			"DCP Orchestrator identity check failed",
+			`This build may run only from ${DCP_CANONICAL_BUNDLE}.`,
+		);
+		quitApproved = true;
+		app.quit();
+		return;
 	}
 
-	if (process.platform === "darwin" && app.isPackaged) {
-		try {
-			// On success this restarts the app from /Applications, so code past
-			// here only runs when no move happened (already there, or declined).
-			app.moveToApplicationsFolder();
-		} catch (err) {
-			console.error("relocation to Applications failed:", err);
-		}
-	}
-
-	// Refresh the marker post-relocation so appPath records the final bundle path;
-	// the sticky installSource preserves the value captured above. A marker-write
-	// failure is non-fatal: log and continue so the app still boots.
 	try {
 		await writeAppStateOnLaunch();
 	} catch (err) {
@@ -1673,7 +1698,6 @@ app.whenReady().then(async () => {
 	}
 	createWindow();
 	void startDaemon();
-	initAutoUpdates();
 
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) {
@@ -1682,11 +1706,71 @@ app.whenReady().then(async () => {
 	});
 });
 
-// Daemon teardown is now handled via the OS-native supervisor socket: the daemon
-// self-stops ~5s after the last client (this process) drops its connection.
-// The supervisorLink fd is NOT explicitly closed on quit; the OS closes it when
-// the process exits for any reason (Cmd+Q, crash, SIGKILL). Sessions survive.
-app.on("before-quit", () => {
+async function activeWorkerCount(): Promise<number | null> {
+	if (daemonStatus.state === "stopped") return 0;
+	if (daemonStatus.state !== "ready") return null;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 2_000);
+	try {
+		const response = await net.fetch(`http://127.0.0.1:${resolvedDaemonPort()}/api/v1/sessions?active=true`, {
+			signal: controller.signal,
+		});
+		if (!response.ok) return null;
+		const body = (await response.json()) as {
+			sessions?: Array<{ kind?: string; status?: string; activity?: { state?: string } }>;
+		};
+		return (body.sessions ?? []).filter(
+			(session) => session.kind === "worker" && (session.status === "working" || session.activity?.state === "active"),
+		).length;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function confirmProtectedQuit(): Promise<void> {
+	const workers = await activeWorkerCount();
+	if (workers === 0) {
+		quitApproved = true;
+		app.quit();
+		return;
+	}
+	const options = {
+		type: "warning" as const,
+		buttons: ["Keep Running", "Quit Anyway"],
+		defaultId: 0,
+		cancelId: 0,
+		title: "Quit DCP Orchestrator?",
+		message:
+			workers === null
+				? "DCP Orchestrator cannot safely verify whether a worker is active."
+				: `${workers} worker${workers === 1 ? " is" : "s are"} still active.`,
+		detail: "Quitting stops the app-owned daemon and removes live task supervision. Keep the app running unless this is intentional.",
+	};
+	const result = mainWindow
+		? await dialog.showMessageBox(mainWindow, options)
+		: await dialog.showMessageBox(options);
+	if (result.response === 1) {
+		quitApproved = true;
+		app.quit();
+	}
+}
+
+// Closing the window leaves the application and its daemon alive. Explicit
+// Quit is intercepted until active-worker state is proven or the user confirms
+// the risky action in a native warning.
+app.on("before-quit", (event) => {
+	if (!quitApproved) {
+		event.preventDefault();
+		if (!quitCheckInFlight) {
+			quitCheckInFlight = true;
+			void confirmProtectedQuit().finally(() => {
+				quitCheckInFlight = false;
+			});
+		}
+		return;
+	}
 	browserRuntimeLink?.dispose();
 	browserRuntimeLink = null;
 	browserViewHost?.dispose();

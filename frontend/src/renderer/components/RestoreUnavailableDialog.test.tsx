@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 
@@ -46,8 +46,26 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	workspaceQueryMock.mockReturnValue({ data: [workspace], isLoading: false });
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe("RestoreUnavailableDialog", () => {
+	it("hides manual orchestrator recreation and its hint in the DCP contour", () => {
+		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "1");
+		render(
+			<RestoreUnavailableDialog
+				open
+				session={session}
+				onOpenChange={vi.fn()}
+				onRecreated={vi.fn()}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: "Create new orchestrator" })).not.toBeInTheDocument();
+		expect(screen.queryByText(/You can create a new orchestrator/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/no saved agent session or prompt/i)).toBeInTheDocument();
+		expect(spawnMock).not.toHaveBeenCalled();
+	});
+
 	it("opens project settings instead of recreating when no orchestrator agent is configured", async () => {
 		const onOpenChange = vi.fn();
 		const onRecreated = vi.fn();

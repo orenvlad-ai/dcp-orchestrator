@@ -13,19 +13,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// Codex (0.136+) never loads hook config from AO's per-session worktrees, so
-// AO's hooks ride the launch command as `-c` session-flag config instead of
-// workspace files:
+// Codex (0.136+) never loads hook config from AO's per-session worktrees. The
+// upstream adapter can deliver hooks as `-c` session-flag config instead of
+// workspace files, but the DCP lab launch path deliberately does not call that
+// builder and disables the hooks feature for every worker invocation:
 //
 //   - Project-local `.codex/` layers only load when the directory is trusted,
 //     and for linked git worktrees Codex sources hook declarations from the
 //     matching `.codex/` folder in the ROOT checkout, not the worktree. A
 //     hooks.json written into an AO worktree is therefore dead config.
 //   - Hooks passed as `-c 'hooks.<Event>=[...]'` land in Codex's session-flags
-//     config layer, which is not trust-gated and aggregates with (never
-//     replaces) the user's own hooks from `~/.codex`. They carry no persisted
-//     trust hash, so the launch command also passes
-//     `--dangerously-bypass-hook-trust` to let them run.
+//     config layer, which is not trust-gated and aggregates with other hooks.
 const (
 	codexHooksDirName  = ".codex"
 	codexHooksFileName = "hooks.json"
@@ -57,7 +55,8 @@ type codexHookEntry struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
-// codexHookSpec describes one hook AO delivers via launch-command config.
+// codexHookSpec describes one hook retained for legacy cleanup and upstream
+// compatibility; the DCP worker launch path does not deliver these hooks.
 type codexHookSpec struct {
 	Event   string
 	Command string

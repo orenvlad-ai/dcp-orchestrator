@@ -1,5 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { spawnOrchestrator } from "./spawn-orchestrator";
+import { manualOrchestratorSpawnHidden, showOrchestratorControl } from "./orchestrator-spawn-sources";
 import { apiClient } from "./api-client";
 import { captureRendererEvent } from "./telemetry";
 
@@ -23,6 +24,20 @@ const captureMock = vi.mocked(captureRendererEvent);
 
 describe("spawnOrchestrator", () => {
 	beforeEach(() => vi.clearAllMocks());
+	afterEach(() => vi.unstubAllEnvs());
+
+	it("hides only manual creation in DCP while preserving navigation and the API", () => {
+		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "1");
+		expect(manualOrchestratorSpawnHidden()).toBe(true);
+		expect(showOrchestratorControl(false)).toBe(false);
+		expect(showOrchestratorControl(true)).toBe(true);
+		expect(spawnOrchestrator).toBeTypeOf("function");
+	});
+
+	it("preserves upstream manual controls outside the DCP contour", () => {
+		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "0");
+		expect(showOrchestratorControl(false)).toBe(true);
+	});
 
 	it("sends clean:true through to the request body when asked", async () => {
 		(apiClient.POST as ReturnType<typeof vi.fn>).mockResolvedValue({

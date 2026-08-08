@@ -83,6 +83,9 @@ const (
 	EnvRuntimeLaunchID = "AO_RUNTIME_LAUNCH_ID"
 	// EnvDataDir tells a spawned agent's AO hook commands where the store lives.
 	EnvDataDir = "AO_DATA_DIR"
+	// EnvRunFile locates the exact daemon handshake. Supervised one-shot agents
+	// must not inherit it; only their internal process wrapper may use it.
+	EnvRunFile = "AO_RUN_FILE"
 	// EnvBrowserCapability proves ownership of the session's browser target.
 	EnvBrowserCapability = "AO_BROWSER_CAPABILITY"
 	// EnvBrowserRuntimeToken must never be inherited by a worker. It authenticates
@@ -205,6 +208,7 @@ type Manager struct {
 	browser             BrowserLifecycle
 	browserCapabilities BrowserCapabilityIssuer
 	dataDir             string
+	runFilePath         string
 	clock               func() time.Time
 	// lookPath is exec.LookPath in production; tests substitute a stub so
 	// they don't need real binaries on PATH. Returns ports.ErrAgentBinaryNotFound
@@ -315,7 +319,11 @@ type Deps struct {
 	// DataDir is exported to spawned agents as AO_DATA_DIR so their hook
 	// commands can open the same store.
 	DataDir string
-	Clock   func() time.Time
+	// RunFilePath is passed only to the internal process supervisor so its
+	// start/exit reports address the exact daemon without exposing that
+	// connection to the worker process or its retained terminal shell.
+	RunFilePath string
+	Clock       func() time.Time
 	// LookPath overrides exec.LookPath for the pre-launch agent-binary check.
 	// Production wiring leaves this nil and the manager defaults to
 	// exec.LookPath; tests inject a stub so they need not seed real binaries.
@@ -344,6 +352,7 @@ func New(d Deps) *Manager {
 		browser:             d.Browser,
 		browserCapabilities: d.BrowserCapabilities,
 		dataDir:             d.DataDir,
+		runFilePath:         d.RunFilePath,
 		clock:               d.Clock,
 		lookPath:            d.LookPath,
 		executable:          d.Executable,
@@ -3356,7 +3365,12 @@ func (m *Manager) validateRuntimePrerequisites() error {
 
 func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, env map[string]string, argv []string) ([]string, string, error) {
 	detector, ok := agent.(ports.AgentExitDetector)
-	if !ok || detector.ExitDetectionMode() != ports.AgentExitDetectionSupervisor {
+	if !ok {
+		delete(env, EnvRuntimeLaunchID)
+		return argv, "", nil
+	}
+	mode := detector.ExitDetectionMode()
+	if mode != ports.AgentExitDetectionSupervisor && mode != ports.AgentExitDetectionSupervisorIdleOnSuccess {
 		delete(env, EnvRuntimeLaunchID)
 		return argv, "", nil
 	}
@@ -3369,8 +3383,20 @@ func (m *Manager) superviseAgentProcess(agent ports.Agent, id domain.SessionID, 
 		return nil, "", errors.New("generated empty launch id")
 	}
 	env[EnvRuntimeLaunchID] = launchID
-	wrapped := make([]string, 0, 8+len(argv))
-	wrapped = append(wrapped, executable, "agent-process", "supervise", "--session", string(id), "--launch", launchID, "--")
+	if (m.dataDir == "") != (m.runFilePath == "") {
+		return nil, "", errors.New("process supervisor requires both data-dir and run-file paths")
+	}
+	wrapped := make([]string, 0, 12+len(argv))
+	wrapped = append(wrapped, executable, "agent-process", "supervise", "--session", string(id), "--launch", launchID)
+	if m.dataDir != "" {
+		wrapped = append(wrapped, "--supervisor-data-dir", m.dataDir, "--supervisor-run-file", m.runFilePath)
+	}
+	if mode == ports.AgentExitDetectionSupervisorIdleOnSuccess {
+		wrapped = append(wrapped, "--idle-on-success")
+	}
+	delete(env, EnvDataDir)
+	delete(env, EnvRunFile)
+	wrapped = append(wrapped, "--")
 	wrapped = append(wrapped, argv...)
 	return wrapped, launchID, nil
 }

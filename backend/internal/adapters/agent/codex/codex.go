@@ -37,9 +37,9 @@ func New() *Plugin {
 	return &Plugin{}
 }
 
-// EmitsSubmitActivity signals Codex fires a user-prompt-submit hook under AO's
-// launch. See ports.ActivitySignaler.
-func (p *Plugin) EmitsSubmitActivity() bool { return true }
+// EmitsSubmitActivity is false for the DCP lab: its Codex worker disables all
+// hooks and relies on the existing process supervisor for lifecycle state.
+func (p *Plugin) EmitsSubmitActivity() bool { return false }
 
 // EmitsBlockedActivity is false: codex reports permission prompts as
 // waiting_input — it installs no post-tool-use hook, so a blocked state could
@@ -48,10 +48,11 @@ func (p *Plugin) EmitsSubmitActivity() bool { return true }
 // ports.ActivitySignaler.
 func (p *Plugin) EmitsBlockedActivity() bool { return false }
 
-// ExitDetectionMode opts Codex into AO's process supervisor. Codex hooks
-// expose turn boundaries but no reliable session-end event.
+// ExitDetectionMode opts the DCP one-shot Codex worker into AO's process
+// supervisor. A zero process exit is an ordinary completed turn; every other
+// machine outcome remains exited.
 func (p *Plugin) ExitDetectionMode() ports.AgentExitDetectionMode {
-	return ports.AgentExitDetectionSupervisor
+	return ports.AgentExitDetectionSupervisorIdleOnSuccess
 }
 
 // SteersActiveTurn is true: submitting input to the codex TUI mid-turn steers
@@ -95,24 +96,20 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	}, nil
 }
 
-// GetLaunchCommand builds the argv to start a new Codex session, applying the
-// no-update-check, hook-trust bypass, and approval flags, AO's session-flag
-// activity hooks, the workspace trust override, optional system-prompt
-// instructions, and the initial prompt (passed after `--` so a leading "-" is
-// not read as a flag).
+// GetLaunchCommand builds the argv to start a new Codex session. The DCP lab
+// uses Codex's supported non-interactive, ephemeral surface so authentication
+// remains available while user config, MCP, apps, plugins, and hooks do not.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
 	binary, err := p.codexBinary(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd = []string{binary}
+	cmd = []string{binary, "exec", "--ignore-user-config", "--ephemeral", "--strict-config"}
+	appendWorkerIsolationFlags(&cmd)
 	appendNoUpdateCheckFlag(&cmd)
 	appendHideRateLimitNudgeFlag(&cmd)
-	appendHookTrustBypassFlag(&cmd)
 	appendApprovalFlags(&cmd, cfg.Permissions)
-	appendSessionHookFlags(&cmd)
-	appendTerminalCompatibilityFlags(&cmd)
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 
@@ -148,13 +145,11 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 
 	cmd = make([]string, 0, 24)
-	cmd = append(cmd, binary, "resume")
+	cmd = append(cmd, binary, "exec", "--ignore-user-config", "--ephemeral", "--strict-config")
+	appendWorkerIsolationFlags(&cmd)
 	appendNoUpdateCheckFlag(&cmd)
 	appendHideRateLimitNudgeFlag(&cmd)
-	appendHookTrustBypassFlag(&cmd)
 	appendApprovalFlags(&cmd, cfg.Permissions)
-	appendSessionHookFlags(&cmd)
-	appendTerminalCompatibilityFlags(&cmd)
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 	if cfg.SystemPrompt != "" {
@@ -162,7 +157,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	} else if cfg.SystemPromptFile != "" {
 		cmd = append(cmd, "-c", "model_instructions_file="+cfg.SystemPromptFile)
 	}
-	cmd = append(cmd, agentSessionID)
+	cmd = append(cmd, "resume", agentSessionID)
 	return cmd, true, nil
 }
 
@@ -327,25 +322,20 @@ func (p *Plugin) codexBinary(ctx context.Context) (string, error) {
 	return binary, nil
 }
 
-// DoctorLaunchProbes returns argv tails `ao doctor` runs against the installed
-// codex binary to smoke-test the launch surface AO's hook delivery depends on.
-// Probe 1 confirms --dangerously-bypass-hook-trust still exists (clap rejects
-// unknown flags with a non-zero exit even alongside --version). Probe 2 loads
-// codex's config with AO's `-c` session-flag overrides through the offline
-// `features list` subcommand, so an override-parse regression surfaces as a
-// non-zero exit or warning output. Both are built from the same flag builders
-// the launch command uses, so the probes cannot drift from the real spawn argv.
+// DoctorLaunchProbes returns offline argv tails that exercise the same worker
+// isolation and config overrides as the real DCP launch command.
 func DoctorLaunchProbes() [][]string {
-	flagProbe := make([]string, 0, 2)
-	appendHookTrustBypassFlag(&flagProbe)
-	flagProbe = append(flagProbe, "--version")
+	execProbe := []string{"exec", "--ignore-user-config", "--ephemeral", "--strict-config"}
+	appendWorkerIsolationFlags(&execProbe)
+	appendNoUpdateCheckFlag(&execProbe)
+	appendHideRateLimitNudgeFlag(&execProbe)
+	appendWorkspaceTrustFlag(&execProbe, os.TempDir())
+	execProbe = append(execProbe, "--help")
 
-	overrideProbe := []string{"features", "list"}
-	appendNoUpdateCheckFlag(&overrideProbe)
-	appendHideRateLimitNudgeFlag(&overrideProbe)
-	appendSessionHookFlags(&overrideProbe)
-	appendWorkspaceTrustFlag(&overrideProbe, os.TempDir())
-	return [][]string{flagProbe, overrideProbe}
+	featureProbe := make([]string, 0, 10)
+	appendWorkerIsolationFlags(&featureProbe)
+	featureProbe = append(featureProbe, "features", "list")
+	return [][]string{execProbe, featureProbe}
 }
 
 func appendNoUpdateCheckFlag(cmd *[]string) {
@@ -360,12 +350,10 @@ func appendHideRateLimitNudgeFlag(cmd *[]string) {
 	*cmd = append(*cmd, "-c", "notice.hide_rate_limit_model_nudge=true")
 }
 
-func appendHookTrustBypassFlag(cmd *[]string) {
-	// AO's activity hooks ride the launch command as session-flag config (see
-	// appendSessionHookFlags) and carry no persisted trust hash in the user's
-	// `[hooks.state]`. Without this flag Codex would hold them for an
-	// interactive hooks review, leaving AO without activity signals.
-	*cmd = append(*cmd, "--dangerously-bypass-hook-trust")
+func appendWorkerIsolationFlags(cmd *[]string) {
+	for _, feature := range []string{"hooks", "apps", "plugins", "multi_agent"} {
+		*cmd = append(*cmd, "--disable", feature)
+	}
 }
 
 func appendTerminalCompatibilityFlags(cmd *[]string) {

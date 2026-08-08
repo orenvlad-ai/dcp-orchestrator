@@ -18,6 +18,9 @@ import (
 
 // Info is the on-disk handshake payload.
 type Info struct {
+	// Service is the daemon product namespace. It lets external identity gates
+	// prove that the run-file belongs to the expected daemon implementation.
+	Service string `json:"service,omitempty"`
 	// PID is the daemon process id.
 	PID int `json:"pid"`
 	// Port is the loopback port the daemon bound.
@@ -37,6 +40,13 @@ type Info struct {
 	// BrowserRuntimeAddress is the exact Unix socket or Windows named-pipe
 	// address selected by the backend for this daemon launch.
 	BrowserRuntimeAddress string `json:"browserRuntimeAddress,omitempty"`
+	// Packaged DCP identity binds this daemon to one exact live application
+	// process and bundle. Upstream/dev launches leave these fields empty.
+	DCPContourID     string `json:"dcpContourId,omitempty"`
+	DCPAppPID        int    `json:"dcpAppPid,omitempty"`
+	DCPAppInstanceID string `json:"dcpAppInstanceId,omitempty"`
+	DCPAppBundleID   string `json:"dcpAppBundleId,omitempty"`
+	DCPAppBundlePath string `json:"dcpAppBundlePath,omitempty"`
 }
 
 // Write atomically writes running.json at path, creating parent directories

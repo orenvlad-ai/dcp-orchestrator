@@ -153,6 +153,11 @@ const (
 	// AgentExitDetectionSupervisor means AO must wrap the CLI in its generic
 	// process supervisor because the adapter has no reliable exit hook.
 	AgentExitDetectionSupervisor AgentExitDetectionMode = "supervisor"
+	// AgentExitDetectionSupervisorIdleOnSuccess keeps the generic supervisor's
+	// failure semantics, but treats a zero exit status as an ordinary idle
+	// boundary. It is for bounded one-shot agents whose process outcome is the
+	// authoritative completion fact; interactive agents must not use it.
+	AgentExitDetectionSupervisorIdleOnSuccess AgentExitDetectionMode = "supervisor_idle_on_success"
 )
 
 // AgentExitDetector is an optional adapter capability. Adapters that omit it

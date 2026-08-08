@@ -229,13 +229,7 @@ func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
 }
 
 func (c *commandContext) emitCLIInvoked(ctx context.Context, cmd *cobra.Command) {
-	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	_ = c.postLoopbackJSON(reqCtx, "/internal/telemetry/cli-invoked", map[string]string{
-		"command":     cmd.Name(),
-		"commandPath": cmd.CommandPath(),
-		"actorType":   cliInvocationActorType(cmd),
-	})
+	// DCP package release gate: CLI analytics capture is unavailable.
 }
 
 func cliInvocationActorType(cmd *cobra.Command) string {
@@ -249,14 +243,7 @@ func cliInvocationActorType(cmd *cobra.Command) string {
 }
 
 func (c *commandContext) emitCLIUsageError(ctx context.Context, args []string, err error) {
-	command, commandPath := usageErrorCommand(args)
-	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-	_ = c.postLoopbackJSON(reqCtx, "/internal/telemetry/cli-usage-error", map[string]string{
-		"command":     command,
-		"commandPath": commandPath,
-		"error":       err.Error(),
-	})
+	// DCP package release gate: CLI analytics capture is unavailable.
 }
 
 func usageErrorCommand(args []string) (string, string) {

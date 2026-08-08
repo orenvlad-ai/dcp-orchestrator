@@ -263,7 +263,7 @@ func TestE2E_Lifecycle(t *testing.T) {
 
 	// /healthz identity
 	body := httpGet(t, e.port, "/healthz")
-	mustContain(t, body, "agent-orchestrator-daemon")
+	mustContain(t, body, "dcp-orchestrator-daemon")
 
 	if out, code := e.run(t, "stop"); code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop: exit %d, out %s", code, out)

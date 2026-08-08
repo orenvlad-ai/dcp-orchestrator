@@ -1,6 +1,11 @@
 // @vitest-environment node
-import { describe, it, expect } from "vitest";
-import { keepDaemonAlive, shouldLinkOnAttach } from "./daemon-owner";
+import { describe, expect, it } from "vitest";
+import {
+	failClosedReplacementError,
+	keepDaemonAlive,
+	requiredAppOwnerError,
+	shouldLinkOnAttach,
+} from "./daemon-owner";
 
 describe("shouldLinkOnAttach", () => {
 	it('returns true when owner is "app"', () => {
@@ -19,12 +24,6 @@ describe("shouldLinkOnAttach", () => {
 		expect(shouldLinkOnAttach("cli")).toBe(false);
 	});
 
-	// Cross-launch regression (PR #2231 review): a daemon spawned with
-	// AO_KEEP_DAEMON is stamped owner:"persistent" in running.json. A LATER
-	// launch of the app — which may have AO_KEEP_DAEMON unset — must NOT
-	// re-establish the supervisor link from that durable owner, or closing the
-	// second instance would kill the supposedly-persistent daemon. The decision
-	// is read only from the daemon's record, never from the current process env.
 	it("does NOT re-link a persistent daemon on attach, even when AO_KEEP_DAEMON is unset now", () => {
 		expect(shouldLinkOnAttach("persistent")).toBe(false);
 	});
@@ -43,9 +42,6 @@ describe("keepDaemonAlive", () => {
 		expect(keepDaemonAlive({ AO_KEEP_DAEMON: value })).toBe(true);
 	});
 
-	// Explicit allowlist (PR #2231 review): conventional falsy values and any
-	// unrecognized string must NOT retain the daemon — "off"/"no" previously
-	// fell through the old "anything but 0/false" check and kept it alive.
 	it.each(["0", "false", "FALSE", "off", "OFF", "no", "No"])("returns false for conventional off value %j", (value) => {
 		expect(keepDaemonAlive({ AO_KEEP_DAEMON: value })).toBe(false);
 	});
@@ -60,5 +56,26 @@ describe("keepDaemonAlive", () => {
 	it("trims surrounding whitespace before evaluating", () => {
 		expect(keepDaemonAlive({ AO_KEEP_DAEMON: "  0  " })).toBe(false);
 		expect(keepDaemonAlive({ AO_KEEP_DAEMON: "  1  " })).toBe(true);
+	});
+});
+
+describe("requiredAppOwnerError", () => {
+	it("accepts only an app-owned daemon when the DCP contour requires it", () => {
+		expect(requiredAppOwnerError("app", true)).toBeNull();
+		expect(requiredAppOwnerError(undefined, true)).toContain("without the canonical source UI owner identity");
+		expect(requiredAppOwnerError("persistent", true)).toContain("without the canonical source UI owner identity");
+	});
+
+	it("preserves upstream attach behavior outside the DCP contour", () => {
+		expect(requiredAppOwnerError(undefined, false)).toBeNull();
+		expect(requiredAppOwnerError("persistent", false)).toBeNull();
+	});
+});
+
+describe("failClosedReplacementError", () => {
+	it("blocks the kill-and-replace path only inside the DCP contour", () => {
+		expect(failClosedReplacementError(true, true)).toContain("no process was killed or replaced");
+		expect(failClosedReplacementError(false, true)).toBeNull();
+		expect(failClosedReplacementError(true, false)).toBeNull();
 	});
 });
