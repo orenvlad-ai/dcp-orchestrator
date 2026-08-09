@@ -65,6 +65,7 @@ jobs:
             src/renderer/components/CommandPalette.test.tsx \
             src/renderer/components/ProjectSettingsForm.test.tsx \
             src/renderer/components/RestoreUnavailableDialog.test.tsx \
+            src/renderer/components/SessionInspector.test.tsx \
             src/renderer/components/SessionsBoard.test.tsx \
             src/renderer/components/ShellTopbar.test.tsx \
             src/renderer/components/Sidebar.test.tsx

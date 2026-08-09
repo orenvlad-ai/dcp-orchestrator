@@ -143,12 +143,22 @@ func (f *fakeStore) ListRunningReviewRunsBySession(_ context.Context, sessionID 
 }
 
 type fakeSessions struct {
-	rec domain.SessionRecord
-	ok  bool
+	rec     domain.SessionRecord
+	ok      bool
+	records []domain.SessionRecord
 }
 
 func (f fakeSessions) GetSession(_ context.Context, _ domain.SessionID) (domain.SessionRecord, bool, error) {
 	return f.rec, f.ok, nil
+}
+func (f fakeSessions) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	if f.records != nil {
+		return f.records, nil
+	}
+	if f.ok {
+		return []domain.SessionRecord{f.rec}, nil
+	}
+	return nil, nil
 }
 
 type fakePRs struct{ prs []domain.PullRequest }
@@ -182,6 +192,8 @@ type fakeLauncher struct {
 	handles          []string
 	preflightErr     error
 	preflighted      bool
+	processAlive     bool
+	processAliveErr  error
 }
 
 func (f *fakeLauncher) Spawn(_ context.Context, spec LaunchSpec) (string, error) {
@@ -215,6 +227,9 @@ func (f *fakeLauncher) Preflight(_ context.Context, _ domain.ReviewerHarness, _ 
 	f.preflighted = true
 	return f.preflightErr
 }
+func (f *fakeLauncher) ReviewerProcessAlive(_ context.Context, _, _ string) (bool, error) {
+	return f.processAlive || f.spawned, f.processAliveErr
+}
 
 func liveWorker() domain.SessionRecord {
 	return domain.SessionRecord{
@@ -238,7 +253,115 @@ func prAt(sha string) fakePRs {
 	return fakePRs{prs: []domain.PullRequest{{URL: "https://github.com/o/r/pull/1", Number: 1, HeadSHA: sha}}}
 }
 
+func idleWorker() domain.SessionRecord {
+	rec := liveWorker()
+	rec.Activity.State = domain.ActivityIdle
+	return rec
+}
+
 // --- tests ---
+
+func TestAutoTriggerIsExactHeadSingleFlightAndDoesNotRetryFailure(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	prs := &fakePRs{prs: prAt("sha1").prs}
+	eng := newEngineForTest(store, fakeSessions{rec: idleWorker(), ok: true}, prs, fakeProjects{}, launcher)
+
+	first, err := eng.AutoTrigger(context.Background(), "mer-1")
+	if err != nil || !first.Created {
+		t.Fatalf("first AutoTrigger = %+v, %v", first, err)
+	}
+	second, err := eng.AutoTrigger(context.Background(), "mer-1")
+	if err != nil || second.Created || launcher.spawnCount != 1 {
+		t.Fatalf("idempotent AutoTrigger = %+v, err=%v spawns=%d", second, err, launcher.spawnCount)
+	}
+	if _, err := store.UpdateReviewRunResult(context.Background(), first.Run.ID, domain.ReviewRunFailed, domain.VerdictNone, "technical failure", ""); err != nil {
+		t.Fatal(err)
+	}
+	third, err := eng.AutoTrigger(context.Background(), "mer-1")
+	if err != nil || third.Created || launcher.spawnCount != 1 {
+		t.Fatalf("failed current head retried automatically: %+v err=%v spawns=%d", third, err, launcher.spawnCount)
+	}
+	prs.prs = prAt("sha2").prs
+	fourth, err := eng.AutoTrigger(context.Background(), "mer-1")
+	if err != nil || !fourth.Created || fourth.Run.TargetSHA != "sha2" || launcher.spawnCount != 2 {
+		t.Fatalf("new exact head = %+v err=%v spawns=%d", fourth, err, launcher.spawnCount)
+	}
+}
+
+func TestAutoTriggerRequiresIdleWorkerAndEligiblePR(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		worker domain.SessionRecord
+		pr     domain.PullRequest
+	}{
+		{name: "active", worker: func() domain.SessionRecord { r := idleWorker(); r.Activity.State = domain.ActivityActive; return r }(), pr: prAt("sha1").prs[0]},
+		{name: "active launch", worker: func() domain.SessionRecord { r := idleWorker(); r.Metadata.RuntimeLaunchID = "launch-1"; return r }(), pr: prAt("sha1").prs[0]},
+		{name: "draft", worker: idleWorker(), pr: func() domain.PullRequest { p := prAt("sha1").prs[0]; p.Draft = true; return p }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launcher := &fakeLauncher{handle: "review-mer-1"}
+			eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: tc.worker, ok: true}, fakePRs{prs: []domain.PullRequest{tc.pr}}, fakeProjects{}, launcher)
+			res, err := eng.AutoTrigger(context.Background(), "mer-1")
+			if err != nil || res.Created || launcher.spawnCount != 0 {
+				t.Fatalf("AutoTrigger = %+v err=%v spawns=%d", res, err, launcher.spawnCount)
+			}
+		})
+	}
+}
+
+func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	old := domain.ReviewRun{ID: "old-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning, CreatedAt: time.Unix(1, 0)}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{old}}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	if err := eng.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("ReconcileStartup: %v", err)
+	}
+	if store.runs[0].Status != domain.ReviewRunFailed || launcher.spawnCount != 1 || len(store.runs) != 2 || store.runs[1].TargetSHA != "sha1" {
+		t.Fatalf("reconciled runs=%+v spawns=%d", store.runs, launcher.spawnCount)
+	}
+	if err := eng.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("second ReconcileStartup: %v", err)
+	}
+	if launcher.spawnCount != 1 || len(store.runs) != 2 {
+		t.Fatalf("recovery duplicated: runs=%d spawns=%d", len(store.runs), launcher.spawnCount)
+	}
+}
+
+func TestReconcileStartupFailsAmbiguousRunWithoutModelCall(t *testing.T) {
+	worker := idleWorker()
+	old := domain.ReviewRun{ID: "old-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1"}, runs: []domain.ReviewRun{old}}
+	launcher := &fakeLauncher{handle: "review-mer-1", processAliveErr: errors.New("probe unavailable")}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	if err := eng.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("ReconcileStartup: %v", err)
+	}
+	if store.runs[0].Status != domain.ReviewRunFailed || launcher.spawnCount != 0 || !strings.Contains(store.runs[0].Body, "could not be verified") {
+		t.Fatalf("ambiguous reconcile runs=%+v spawns=%d", store.runs, launcher.spawnCount)
+	}
+}
+
+func TestReconcileStartupPreservesActiveReview(t *testing.T) {
+	worker := idleWorker()
+	old := domain.ReviewRun{ID: "old-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1"}, runs: []domain.ReviewRun{old}}
+	launcher := &fakeLauncher{handle: "review-mer-1", processAlive: true}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	if err := eng.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("ReconcileStartup: %v", err)
+	}
+	if store.runs[0].Status != domain.ReviewRunRunning || launcher.spawnCount != 0 {
+		t.Fatalf("active review changed: run=%+v spawns=%d", store.runs[0], launcher.spawnCount)
+	}
+}
 
 func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	store := &fakeStore{}

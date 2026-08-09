@@ -58,6 +58,22 @@ type Projects interface {
 	GetProject(ctx stdctx.Context, id string) (domain.ProjectRecord, bool, error)
 }
 
+type sessionLister interface {
+	ListAllSessions(ctx stdctx.Context) ([]domain.SessionRecord, error)
+}
+
+type reviewerProcessInspector interface {
+	ReviewerProcessAlive(ctx stdctx.Context, handleID, runID string) (bool, error)
+}
+
+type triggerMode int
+
+const (
+	triggerManual triggerMode = iota
+	triggerAutomatic
+	triggerRecovery
+)
+
 // Deps wires the engine.
 type Deps struct {
 	Store    Store
@@ -165,6 +181,18 @@ type CancelResult struct {
 // one session cannot change what any other session in the project runs. The
 // harness-change path below already handles the swap by respawning the pane.
 func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness) (TriggerResult, error) {
+	return e.trigger(ctx, workerID, override, triggerManual, nil)
+}
+
+// AutoTrigger starts a review only for an idle, non-terminated worker and an
+// eligible exact PR head that has never had an AO review attempt. A technical
+// failure therefore remains actionable until the user uses the shared manual
+// trigger; lifecycle events cannot create a retry loop.
+func (e *Engine) AutoTrigger(ctx stdctx.Context, workerID domain.SessionID) (TriggerResult, error) {
+	return e.trigger(ctx, workerID, "", triggerAutomatic, nil)
+}
+
+func (e *Engine) trigger(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, mode triggerMode, recovery map[string]struct{}) (TriggerResult, error) {
 	if workerID == "" {
 		return TriggerResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
@@ -178,6 +206,10 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 	// the freshly-recorded run and short-circuits to Created:false.
 	unlock := e.lockWorker(workerID)
 	defer unlock()
+	return e.triggerLocked(ctx, workerID, override, mode, recovery)
+}
+
+func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, mode triggerMode, recovery map[string]struct{}) (TriggerResult, error) {
 
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
 	if err != nil {
@@ -186,8 +218,18 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 	if !ok {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 	}
-	if worker.IsTerminated {
+	if mode == triggerManual && worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)
+	}
+	if mode == triggerAutomatic && (worker.IsTerminated || worker.Activity.State != domain.ActivityIdle || worker.Metadata.RuntimeLaunchID != "") {
+		return TriggerResult{}, nil
+	}
+	if mode == triggerRecovery {
+		safelyStopped := worker.Activity.State == domain.ActivityIdle && !worker.IsTerminated
+		preservedTerminated := worker.Activity.State == domain.ActivityExited && worker.IsTerminated
+		if (!safelyStopped && !preservedTerminated) || worker.Metadata.RuntimeLaunchID != "" {
+			return TriggerResult{}, nil
+		}
 	}
 	if worker.Metadata.WorkspacePath == "" {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q has no workspace to review", ErrInvalid, workerID)
@@ -198,6 +240,9 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 		return TriggerResult{}, err
 	}
 	if len(prs) == 0 {
+		if mode != triggerManual {
+			return TriggerResult{}, nil
+		}
 		return TriggerResult{}, fmt.Errorf("%w: worker %q has no PR to review", ErrInvalid, workerID)
 	}
 	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
@@ -245,7 +290,14 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 		// so refusing it makes the reviewer choice inert exactly when it is most
 		// useful. Ineligible PRs stay excluded: nothing can review those.
 		eligible := reviewState.Status == ReviewStateNeedsReview || reviewState.Status == ReviewStateChangesRequested
-		if !eligible && !secondOpinionWanted(reviewState, override, harness) {
+		switch mode {
+		case triggerAutomatic:
+			eligible = reviewState.Status == ReviewStateNeedsReview && reviewState.LatestRun == nil
+		case triggerRecovery:
+			_, explicitlyRecovered := recovery[reviewKey(reviewState.PRURL, reviewState.TargetSHA)]
+			eligible = reviewState.Status == ReviewStateNeedsReview && (reviewState.LatestRun == nil || explicitlyRecovered)
+		}
+		if !eligible && (mode != triggerManual || !secondOpinionWanted(reviewState, override, harness)) {
 			continue
 		}
 		if _, err := e.store.SupersedeStaleRunningReviewRuns(ctx, workerID, reviewState.PRURL, reviewState.TargetSHA, "superseded by a review trigger for a newer commit"); err != nil {
@@ -315,6 +367,85 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 		created[i].ReviewID = reviewRow.ID
 	}
 	return TriggerResult{Run: created[0], ReviewerHandleID: handleID, Created: true, Reviews: reviews, CreatedRuns: created}, nil
+}
+
+func reviewKey(prURL, targetSHA string) string { return prURL + "\x00" + targetSHA }
+
+// ReconcileStartup folds persisted running rows against the exact supervised
+// reviewer process before any automatic trigger. It never calls a model when
+// the process is active or its state is ambiguous. A proven stale run is failed
+// durably, then its current exact head receives at most one recovery launch.
+func (e *Engine) ReconcileStartup(ctx stdctx.Context) error {
+	lister, ok := e.sessions.(sessionLister)
+	if !ok {
+		return fmt.Errorf("review startup reconciliation requires session listing")
+	}
+	sessions, err := lister.ListAllSessions(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, session := range sessions {
+		if err := e.reconcileSession(ctx, session.ID); err != nil {
+			errs = append(errs, fmt.Errorf("session %s: %w", session.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (e *Engine) reconcileSession(ctx stdctx.Context, workerID domain.SessionID) error {
+	unlock := e.lockWorker(workerID)
+	defer unlock()
+	running, err := e.store.ListRunningReviewRunsBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	if len(running) == 0 {
+		_, err := e.triggerLocked(ctx, workerID, "", triggerAutomatic, nil)
+		return err
+	}
+	reviewRow, ok, err := e.store.GetReviewBySession(ctx, workerID)
+	if err != nil {
+		return err
+	}
+	inspector, inspectable := e.launcher.(reviewerProcessInspector)
+	ambiguous := !ok || reviewRow.ReviewerHandleID == "" || !inspectable
+	alive := false
+	if !ambiguous {
+		for _, run := range running {
+			runAlive, inspectErr := inspector.ReviewerProcessAlive(ctx, reviewRow.ReviewerHandleID, run.ID)
+			if inspectErr != nil {
+				ambiguous = true
+				break
+			}
+			if runAlive {
+				alive = true
+				break
+			}
+		}
+	}
+	if alive {
+		return nil
+	}
+	reason := "reviewer process state could not be verified after restart; no automatic retry was started"
+	if !ambiguous {
+		reason = "reviewer was not running after restart; the stale review was reconciled before one automatic recovery attempt"
+	}
+	recovered := make(map[string]struct{}, len(running))
+	for _, run := range running {
+		updated, updateErr := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, reason, "")
+		if updateErr != nil {
+			return updateErr
+		}
+		if updated {
+			recovered[reviewKey(run.PRURL, run.TargetSHA)] = struct{}{}
+		}
+	}
+	if ambiguous || len(recovered) == 0 {
+		return nil
+	}
+	_, err = e.triggerLocked(ctx, workerID, "", triggerRecovery, recovered)
+	return err
 }
 
 func reviewLaunchSpec(worker domain.SessionRecord, harness domain.ReviewerHarness, run domain.ReviewRun, queue []ports.ReviewTask, index int) LaunchSpec {

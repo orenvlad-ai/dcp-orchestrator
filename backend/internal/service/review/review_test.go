@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,30 @@ type fakeReducer struct {
 	batchCalls int
 	gotBatchID string
 	gotBatch   []lifecycle.ReviewResult
+}
+
+func TestProcessExitFailsOnlyStillRunningExactRuns(t *testing.T) {
+	st := &fakeStore{batchRuns: []domain.ReviewRun{
+		{ID: "run-1", SessionID: "mer-1", Status: domain.ReviewRunRunning},
+		{ID: "run-2", SessionID: "mer-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved},
+	}}
+	svc := New(nil, st)
+	runs, err := svc.ProcessExit(context.Background(), "mer-1", ProcessExitReport{RunIDs: []string{"run-1", "run-2"}, Started: true, ExitCode: 2})
+	if err != nil {
+		t.Fatalf("ProcessExit: %v", err)
+	}
+	if len(runs) != 2 || runs[0].Status != domain.ReviewRunFailed || !strings.Contains(runs[0].Body, "code 2") {
+		t.Fatalf("runs = %+v", runs)
+	}
+	if runs[1].Status != domain.ReviewRunComplete || st.updateCalls != 1 {
+		t.Fatalf("terminal result was overwritten: runs=%+v updates=%d", runs, st.updateCalls)
+	}
+	if _, err := svc.ProcessExit(context.Background(), "mer-1", ProcessExitReport{RunIDs: []string{"run-1"}, Started: true, ExitCode: 2}); err != nil {
+		t.Fatalf("idempotent ProcessExit: %v", err)
+	}
+	if st.updateCalls != 1 {
+		t.Fatalf("idempotent report updated twice: %d", st.updateCalls)
+	}
 }
 
 func (f *fakeReducer) ApplyReviewBatch(_ context.Context, _ domain.SessionID, batchID string, results []lifecycle.ReviewResult) (lifecycle.ReviewDeliveryOutcome, error) {

@@ -2550,6 +2550,57 @@ paths:
       summary: Cancel a running code review
       tags:
       - reviews
+  /api/v1/sessions/{sessionId}/reviews/process-exit:
+    post:
+      operationId: reportReviewProcessExit
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewProcessExitInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewRunResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Record a supervised reviewer process exit
+      tags:
+      - reviews
   /api/v1/sessions/{sessionId}/reviews/submit:
     post:
       operationId: submitReview
@@ -3370,6 +3421,7 @@ components:
           - draft
           - ci_failed
           - review_pending
+          - review_failed
           - changes_requested
           - approved
           - mergeable
@@ -4445,6 +4497,24 @@ components:
       - sessionId
       - resumeMode
       - session
+      type: object
+    ReviewProcessExitInput:
+      properties:
+        exitCode:
+          description: Reviewer child exit code when started.
+          type: integer
+        runIds:
+          description: Exact review run ids supervised by this process.
+          items:
+            type: string
+          type: array
+        started:
+          description: Whether the reviewer child process started.
+          type: boolean
+      required:
+      - runIds
+      - started
+      - exitCode
       type: object
     ReviewRun:
       properties:

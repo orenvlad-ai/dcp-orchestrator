@@ -69,6 +69,13 @@ type SubmitReviewInput struct {
 	Reviews        []SubmitReviewItem `json:"reviews,omitempty" description:"Batched review results recorded by one reviewer CLI command."`
 }
 
+// ReviewProcessExitInput is emitted only by AO's hidden process supervisor.
+type ReviewProcessExitInput struct {
+	RunIDs   []string `json:"runIds" description:"Exact review run ids supervised by this process."`
+	Started  bool     `json:"started" description:"Whether the reviewer child process started."`
+	ExitCode int      `json:"exitCode" description:"Reviewer child exit code when started."`
+}
+
 // ReviewsController owns the session-scoped /reviews routes. A nil Svc returns 501.
 type ReviewsController struct {
 	Svc reviewsvc.Manager
@@ -80,6 +87,30 @@ func (c *ReviewsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/reviews/trigger", c.trigger)
 	r.Post("/sessions/{sessionId}/reviews/cancel", c.cancel)
 	r.Post("/sessions/{sessionId}/reviews/submit", c.submit)
+	r.Post("/sessions/{sessionId}/reviews/process-exit", c.processExit)
+}
+
+func (c *ReviewsController) processExit(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reviews/process-exit")
+		return
+	}
+	var in ReviewProcessExitInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "Invalid request body", nil)
+		return
+	}
+	runs, err := c.Svc.ProcessExit(r.Context(), sessionID(r), reviewsvc.ProcessExitReport{
+		RunIDs: in.RunIDs, Started: in.Started, ExitCode: in.ExitCode,
+	})
+	if err != nil {
+		writeReviewError(w, r, err)
+		return
+	}
+	if runs == nil {
+		runs = []domain.ReviewRun{}
+	}
+	envelope.WriteJSON(w, http.StatusOK, ReviewRunResponse{Reviews: runs})
 }
 
 func (c *ReviewsController) list(w http.ResponseWriter, r *http.Request) {

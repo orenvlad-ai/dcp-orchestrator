@@ -11,6 +11,7 @@ const (
 	StatusDraft            SessionStatus = "draft"
 	StatusCIFailed         SessionStatus = "ci_failed"
 	StatusReviewPending    SessionStatus = "review_pending"
+	StatusReviewFailed     SessionStatus = "review_failed"
 	StatusChangesRequested SessionStatus = "changes_requested"
 	StatusApproved         SessionStatus = "approved"
 	StatusMergeable        SessionStatus = "mergeable"

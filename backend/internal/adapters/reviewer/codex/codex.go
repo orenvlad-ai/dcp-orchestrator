@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	workeragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -31,8 +32,10 @@ var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
 // ReviewCommand launches the reviewer with an enforced read-only filesystem
-// sandbox. Auto approval lets the headless session request the narrowly needed
-// network access for posting the review and reporting its result.
+// sandbox and no interactive approval prompts. The installed Codex CLI accepts
+// approval_policy through -c, but does not accept --ask-for-approval after the
+// exec subcommand. Keep using the stock worker command builder for isolation,
+// then replace only its reviewer-specific approval arguments here.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
 		SessionID:        inv.ReviewerID,
@@ -45,7 +48,11 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	if err != nil {
 		return ports.ReviewCommandSpec{}, err
 	}
-	extra := []string{"--sandbox", "read-only"}
+	argv, err = reviewerArgv(argv)
+	if err != nil {
+		return ports.ReviewCommandSpec{}, err
+	}
+	extra := []string{"-c", `approval_policy="never"`, "--sandbox", "read-only"}
 	// Shell commands inherit only Codex's core environment by default. Preserve
 	// the AO location overrides the reviewer needs to submit to this daemon.
 	for _, name := range []string{"AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE"} {
@@ -60,6 +67,29 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 		extra = append(extra, "-c", "shell_environment_policy.set."+name+"="+string(encoded))
 	}
 	return ports.ReviewCommandSpec{Argv: insertBeforePrompt(argv, extra...)}, nil
+}
+
+func reviewerArgv(argv []string) ([]string, error) {
+	out := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		switch argv[i] {
+		case "--dangerously-bypass-approvals-and-sandbox":
+			return nil, fmt.Errorf("codex reviewer command attempted to bypass its read-only sandbox")
+		case "--ask-for-approval":
+			if i+1 >= len(argv) {
+				return nil, fmt.Errorf("codex reviewer command has an incomplete --ask-for-approval option")
+			}
+			i++
+			continue
+		case "-c", "--config":
+			if i+1 < len(argv) && strings.HasPrefix(argv[i+1], "approvals_reviewer=") {
+				i++
+				continue
+			}
+		}
+		out = append(out, argv[i])
+	}
+	return out, nil
 }
 
 // ReviewMessage returns the centrally-authored task for an existing pane.

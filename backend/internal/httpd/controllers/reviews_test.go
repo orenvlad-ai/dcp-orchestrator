@@ -27,6 +27,7 @@ type fakeReviewService struct {
 	cancel           reviewcore.CancelResult
 	list             reviewcore.SessionReviews
 	submitted        []reviewsvc.SubmittedReview
+	processExit      reviewsvc.ProcessExitReport
 }
 
 func (f *fakeReviewService) Trigger(
@@ -66,6 +67,11 @@ func (f *fakeReviewService) SubmitMany(_ context.Context, _ domain.SessionID, re
 
 func (f *fakeReviewService) List(context.Context, domain.SessionID) (reviewcore.SessionReviews, error) {
 	return f.list, nil
+}
+
+func (f *fakeReviewService) ProcessExit(_ context.Context, _ domain.SessionID, report reviewsvc.ProcessExitReport) ([]domain.ReviewRun, error) {
+	f.processExit = report
+	return []domain.ReviewRun{}, nil
 }
 
 func newReviewTestServer(t *testing.T, svc reviewsvc.Manager) *httptest.Server {

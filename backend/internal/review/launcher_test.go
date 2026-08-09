@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -147,8 +148,11 @@ func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	if handle != "review-mer-1" {
 		t.Fatalf("handle = %q, want review-mer-1", handle)
 	}
-	if rt.createCfg.WorkspacePath != "/ws/mer-1" || len(rt.createCfg.Argv) == 0 || rt.createCfg.Argv[0] != "greptile" {
+	if rt.createCfg.WorkspacePath != "/ws/mer-1" || len(rt.createCfg.Argv) < 2 || !slices.Equal(rt.createCfg.Argv[len(rt.createCfg.Argv)-2:], []string{"greptile", "review"}) {
 		t.Fatalf("create cfg = %+v", rt.createCfg)
+	}
+	if !slices.Contains(rt.createCfg.Argv, "review") || !slices.Contains(rt.createCfg.Argv, "supervise") || !slices.Contains(rt.createCfg.Argv, "run-1") {
+		t.Fatalf("reviewer command is not supervised: %+v", rt.createCfg.Argv)
 	}
 	// No environment is used to carry review identity.
 	if len(rt.createCfg.Env) != 0 {

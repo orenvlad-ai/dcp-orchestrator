@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -196,6 +197,13 @@ func Run() error {
 		return fmt.Errorf("wire session service: %w", err)
 	}
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
+	lcStack.LCM.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) {
+		go func() {
+			if _, triggerErr := reviewSvc.AutoTrigger(ctx, id); triggerErr != nil && !errors.Is(triggerErr, context.Canceled) {
+				log.Warn("automatic review trigger failed", "session", id, "err", triggerErr)
+			}
+		}()
+	})
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
@@ -344,6 +352,9 @@ func Run() error {
 	}
 	if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 		log.Error("reconcile agent processes on boot failed", "err", reconcileErr)
+	}
+	if reconcileErr := reviewSvc.ReconcileStartup(ctx); reconcileErr != nil {
+		log.Error("reconcile reviews on boot failed", "err", reconcileErr)
 	}
 
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
