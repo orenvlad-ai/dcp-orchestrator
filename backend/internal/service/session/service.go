@@ -36,6 +36,10 @@ type Store interface {
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 }
 
+type reviewRunReader interface {
+	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
+}
+
 // ListFilter captures API-facing session list query filters.
 type ListFilter struct {
 	ProjectID        domain.ProjectID
@@ -748,13 +752,64 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		return domain.Session{}, fmt.Errorf("pr facts %s: %w", rec.ID, err)
 	}
 	prs = deduplicatePRFacts(prs)
+	status := deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness))
+	if reviews, ok := s.store.(reviewRunReader); ok {
+		runs, reviewErr := reviews.ListReviewRunsBySession(ctx, rec.ID)
+		if reviewErr != nil {
+			return domain.Session{}, fmt.Errorf("review facts %s: %w", rec.ID, reviewErr)
+		}
+		status = overlayReviewStatus(status, prs, runs)
+	}
 	return domain.Session{
 		SessionRecord:    rec,
-		Status:           deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness)),
+		Status:           status,
 		SCMStatus:        deriveSCMStatus(prs),
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
 		PRs:              prs,
 	}, nil
+}
+
+// overlayReviewStatus projects only the latest AO-internal run for each exact
+// open PR head. Approved/changes-requested results fall back to the existing
+// stock SCM projection; only a live review or a technical failure needs an
+// additional board state.
+func overlayReviewStatus(base domain.SessionStatus, prs []domain.PRFacts, runs []domain.ReviewRun) domain.SessionStatus {
+	latest := make(map[string]domain.ReviewRun)
+	for _, run := range runs {
+		key := run.PRURL + "\x00" + run.TargetSHA
+		if existing, ok := latest[key]; !ok || run.CreatedAt.After(existing.CreatedAt) {
+			latest[key] = run
+		}
+	}
+	hasRunning := false
+	hasApproved := false
+	for _, pr := range prs {
+		if pr.URL == "" || pr.HeadSHA == "" || pr.Draft || pr.Merged || pr.Closed {
+			continue
+		}
+		run, ok := latest[pr.URL+"\x00"+pr.HeadSHA]
+		if !ok {
+			continue
+		}
+		if run.Status == domain.ReviewRunFailed {
+			return domain.StatusReviewFailed
+		}
+		if run.Status == domain.ReviewRunRunning {
+			hasRunning = true
+		}
+		if (run.Status == domain.ReviewRunComplete || run.Status == domain.ReviewRunDelivered) && run.Verdict == domain.VerdictApproved {
+			hasApproved = true
+		}
+	}
+	if hasRunning {
+		return domain.StatusReviewPending
+	}
+	if hasApproved {
+		if scm := deriveSCMStatus(prs); scm != "" {
+			return scm
+		}
+	}
+	return base
 }
 
 // now tolerates a zero-value Service (tests construct the struct literally

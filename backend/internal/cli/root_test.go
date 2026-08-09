@@ -153,6 +153,7 @@ func TestTelemetryMetaClassifiesRegisteredCommandPaths(t *testing.T) {
 	systemCommands := map[string]struct{}{
 		"ao agent-process":           {},
 		"ao agent-process supervise": {},
+		"ao review supervise":        {},
 		"ao completion":              {},
 		"ao daemon":                  {},
 		"ao help":                    {},

@@ -803,7 +803,7 @@ func containsSupervisor(entries []processEntry, rootPID int, sessionID, launchID
 func isAnySupervisorCommand(command string) bool {
 	fields := strings.Fields(command)
 	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "agent-process" && fields[i+1] == "supervise" {
+		if (fields[i] == "agent-process" || fields[i] == "review") && fields[i+1] == "supervise" {
 			return true
 		}
 	}
@@ -821,6 +821,14 @@ func isSupervisorCommand(command, sessionID, launchID string) bool {
 			}
 			if i+7 < len(fields) && fields[i+6] == "--idle-on-success" && fields[i+7] == "--" {
 				return true
+			}
+		}
+		if fields[i] == "review" && fields[i+1] == "supervise" &&
+			fields[i+2] == "--session" && fields[i+3] == sessionID {
+			for j := i + 4; j+1 < len(fields) && fields[j] != "--"; j++ {
+				if fields[j] == "--run" && fields[j+1] == launchID {
+					return true
+				}
 			}
 		}
 	}

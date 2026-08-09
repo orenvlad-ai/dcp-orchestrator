@@ -126,7 +126,9 @@ type Manager struct {
 	// active turn (input steers the run) rather than only while idle. Supplied by
 	// the agent adapter via WithActiveSteering; the default answers false, so an
 	// unknown harness is only written to while idle.
-	steerActive func(domain.AgentHarness) bool
+	steerActive         func(domain.AgentHarness) bool
+	reviewEligibilityMu sync.RWMutex
+	reviewEligibility   func(context.Context, domain.SessionID)
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -152,6 +154,24 @@ func New(store sessionStore, messenger ports.AgentMessenger, opts ...Option) *Ma
 		opt(m)
 	}
 	return m
+}
+
+// SetReviewEligibilityHandler late-binds the model-free review eligibility
+// signal. The handler is invoked only after the lifecycle write is committed;
+// daemon wiring decides how to schedule the potentially slower review launch.
+func (m *Manager) SetReviewEligibilityHandler(handler func(context.Context, domain.SessionID)) {
+	m.reviewEligibilityMu.Lock()
+	m.reviewEligibility = handler
+	m.reviewEligibilityMu.Unlock()
+}
+
+func (m *Manager) signalReviewEligibility(ctx context.Context, id domain.SessionID) {
+	m.reviewEligibilityMu.RLock()
+	handler := m.reviewEligibility
+	m.reviewEligibilityMu.RUnlock()
+	if handler != nil {
+		handler(ctx, id)
+	}
 }
 
 // SetCompletionTerminator wires merge completion to the same teardown path as
@@ -454,6 +474,9 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
+	if successfulProcessExit && next.Activity.State == domain.ActivityIdle {
+		m.signalReviewEligibility(ctx, id)
+	}
 	return nil
 }
 

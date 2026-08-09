@@ -70,6 +70,7 @@ type agentLauncher struct {
 	reviewers ports.ReviewerResolver
 	runtime   reviewerRuntime
 	dataDir   string
+	runFile   string
 }
 
 type preLaunchReviewer interface {
@@ -77,8 +78,12 @@ type preLaunchReviewer interface {
 }
 
 // NewLauncher builds the production reviewer launcher.
-func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, dataDir string) Launcher {
-	return &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir}
+func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, dataDir string, runFiles ...string) Launcher {
+	runFile := filepath.Join(dataDir, "run", "running.json")
+	if len(runFiles) > 0 {
+		runFile = runFiles[0]
+	}
+	return &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir, runFile: runFile}
 }
 
 // Preflight checks whether the reviewer for the given harness can be launched
@@ -195,6 +200,10 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	if err != nil {
 		return "", fmt.Errorf("reviewer command: %w", err)
 	}
+	argv, err := l.supervisedCommand(spec, cmd.Argv)
+	if err != nil {
+		return "", err
+	}
 	// The reviewer handle is stable per worker, so a still-live pane from a
 	// previous pass would otherwise block `tmux new-session` (duplicate name) or,
 	// worse, keep serving under its old harness. Destroy any stale pane on this
@@ -207,13 +216,53 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	handle, err := l.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: spec.WorkspacePath,
-		Argv:          cmd.Argv,
+		Argv:          argv,
 		Env:           pinnedEnv(cmd.Env),
 	})
 	if err != nil {
 		return "", fmt.Errorf("reviewer runtime: %w", err)
 	}
 	return handle.ID, nil
+}
+
+func (l *agentLauncher) supervisedCommand(spec LaunchSpec, child []string) ([]string, error) {
+	if len(child) == 0 {
+		return nil, fmt.Errorf("reviewer produced empty command")
+	}
+	dataDir := filepath.Clean(l.dataDir)
+	runFile := filepath.Clean(l.runFile)
+	if !filepath.IsAbs(dataDir) || !filepath.IsAbs(runFile) || dataDir != l.dataDir || runFile != l.runFile {
+		return nil, fmt.Errorf("reviewer supervisor requires exact absolute data-dir and run-file paths")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve reviewer supervisor executable: %w", err)
+	}
+	argv := []string{exe, "review", "supervise", "--session", string(spec.WorkerID), "--run", spec.RunID}
+	for _, task := range spec.ReviewQueue {
+		if task.RunID != "" && task.RunID != spec.RunID {
+			argv = append(argv, "--run", task.RunID)
+		}
+	}
+	argv = append(argv,
+		"--supervisor-data-dir", dataDir,
+		"--supervisor-run-file", runFile,
+		"--",
+	)
+	return append(argv, child...), nil
+}
+
+// ReviewerProcessAlive reports whether the exact supervised review generation
+// is still running. A preserved terminal shell is not an active reviewer.
+func (l *agentLauncher) ReviewerProcessAlive(ctx context.Context, handleID, runID string) (bool, error) {
+	inspector, ok := l.runtime.(ports.SupervisedProcessInspector)
+	if !ok {
+		return false, fmt.Errorf("reviewer process inspection is unavailable")
+	}
+	return inspector.IsSupervisedProcessAlive(ctx, ports.RuntimeHandle{ID: handleID}, ports.SupervisedProcessRef{
+		SessionID: domain.SessionID(handleID),
+		LaunchID:  runID,
+	})
 }
 
 // pinnedEnv returns the reviewer command's env with PATH pinned to the daemon's

@@ -755,6 +755,19 @@ func TestSupervisorCommandAcceptsOneShotOutcomeFlag(t *testing.T) {
 	}
 }
 
+func TestSupervisorCommandRecognizesExactReviewGeneration(t *testing.T) {
+	command := "/opt/ao review supervise --session worker-1 --run run-1 --run run-2 --supervisor-data-dir /tmp/data --supervisor-run-file /tmp/run.json -- codex exec"
+	if !isSupervisorCommand(command, "worker-1", "run-1") {
+		t.Fatal("exact primary review supervisor was not recognized")
+	}
+	if !isSupervisorCommand(command, "worker-1", "run-2") || isSupervisorCommand(command, "other", "run-1") {
+		t.Fatal("review batch or session identity was not matched exactly")
+	}
+	if !isAnySupervisorCommand(command) {
+		t.Fatal("review supervisor was not classified as an AO supervisor")
+	}
+}
+
 func TestIsSupervisedProcessAliveRejectsStaleAndUnrelatedProcesses(t *testing.T) {
 	entries, err := parseProcessTable("100 1 /bin/sh\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-old -- codex\n200 1 /opt/ao agent-process supervise --session sess-1 --launch launch-new -- codex\n")
 	if err != nil {

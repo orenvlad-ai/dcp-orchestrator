@@ -30,6 +30,16 @@ type Manager interface {
 	Submit(ctx context.Context, workerID domain.SessionID, runID string, verdict domain.ReviewVerdict, body, githubReviewID string) (domain.ReviewRun, error)
 	SubmitMany(ctx context.Context, workerID domain.SessionID, reviews []SubmittedReview) ([]domain.ReviewRun, error)
 	List(ctx context.Context, workerID domain.SessionID) (reviewcore.SessionReviews, error)
+	ProcessExit(ctx context.Context, workerID domain.SessionID, report ProcessExitReport) ([]domain.ReviewRun, error)
+}
+
+// ProcessExitReport is the model-free outcome reported by AO's reviewer
+// process supervisor. The service generates the persisted message so the
+// internal endpoint cannot inject arbitrary terminal output into the UI.
+type ProcessExitReport struct {
+	RunIDs   []string
+	Started  bool
+	ExitCode int
 }
 
 // Service is the API-facing review service. It delegates to the core engine.
@@ -92,6 +102,74 @@ func (s *Service) Trigger(
 	harness domain.ReviewerHarness,
 ) (reviewcore.TriggerResult, error) {
 	return s.engine.Trigger(ctx, workerID, harness)
+}
+
+// AutoTrigger is the lifecycle-facing entrypoint. It shares the engine path
+// with Run Review but applies the stricter no-prior-attempt eligibility rule.
+func (s *Service) AutoTrigger(ctx context.Context, workerID domain.SessionID) (reviewcore.TriggerResult, error) {
+	return s.engine.AutoTrigger(ctx, workerID)
+}
+
+// ReconcileStartup resolves stale persisted review processes, then launches
+// only exact eligible recovery/fresh work.
+func (s *Service) ReconcileStartup(ctx context.Context) error {
+	return s.engine.ReconcileStartup(ctx)
+}
+
+// ProcessExit marks only still-running runs from the exact supervised batch as
+// failed. If the reviewer submitted a verdict before exiting, that terminal
+// result wins and this report is an idempotent no-op.
+func (s *Service) ProcessExit(ctx context.Context, workerID domain.SessionID, report ProcessExitReport) ([]domain.ReviewRun, error) {
+	if workerID == "" {
+		return nil, fmt.Errorf("%w: worker session id is required", ErrInvalid)
+	}
+	if len(report.RunIDs) == 0 {
+		return nil, fmt.Errorf("%w: at least one review run id is required", ErrInvalid)
+	}
+	if s.store == nil {
+		return nil, fmt.Errorf("review service store is not configured")
+	}
+	reason := "reviewer failed to start; inspect the reviewer terminal and retry Run Review"
+	if report.Started {
+		if report.ExitCode == 0 {
+			reason = "reviewer exited without submitting a verdict; inspect the reviewer terminal and retry Run Review"
+		} else {
+			reason = fmt.Sprintf("reviewer exited with code %d before submitting a verdict; inspect the reviewer terminal and retry Run Review", report.ExitCode)
+		}
+	}
+	seen := make(map[string]struct{}, len(report.RunIDs))
+	runs := make([]domain.ReviewRun, 0, len(report.RunIDs))
+	for _, runID := range report.RunIDs {
+		if runID == "" {
+			return nil, fmt.Errorf("%w: review run id is required", ErrInvalid)
+		}
+		if _, duplicate := seen[runID]; duplicate {
+			continue
+		}
+		seen[runID] = struct{}{}
+		run, ok, err := s.store.GetReviewRun(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: review run %q", ErrNotFound, runID)
+		}
+		if run.SessionID != workerID {
+			return nil, fmt.Errorf("%w: review run %q does not belong to worker %q", ErrInvalid, runID, workerID)
+		}
+		if run.Status == domain.ReviewRunRunning {
+			updated, err := s.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, reason, "")
+			if err != nil {
+				return nil, err
+			}
+			if updated {
+				run.Status = domain.ReviewRunFailed
+				run.Body = reason
+			}
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
 }
 
 // Cancel stops the live reviewer pane and marks running review passes as failed.

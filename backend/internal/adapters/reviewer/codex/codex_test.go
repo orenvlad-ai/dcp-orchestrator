@@ -3,13 +3,15 @@ package codex
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 type captureAgent struct {
-	got ports.LaunchConfig
+	got  ports.LaunchConfig
+	argv []string
 }
 
 func (a *captureAgent) GetConfigSpec(context.Context) (ports.ConfigSpec, error) {
@@ -17,7 +19,10 @@ func (a *captureAgent) GetConfigSpec(context.Context) (ports.ConfigSpec, error) 
 }
 func (a *captureAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	a.got = cfg
-	return []string{"agent", "--", cfg.Prompt}, nil
+	if a.argv != nil {
+		return a.argv, nil
+	}
+	return []string{"agent", "exec", "--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`, "--", cfg.Prompt}, nil
 }
 func (a *captureAgent) GetPromptDeliveryStrategy(context.Context, ports.LaunchConfig) (ports.PromptDeliveryStrategy, error) {
 	return ports.PromptDeliveryInCommand, nil
@@ -48,7 +53,8 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	}
 
 	want := []string{
-		"agent",
+		"agent", "exec",
+		"-c", `approval_policy="never"`,
 		"--sandbox", "read-only",
 		"-c", `shell_environment_policy.set.AO_PORT="3103"`,
 		"-c", `shell_environment_policy.set.AO_DATA_DIR="/tmp/ao data"`,
@@ -63,6 +69,14 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	}
 	if agent.got.SystemPrompt != "review only" {
 		t.Fatalf("system prompt = %q", agent.got.SystemPrompt)
+	}
+}
+
+func TestReviewCommandRejectsSandboxBypass(t *testing.T) {
+	agent := &captureAgent{argv: []string{"agent", "exec", "--dangerously-bypass-approvals-and-sandbox", "--", "review"}}
+	_, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{Prompt: "review"})
+	if err == nil || !strings.Contains(err.Error(), "bypass") {
+		t.Fatalf("ReviewCommand error = %v, want sandbox bypass rejection", err)
 	}
 }
 

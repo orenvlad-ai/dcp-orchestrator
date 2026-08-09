@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -90,6 +93,19 @@ type reviewSessionOptions struct {
 	session string
 }
 
+type reviewSuperviseOptions struct {
+	session           string
+	runIDs            []string
+	supervisorDataDir string
+	supervisorRunFile string
+}
+
+type reviewProcessExitRequest struct {
+	RunIDs   []string `json:"runIds"`
+	Started  bool     `json:"started"`
+	ExitCode int      `json:"exitCode"`
+}
+
 type reviewListOptions struct {
 	json bool
 }
@@ -103,7 +119,86 @@ func newReviewCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newReviewSubmitCommand(ctx))
 	cmd.AddCommand(newReviewCancelCommand(ctx))
 	cmd.AddCommand(newReviewTriggerCommand(ctx))
+	cmd.AddCommand(newReviewSuperviseCommand(ctx))
 	return cmd
+}
+
+func newReviewSuperviseCommand(ctx *commandContext) *cobra.Command {
+	var opts reviewSuperviseOptions
+	cmd := &cobra.Command{
+		Use:    "supervise --session <id> --run <id> -- <command> [args...]",
+		Short:  "Supervise one AO-managed reviewer process (internal)",
+		Hidden: true,
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return usageError{errors.New("reviewer command is required")}
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.session = strings.TrimSpace(opts.session)
+			if !sessionIDPattern.MatchString(opts.session) {
+				return usageError{errors.New("invalid session id")}
+			}
+			for i := range opts.runIDs {
+				opts.runIDs[i] = strings.TrimSpace(opts.runIDs[i])
+				if !sessionIDPattern.MatchString(opts.runIDs[i]) {
+					return usageError{errors.New("invalid review run id")}
+				}
+			}
+			if len(opts.runIDs) == 0 {
+				return usageError{errors.New("at least one --run is required")}
+			}
+			restoreConnection, err := applySupervisorConnection(opts.supervisorDataDir, opts.supervisorRunFile)
+			if err != nil {
+				return usageError{err}
+			}
+			defer restoreConnection()
+			return ctx.runSupervisedReview(cmd.Context(), opts.session, opts.runIDs, args)
+		},
+	}
+	cmd.Flags().StringVar(&opts.session, "session", "", "AO worker session id")
+	cmd.Flags().StringArrayVar(&opts.runIDs, "run", nil, "AO review run id (repeat for a batch)")
+	cmd.Flags().StringVar(&opts.supervisorDataDir, "supervisor-data-dir", "", "AO data directory used only by the process supervisor")
+	cmd.Flags().StringVar(&opts.supervisorRunFile, "supervisor-run-file", "", "AO run-file used only by the process supervisor")
+	return cmd
+}
+
+func (c *commandContext) runSupervisedReview(ctx context.Context, session string, runIDs, argv []string) error {
+	child := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv comes from the selected reviewer adapter.
+	child.Env = supervisedChildEnv(os.Environ())
+	child.Stdin = c.deps.In
+	child.Stdout = c.deps.Out
+	child.Stderr = c.deps.Err
+	if err := child.Start(); err != nil {
+		_, _ = fmt.Fprintf(c.deps.Err, "ao: start managed reviewer: %v\n", err)
+		c.reportReviewProcessExit(session, runIDs, false, -1)
+		return err
+	}
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt)
+	waitErr := child.Wait()
+	signal.Stop(interrupts)
+	exitCode := 0
+	if waitErr != nil {
+		exitCode = 1
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+	c.reportReviewProcessExit(session, runIDs, true, exitCode)
+	return waitErr
+}
+
+func (c *commandContext) reportReviewProcessExit(session string, runIDs []string, started bool, exitCode int) {
+	ctx, cancel := context.WithTimeout(context.Background(), supervisedExitReportTimeout)
+	defer cancel()
+	path := "sessions/" + url.PathEscape(session) + "/reviews/process-exit"
+	req := reviewProcessExitRequest{RunIDs: runIDs, Started: started, ExitCode: exitCode}
+	if err := c.postJSON(ctx, path, req, nil); err != nil {
+		c.reportHookFailure("review", "process-exited", session, err)
+	}
 }
 
 func newReviewListCommand(ctx *commandContext) *cobra.Command {

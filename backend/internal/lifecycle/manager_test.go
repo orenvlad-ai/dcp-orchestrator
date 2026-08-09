@@ -265,6 +265,26 @@ func TestActivity_OneShotSuccessClosesGenerationAndWinsReaperRace(t *testing.T) 
 	}
 }
 
+func TestActivity_OneShotSuccessSignalsReviewAfterIdleCommit(t *testing.T) {
+	m, st, _ := newManager()
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	st.sessions[rec.ID] = rec
+	var got domain.SessionID
+	m.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) {
+		if stored := st.sessions[id]; stored.Activity.State != domain.ActivityIdle || stored.Metadata.RuntimeLaunchID != "" {
+			t.Fatalf("handler ran before idle commit: %+v", stored)
+		}
+		got = id
+	})
+	if err := m.ApplyActivitySignal(ctx, rec.ID, ports.ActivitySignal{Valid: true, State: domain.ActivityIdle, Event: "process-exited", LaunchID: "launch-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got != rec.ID {
+		t.Fatalf("review eligibility signal = %q, want %q", got, rec.ID)
+	}
+}
+
 func TestActivity_MetadataOnlyStoresAgentSessionIDWithoutChangingActivity(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -918,6 +938,19 @@ func TestSCMObservationProjectsToExistingPRReactions(t *testing.T) {
 	}
 	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "boom") {
 		t.Fatalf("want SCM CI nudge with log tail, got %v", msg.msgs)
+	}
+}
+
+func TestSCMObservationSignalsReviewEligibility(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	var got domain.SessionID
+	m.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) { got = id })
+	if err := m.ApplySCMObservation(ctx, "mer-1", ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "pr1", HeadSHA: "sha1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "mer-1" {
+		t.Fatalf("review eligibility signal = %q, want mer-1", got)
 	}
 }
 

@@ -225,3 +225,32 @@ func TestHarnessSignalsCapabilityGate(t *testing.T) {
 		t.Fatal("harnessSignals(amp) = true with codex-only predicate")
 	}
 }
+
+func TestOverlayReviewStatusUsesLatestExactOpenHead(t *testing.T) {
+	now := time.Unix(100, 0)
+	prs := []domain.PRFacts{{URL: "pr1", HeadSHA: "sha-new", Mergeability: domain.MergeMergeable}}
+	tests := []struct {
+		name string
+		runs []domain.ReviewRun
+		want domain.SessionStatus
+	}{
+		{name: "running exact head", runs: []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunRunning, CreatedAt: now}}, want: domain.StatusReviewPending},
+		{name: "failed exact head", runs: []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunFailed, CreatedAt: now}}, want: domain.StatusReviewFailed},
+		{name: "approved returns stock ready", runs: []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now}}, want: domain.StatusMergeable},
+		{name: "old sha ignored", runs: []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha-old", Status: domain.ReviewRunFailed, CreatedAt: now}}, want: domain.StatusMergeable},
+		{name: "latest exact run wins", runs: []domain.ReviewRun{
+			{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunFailed, CreatedAt: now.Add(-time.Minute)},
+			{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunRunning, CreatedAt: now},
+		}, want: domain.StatusReviewPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := overlayReviewStatus(domain.StatusMergeable, prs, tt.runs); got != tt.want {
+				t.Fatalf("overlayReviewStatus = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := overlayReviewStatus(domain.StatusTerminated, prs, []domain.ReviewRun{{PRURL: "pr1", TargetSHA: "sha-new", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now}}); got != domain.StatusMergeable {
+		t.Fatalf("approved preserved session did not use stock SCM projection: %q", got)
+	}
+}

@@ -321,6 +321,11 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, m.clock())...)
+	if _, ok, err := m.store.GetSession(ctx, id); err != nil {
+		return err
+	} else if ok {
+		m.signalReviewEligibility(ctx, id)
+	}
 	return nil
 }
 
