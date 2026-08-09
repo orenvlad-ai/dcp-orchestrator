@@ -14,8 +14,11 @@ or editing this repository:
 3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/docs/TARGET_ARCHITECTURE_V1.md)
 4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/upstream/dcp-orchestrator.lock)
 
-Those pinned documents are the implementation authority for the current I11
-change. The live `dev-control-plane` repository remains the authority for later
+Those pinned documents are the implementation authority for the I11 baseline.
+The owner-delegated I12 change adds only the bounded automatic reviewer contour
+described below; its exact merged pin and updated operating contract are applied
+sequentially in `dev-control-plane` after this source PR merges. The live
+`dev-control-plane` repository remains the authority for later
 architecture, operating, integration, qualification, and exact-pin changes.
 Do not copy or reinterpret those contracts here as a competing source of
 truth. Before beginning later work, confirm that the checked-out fork revision
@@ -43,10 +46,12 @@ is the exact immutable revision pinned by current `dev-control-plane`.
 - Never read, run, discover, import, migrate, or modify installed upstream Agent
   Orchestrator, its home-directory state, or its application data. Never use an
   upstream launcher/bootstrap path for DCP.
-- The only allowed target in this stage is the disposable, remote-free
-  `dcp-lab` repository beneath the explicit lab root. Real repositories,
-  remotes, `wb-core`, WBC, production, hosted systems, and public distribution
-  are out of scope.
+- The DCP adapter target remains the disposable, remote-free `dcp-lab`
+  repository beneath the explicit lab root. I12 additionally permits only the
+  existing disposable `orenvlad-ai/dcp-review-lab#1` and its preserved
+  `DCP Review Canary` session for one reviewer proof. Real repositories,
+  other remotes, `wb-core`, WBC, production, hosted systems, and public
+  distribution are out of scope.
 - The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
   crash collection/upload, release, or external service path. Do not restore
   inherited upstream paths for any of them.
@@ -62,13 +67,15 @@ one synthetic DCP task in exact state `SUBMITTED`. Submission is idempotent,
 target-restricted, and records an atomic per-task event. The board may project
 that synthetic lab task in Working with its stable task id and exact substate.
 
-I11 does not activate or imply task execution, executor dispatch/wake, reviewer,
-arbiter, Admission Controller, Release Train, action/lease, retry/recovery,
-scheduler, queue, watcher, webhook, monitoring, model slots/calls, HumanGate,
-acceptance, reverse delivery, hosted projection, production, or real-target
-mechanisms. Do not add speculative tables or UI for those future stages. Keep
-the existing I8 worker/session mechanisms intact, but do not exercise them as
-I11 proof. Never synthesize owner acceptance.
+I11 by itself does not activate or imply task execution or reviewer execution.
+I12 activates only the existing stock Review/ReviewRun/Engine contour: an
+eligible exact PR head on a safely idle worker triggers one fresh read-only
+reviewer, manual Run Review uses the same trigger, process outcomes are durable,
+and restart reconciliation is model-free and fail-closed. It adds no reviewer
+service, scheduler, queue, watcher, heartbeat, webhook, second registry/DB,
+arbiter, Admission Controller, Release Train, auto-merge, multi-pass repair
+loop, hosted projection, production target, or new DCP-task execution path.
+Never synthesize owner acceptance.
 
 Manual Spawn/Open Orchestrator affordances are absent from normal DCP UI. Keep
 the existing daemon/API/programmatic agent and orchestrator capability needed

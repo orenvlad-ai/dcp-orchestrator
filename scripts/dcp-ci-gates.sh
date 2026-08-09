@@ -8,6 +8,7 @@ upstream_commit='1df40e93772c2c48e916870d9c3ddf8f29a69f84'
 upstream_tree='36bf30cc4960c10f0d94fc63a8ff0a4dd22bb8a8'
 i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
+i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
 control_plane_commit='eb9ca41f23b2cfef51bda37f291cd44d6d29c173'
 operating_contract_revision='2026-08-08.10'
@@ -39,6 +40,7 @@ source_gates() {
 	[[ "$(git rev-parse "$upstream_commit^{tree}")" == "$upstream_tree" ]] || fail 'upstream tree mismatch'
 	git merge-base --is-ancestor "$upstream_commit" "$i8_parity_commit" || fail 'I8 parity anchor does not descend from upstream'
 	git merge-base --is-ancestor "$i8_parity_commit" HEAD || fail 'current source does not descend from the I8 parity anchor'
+	git merge-base --is-ancestor "$i11_commit" HEAD || fail 'current source does not descend from the I11 baseline'
 	[[ "$(git rev-list --count "$upstream_commit..$i8_parity_commit")" -eq 7 ]] || fail 'I8 queue is not the seven reviewed commits'
 	actual_patch_sha256="$(git diff "$upstream_commit" "$i8_parity_commit" --binary --full-index --no-ext-diff | sha256_stream)"
 	[[ "$actual_patch_sha256" == "$i8_patch_sha256" ]] || fail 'I8 parity diff digest mismatch'
@@ -59,7 +61,8 @@ source_gates() {
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
-	grep -Fq 'I11 does not activate or imply task execution' AGENTS.md || fail 'AGENTS.md does not keep future I9 roles inactive'
+	grep -Fq 'I12 activates only the existing stock Review/ReviewRun/Engine contour' AGENTS.md || fail 'AGENTS.md does not bound the I12 reviewer contour'
+	grep -Fq 'adds no reviewer' AGENTS.md || fail 'AGENTS.md does not exclude a new reviewer service'
 	grep -Fq 'Read and follow [`AGENTS.md`](AGENTS.md)' CLAUDE.md || fail 'compatibility agent entry does not defer to DCP AGENTS.md'
 	if grep -Fq 'All app state lives under `~/.ao` only' AGENTS.md CLAUDE.md \
 		|| grep -Fq 'canonical, auto-updating install path' AGENTS.md CLAUDE.md \
@@ -124,7 +127,16 @@ source_gates() {
 	grep -Fq 'export async function spawnOrchestrator' frontend/src/renderer/lib/spawn-orchestrator.ts || fail 'programmatic orchestrator helper was removed'
 	grep -Fq 'r.Post("/orchestrators", c.spawnOrchestrator)' backend/internal/httpd/controllers/sessions.go || fail 'programmatic orchestrator API was removed'
 
-	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/.*|AGENTS\.md|CLAUDE\.md|DCP_PROVENANCE\.md|NOTICE|README\.md|scripts/dcp-ci-gates\.sh|frontend/forge\.config\.ts|frontend/package(-lock)?\.json|backend/internal/daemon/daemon\.go|backend/internal/domain/dcp_task\.go|backend/internal/httpd/api\.go|backend/internal/httpd/apispec/openapi\.yaml|backend/internal/httpd/apispec/specgen/build\.go|backend/internal/httpd/controllers/dcp_tasks(_test)?\.go|backend/internal/httpd/controllers/dto\.go|backend/internal/service/dcptask/(repository|repository_test|service|service_test)\.go|backend/internal/storage/sqlite/gen/(dcp_tasks\.sql\.go|models\.go|sessions\.sql\.go)|backend/internal/storage/sqlite/migrate(_burned_versions)?_test\.go|backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation\.sql|backend/internal/storage/sqlite/queries/(dcp_tasks|sessions)\.sql|backend/internal/storage/sqlite/store/dcp_task_store(_test)?\.go|backend/sqlc\.yaml|frontend/src/api/schema\.ts|frontend/src/renderer/__tests__/integration/board-empty-states\.test\.tsx|frontend/src/renderer/components/(CommandPalette|ProjectSettingsForm|RestoreUnavailableDialog|SessionsBoard|ShellTopbar|Sidebar)(\.test)?\.tsx|frontend/src/renderer/hooks/useDCPTasksQuery\.ts|frontend/src/renderer/i18n/(de|en|es|fr|ja|ko|pt-BR|zh-CN)\.json|frontend/src/renderer/lib/(api-client|command-palette|orchestrator-spawn-sources|spawn-orchestrator)(\.test)?\.ts)$' || true)"
+	grep -Fq 'approval_policy="never"' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer approval policy is not non-interactive'
+	grep -Fq '"--sandbox", "read-only"' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer sandbox is not read-only'
+	grep -Fq 'case "--ask-for-approval":' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer does not strip unsupported approval argv'
+	grep -Fq '"review", "supervise"' backend/internal/review/launcher.go || fail 'reviewer process is not supervised'
+	grep -Fq 'reviews/process-exit' backend/internal/httpd/controllers/reviews.go || fail 'reviewer process exit is not persisted through the daemon'
+	grep -Fq 'func (e *Engine) AutoTrigger' backend/internal/review/review.go || fail 'shared automatic review trigger is absent'
+	grep -Fq 'func (e *Engine) ReconcileStartup' backend/internal/review/review.go || fail 'review restart reconciliation is absent'
+	! git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations | grep -q . || fail 'I12 added a second storage schema instead of reusing ReviewRun'
+
+	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/.*|AGENTS\.md|CLAUDE\.md|DCP_PROVENANCE\.md|NOTICE|README\.md|scripts/dcp-ci-gates\.sh|frontend/forge\.config\.ts|frontend/package(-lock)?\.json|backend/internal/adapters/reviewer/codex/codex(_test)?\.go|backend/internal/adapters/runtime/tmux/tmux(_test)?\.go|backend/internal/cli/(review|review_supervise_unix_test|root|root_test)\.go|backend/internal/daemon/(daemon|lifecycle_wiring)\.go|backend/internal/domain/(dcp_task|review|session|status)\.go|backend/internal/httpd/api\.go|backend/internal/httpd/apispec/openapi\.yaml|backend/internal/httpd/apispec/specgen/build\.go|backend/internal/httpd/controllers/(dcp_tasks(_test)?|dto|reviews(_test)?)\.go|backend/internal/lifecycle/(manager|manager_test|reactions)\.go|backend/internal/review/(launcher|launcher_test|planner|review|review_test)\.go|backend/internal/service/dcptask/(repository|repository_test|service|service_test)\.go|backend/internal/service/review/review(_test)?\.go|backend/internal/service/session/(service|status_test)\.go|backend/internal/storage/sqlite/gen/(dcp_tasks\.sql\.go|models\.go|sessions\.sql\.go)|backend/internal/storage/sqlite/migrate(_burned_versions)?_test\.go|backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation\.sql|backend/internal/storage/sqlite/queries/(dcp_tasks|sessions)\.sql|backend/internal/storage/sqlite/store/dcp_task_store(_test)?\.go|backend/sqlc\.yaml|frontend/src/api/schema\.ts|frontend/src/renderer/__tests__/integration/board-empty-states\.test\.tsx|frontend/src/renderer/components/(CommandPalette|ProjectSettingsForm|RestoreUnavailableDialog|SessionInspector|SessionsBoard|ShellTopbar|Sidebar)(\.test)?\.tsx|frontend/src/renderer/hooks/useDCPTasksQuery\.ts|frontend/src/renderer/i18n/(de|en|es|fr|ja|ko|pt-BR|zh-CN)\.json|frontend/src/renderer/lib/(api-client|command-palette|orchestrator-spawn-sources|session-presentation|spawn-orchestrator)(\.test)?\.ts|frontend/src/renderer/types/workspace\.ts)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

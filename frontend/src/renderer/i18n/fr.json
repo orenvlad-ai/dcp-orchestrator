@@ -750,6 +750,7 @@
 	"status.no_signal": "Aucun signal",
 	"status.pr_open": "PR ouvert",
 	"status.review_pending": "Revue en attente",
+	"status.review_failed": "Échec de la revue",
 	"status.terminated": "Terminé",
 	"status.unknown": "État inconnu",
 	"status.working": "En cours",

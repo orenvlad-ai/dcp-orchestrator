@@ -1248,7 +1248,9 @@ function ReviewPanel({
 	// to the state's own runs against a daemon that predates the runs field.
 	const runsByPR = new Map<string, ReviewRunFacts[]>();
 	for (const run of runs.filter(
-		(run) => (run.status === "complete" || run.status === "delivered") && Boolean(run.body?.trim()),
+		(run) =>
+			(run.status === "complete" || run.status === "delivered" || run.status === "failed") &&
+			Boolean(run.body?.trim()),
 	)) {
 		runsByPR.set(run.prUrl, [...(runsByPR.get(run.prUrl) ?? []), run]);
 	}
@@ -1257,7 +1259,7 @@ function ReviewPanel({
 			const fallback = [state.latestRun, state.previousRun].filter(
 				(run): run is ReviewRunFacts =>
 					Boolean(run) &&
-					(run!.status === "complete" || run!.status === "delivered") &&
+					(run!.status === "complete" || run!.status === "delivered" || run!.status === "failed") &&
 					Boolean(run!.body?.trim()),
 			);
 			if (fallback.length > 0) runsByPR.set(state.prUrl, fallback);
@@ -1428,11 +1430,22 @@ function GithubReviewPanel({
 
 type GithubReviewEntry = NonNullable<NonNullable<SessionPRSummary["review"]>["reviews"]>[number];
 
-function ReviewMarkdownBody({ body, clamped, testId }: { body: string; clamped: boolean; testId: string }) {
+function ReviewMarkdownBody({
+	body,
+	clamped,
+	testId,
+	danger = false,
+}: {
+	body: string;
+	clamped: boolean;
+	testId: string;
+	danger?: boolean;
+}) {
 	return (
 		<div
 			className={cn(
-				"min-w-0 break-words text-2xs leading-relaxed text-muted-foreground",
+				"min-w-0 break-words text-2xs leading-relaxed",
+				danger ? "text-error" : "text-muted-foreground",
 				"[&_a]:font-medium [&_a]:text-foreground [&_a]:underline [&_a]:underline-offset-2",
 				"[&_code]:rounded [&_code]:bg-muted/55 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-foreground",
 				"[&_li]:my-0.5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-1.5 [&_pre]:my-2",
@@ -1570,8 +1583,9 @@ function isClampedSummary(body: string): boolean {
 function ReviewRunRow({ run, prUrl, isEarlier }: { run: ReviewRunFacts; prUrl: string; isEarlier: boolean }) {
 	const { t } = useTranslation();
 	const [expanded, setExpanded] = useState(false);
-	// A terminated run's body is the reason it stopped, not findings.
-	const raw = run.status === "cancelled" || run.status === "failed" ? "" : run.body?.trim();
+	// A failed run's body is its actionable technical reason. Cancellation is a
+	// user action and does not need an error summary.
+	const raw = run.status === "cancelled" ? "" : run.body?.trim();
 	// Runs of blank lines cost the clamp its budget without carrying anything: a
 	// two-line gap between paragraphs eats half a four-line preview. Collapsed to
 	// a single blank line, which still separates paragraphs when expanded.
@@ -1601,7 +1615,9 @@ function ReviewRunRow({ run, prUrl, isEarlier }: { run: ReviewRunFacts; prUrl: s
 				</span>
 			</span>
 			{body ? (
-				<ReviewMarkdownBody body={body} clamped={clamped && !expanded} testId="review-run-summary" />
+				<div className={cn(run.status === "failed" && "rounded-md border border-error/28 bg-error/8 p-2 text-error")}>
+					<ReviewMarkdownBody body={body} clamped={clamped && !expanded} danger={run.status === "failed"} testId="review-run-summary" />
+				</div>
 			) : null}
 			{/* One tertiary group, not two competing labels. Below the body's size so
 			    they read as controls rather than sitting in the reading flow, and

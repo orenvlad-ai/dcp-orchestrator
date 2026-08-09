@@ -739,6 +739,7 @@
 	"status.no_signal": "신호 없음",
 	"status.pr_open": "PR 열림",
 	"status.review_pending": "리뷰 대기",
+	"status.review_failed": "리뷰 실패",
 	"status.terminated": "종료됨",
 	"status.unknown": "알 수 없는 상태",
 	"status.working": "작업 중",

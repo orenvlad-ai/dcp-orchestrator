@@ -725,6 +725,7 @@
 	"status.no_signal": "无信号",
 	"status.pr_open": "PR 已打开",
 	"status.review_pending": "等待评审",
+	"status.review_failed": "评审失败",
 	"status.terminated": "已终止",
 	"status.unknown": "未知状态",
 	"status.working": "工作中",

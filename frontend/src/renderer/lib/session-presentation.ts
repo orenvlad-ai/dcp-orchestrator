@@ -88,6 +88,7 @@ const sessionStatusLabelKeys: Record<SessionStatus, MessageKey> = {
 	ci_failed: "status.ci_failed",
 	changes_requested: "status.changes_requested",
 	review_pending: "status.review_pending",
+	review_failed: "status.review_failed",
 	draft: "status.draft",
 	pr_open: "status.pr_open",
 	approved: "status.approved",
@@ -106,6 +107,7 @@ const sessionStatusStyles: Record<SessionStatus, Omit<SessionStatusView, "label"
 	ci_failed: { className: "text-status-exited" },
 	changes_requested: { className: "text-status-needs-you" },
 	review_pending: { className: "text-status-in-review" },
+	review_failed: { className: "text-status-needs-you" },
 	draft: { className: "text-status-in-review" },
 	pr_open: { className: "text-status-in-review" },
 	approved: { className: "text-status-ready" },
@@ -222,6 +224,7 @@ export function attentionZone(input: SessionStatus | Pick<WorkspaceSession, "sta
 		case "no_signal":
 		case "ci_failed":
 		case "changes_requested":
+		case "review_failed":
 		case "unknown":
 			return "action";
 		case "review_pending":

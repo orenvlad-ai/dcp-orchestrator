@@ -6,6 +6,7 @@ export type SessionStatus =
 	| "draft"
 	| "ci_failed"
 	| "review_pending"
+	| "review_failed"
 	| "changes_requested"
 	| "approved"
 	| "mergeable"
@@ -23,6 +24,7 @@ const sessionStatuses = new Set<SessionStatus>([
 	"draft",
 	"ci_failed",
 	"review_pending",
+	"review_failed",
 	"changes_requested",
 	"approved",
 	"mergeable",

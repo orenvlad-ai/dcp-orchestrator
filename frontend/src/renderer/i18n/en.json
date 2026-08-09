@@ -729,6 +729,7 @@
 	"status.no_signal": "No signal",
 	"status.pr_open": "PR open",
 	"status.review_pending": "Review pending",
+	"status.review_failed": "Review failed",
 	"status.terminated": "Terminated",
 	"status.unknown": "Unknown status",
 	"status.working": "Working",

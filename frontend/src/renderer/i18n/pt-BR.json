@@ -750,6 +750,7 @@
 	"status.no_signal": "Sem sinal",
 	"status.pr_open": "PR aberto",
 	"status.review_pending": "Revisão pendente",
+	"status.review_failed": "Falha na revisão",
 	"status.terminated": "Encerrado",
 	"status.unknown": "Status desconhecido",
 	"status.working": "Em andamento",

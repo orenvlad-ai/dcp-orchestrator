@@ -1424,6 +1424,8 @@ describe("SessionInspector summary reviews", () => {
 		await openReviewsSection();
 
 		expect(await screen.findAllByText("Failed")).not.toHaveLength(0);
+		expect(screen.getByText("reviewer crashed")).toBeInTheDocument();
+		expect(screen.getByTestId("review-run-summary")).toHaveClass("text-error");
 		expect(screen.getByRole("button", { name: "Re-run review" })).toBeEnabled();
 	});
 
