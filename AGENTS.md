@@ -87,9 +87,11 @@ flow and do not delete legacy sessions/state.
 - The CLI and renderer are thin daemon clients. They never open SQLite, spawn a
   runtime, or create an alternate state/display authority.
 - SQLite is the sole local authority. Add a new additive migration; never edit
-  a merged migration. Use one transaction for task state and its event, reject
-  stale compare-and-set revisions, and reuse trigger-backed `change_log`
-  conventions rather than emitting parallel manual change events.
+  a merged migration. Use one transaction for task state and its required
+  semantic task event, reject stale compare-and-set revisions, and leave the
+  existing trigger-backed `change_log` as AO change-notification/CDC
+  infrastructure rather than turning it into a second DCP event or display
+  authority.
 - Do not persist full chat/model transcripts, chain-of-thought, secrets,
   credentials, authentication material, or user Codex configuration.
 - Change SQL sources/migrations and run `npm run sqlc`; never hand-edit

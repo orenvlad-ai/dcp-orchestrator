@@ -26,17 +26,18 @@ describe("spawnOrchestrator", () => {
 	beforeEach(() => vi.clearAllMocks());
 	afterEach(() => vi.unstubAllEnvs());
 
-	it("hides only manual creation in DCP while preserving navigation and the API", () => {
+	it("hides every manual control in DCP while preserving the programmatic API", () => {
 		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "1");
 		expect(manualOrchestratorSpawnHidden()).toBe(true);
 		expect(showOrchestratorControl(false)).toBe(false);
-		expect(showOrchestratorControl(true)).toBe(true);
+		expect(showOrchestratorControl(true)).toBe(false);
 		expect(spawnOrchestrator).toBeTypeOf("function");
 	});
 
-	it("preserves upstream manual controls outside the DCP contour", () => {
+	it("cannot reactivate manual controls through the upstream environment toggle", () => {
 		vi.stubEnv("VITE_DCP_HIDE_MANUAL_ORCHESTRATOR_SPAWN", "0");
-		expect(showOrchestratorControl(false)).toBe(true);
+		expect(showOrchestratorControl(false)).toBe(false);
+		expect(showOrchestratorControl(true)).toBe(false);
 	});
 
 	it("sends clean:true through to the request body when asked", async () => {

@@ -123,6 +123,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dcp/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List durable synthetic DCP tasks */
+        get: operations["listDCPTasks"];
+        put?: never;
+        /** Submit one model-free synthetic DCP task in SUBMITTED */
+        post: operations["submitDCPTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dcp/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one durable synthetic DCP task */
+        get: operations["getDCPTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dcp/tasks/{taskId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the monotonic event stream for one DCP task */
+        get: operations["listDCPTaskEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dev/import-projects": {
         parameters: {
             query?: never;
@@ -1090,6 +1142,78 @@ export interface components {
             data: string;
             mimeType?: string;
         };
+        DCPApprovedScope: {
+            /** @enum {string} */
+            schemaVersion: "dcp.scope/v1";
+            statement: string;
+        };
+        DCPApprovedTask: {
+            description: string;
+            /** @enum {string} */
+            schemaVersion: "dcp.task/v1";
+            title: string;
+        };
+        DCPRepositoryIdentity: {
+            headSha: string;
+            identityDigest: string;
+            markerDigest: string;
+            path: string;
+            /** @enum {string} */
+            projectId: "dcp-lab";
+            /** @enum {string} */
+            repository: "dcp-lab";
+            /** @enum {string} */
+            schemaVersion: "dcp.repository/v1";
+        };
+        DCPTask: {
+            approvedDigest: string;
+            approvedScope: components["schemas"]["DCPApprovedScope"];
+            approvedTask: components["schemas"]["DCPApprovedTask"];
+            /** Format: date-time */
+            createdAt: string;
+            idempotencyKey: string;
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            state: "SUBMITTED";
+            target: components["schemas"]["DCPRepositoryIdentity"];
+            taskId: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        DCPTaskEventResponse: {
+            causationId?: string;
+            correlationId: string;
+            eventId: string;
+            /** @enum {string} */
+            eventType: "task.submitted" | "system.reconciled";
+            evidenceDigest: string;
+            /** @enum {string} */
+            fromState?: "SUBMITTED";
+            idempotencyKey: string;
+            integrityDigest: string;
+            /** Format: date-time */
+            occurredAt: string;
+            payload: unknown;
+            /** Format: date-time */
+            recordedAt: string;
+            /** @enum {string} */
+            schemaVersion: "dcp.event/v1";
+            /** Format: int64 */
+            sequence: number;
+            sourceId: string;
+            /** @enum {string} */
+            sourceKind: "daemon";
+            taskId: string;
+            /** Format: int64 */
+            taskRevision: number;
+            /** @enum {string} */
+            toState: "SUBMITTED";
+        };
+        DCPTaskResponse: {
+            duplicate: boolean;
+            task: components["schemas"]["DCPTask"];
+        };
         DegradedProject: {
             id: string;
             /** @enum {string} */
@@ -1172,6 +1296,12 @@ export interface components {
             installed: components["schemas"]["AgentInfo"][];
             /** @description Agents supported by this daemon build. */
             supported: components["schemas"]["AgentInfo"][];
+        };
+        ListDCPTaskEventsResponse: {
+            events: components["schemas"]["DCPTaskEventResponse"][];
+        };
+        ListDCPTasksResponse: {
+            tasks: components["schemas"]["DCPTask"][];
         };
         ListNotificationsResponse: {
             nextCursor?: string;
@@ -1642,6 +1772,13 @@ export interface components {
         StartPreviewServerRequest: {
             /** @description Named preview configuration. Optional when exactly one configuration exists. */
             configuration?: string;
+        };
+        SubmitDCPTaskRequest: {
+            approvedScope: components["schemas"]["DCPApprovedScope"];
+            approvedTask: components["schemas"]["DCPApprovedTask"];
+            idempotencyKey: string;
+            /** @enum {string} */
+            target: "dcp-lab";
         };
         SubmitReviewInput: {
             /** @description Review body recorded by AO. Required for changes_requested. */
@@ -2135,6 +2272,225 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listDCPTasks: {
+        parameters: {
+            query?: {
+                /** @description Optional project filter; only dcp-lab is accepted. */
+                project?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDCPTasksResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    submitDCPTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitDCPTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DCPTaskResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DCPTaskResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getDCPTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable DCP task identifier. */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DCPTaskResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listDCPTaskEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable DCP task identifier. */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDCPTaskEventsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

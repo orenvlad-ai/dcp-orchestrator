@@ -286,16 +286,11 @@ describe("Sidebar", () => {
 		expect(content).not.toContainElement(screen.getByText("Projects"));
 	});
 
-	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
-		const user = userEvent.setup();
+	it("does not expose a project orchestrator button when no orchestrator agent is configured", () => {
 		renderSidebar({ workspaces: [{ ...workspace, orchestratorAgent: undefined }] });
 
-		await user.click(screen.getByRole("button", { name: "Spawn Project One orchestrator" }));
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/settings",
-			params: { projectId: "proj-1" },
-		});
+		expect(screen.queryByRole("button", { name: "Spawn Project One orchestrator" })).not.toBeInTheDocument();
+		expect(navigateMock).not.toHaveBeenCalled();
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
@@ -404,11 +399,12 @@ describe("Sidebar", () => {
 		expect(await screen.findByRole("dialog", { name: "Import to DCP Orchestrator" })).toBeInTheDocument();
 	});
 
-	it("reveals orchestrator and kebab buttons on the project row (no dashboard button)", () => {
+	it("keeps project actions while omitting dashboard and orchestrator buttons", () => {
 		renderSidebar();
 
 		expect(screen.queryByLabelText("Open Project One dashboard")).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Spawn Project One orchestrator")).toBeInTheDocument();
+		expect(screen.queryByLabelText("Spawn Project One orchestrator")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Open Project One orchestrator")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Project actions for Project One")).toBeInTheDocument();
 	});
 
@@ -1220,29 +1216,12 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Open merged terminated task")).not.toBeInTheDocument();
 	});
 
-	it("does not render the restart-to-update row unless an update is downloaded", async () => {
-		updateStatusMock.mockResolvedValue({ state: "available", version: "9.9.9" });
+	it("never probes or renders an updater control in the DCP sidebar", async () => {
+		updateStatusMock.mockResolvedValue({ state: "downloaded", version: "9.9.9", escalated: true });
 		renderSidebar();
 
-		await waitFor(() => expect(updateStatusMock).toHaveBeenCalled());
+		await act(async () => {});
+		expect(updateStatusMock).not.toHaveBeenCalled();
 		expect(screen.queryByLabelText(/Restart to install update/)).not.toBeInTheDocument();
-	});
-
-	it("renders the restart-to-update row with the working-orange treatment when escalated", async () => {
-		updateStatusMock.mockResolvedValue({
-			state: "downloaded",
-			version: "9.9.9",
-			stagedAt: Date.now(),
-			escalated: true,
-		});
-		renderSidebar();
-
-		// Both footer variants (expanded row and collapsed rail icon) are mounted.
-		const buttons = await screen.findAllByLabelText("Restart to install update v9.9.9");
-		expect(buttons.length).toBeGreaterThan(0);
-		for (const button of buttons) {
-			expect(button).toHaveClass("text-working", "bg-working/12");
-		}
-		expect(screen.getByText("v9.9.9 ready")).toBeInTheDocument();
 	});
 });

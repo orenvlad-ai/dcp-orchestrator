@@ -11,7 +11,6 @@ import {
 	Hash,
 	Layers,
 	Link,
-	Network,
 	RefreshCw,
 	ScanEye,
 	Shield,
@@ -29,12 +28,10 @@ import {
 	type AgentModelCatalog,
 } from "../hooks/useAgentModelsQuery";
 import { agentsQueryKey, agentsQueryOptions, refreshAgents } from "../hooks/useAgentsQuery";
-import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
-import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { cn } from "../lib/utils";
-import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { buildIntake, deriveGitHubRepo, IntakeFields, type IntakeForm, intakeNeedsRule } from "./IntakeFields";
 import { ReviewerSelect } from "./ReviewerSelect";
@@ -95,22 +92,16 @@ export function ProjectSettingsForm({ projectId, section = "general" }: { projec
 function SettingsBody({ project, projectId, onSaved, section = "general" }: { project: Project; projectId: string; onSaved: () => void; section?: ProjectSettingsSection }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const workspaceQuery = useWorkspaceQuery();
 	const config = project.config ?? {};
 	const isScratchProject = project.kind === "scratch";
-	const workspace = workspaceQuery.data?.find((item) => item.id === projectId);
-	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
 	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
 	const [form, setForm] = useState({
 		displayName: project.name,
 		defaultBranch: config.defaultBranch ?? project.defaultBranch ?? "",
 		sessionPrefix: config.sessionPrefix ?? "",
 		workerAgent: config.worker?.agent ?? "",
-		orchestratorAgent: config.orchestrator?.agent ?? "",
 		workerModel: config.worker?.agentConfig?.model ?? config.agentConfig?.model ?? "",
-		orchestratorModel: config.orchestrator?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		workerMode: config.worker?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
-		orchestratorMode: config.orchestrator?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		permissions: config.agentConfig?.permissions ?? "",
 		reviewerHarness: config.reviewers?.[0]?.harness ?? "",
 		intakeEnabled: intake.enabled ?? false,
@@ -118,10 +109,8 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 		intakeAssignee: intake.assignee ?? "",
 	});
 	const [savedAt, setSavedAt] = useState<number | null>(null);
-	const [replacementError, setReplacementError] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
-	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
-	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
+	const missingRequiredAgent = form.workerAgent === "";
 	const agentsQuery = useQuery(agentsQueryOptions);
 	const agentCatalog = agentsQuery.data;
 	const refreshAgentsMutation = useMutation({
@@ -148,11 +137,7 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 		mutationFn: async () => {
 			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
 			const displayName = form.displayName.trim();
-			const {
-				model: _legacyModel,
-				mode: _legacyMode,
-				...sharedAgentConfig
-			} = config.agentConfig ?? {};
+			const sharedAgentConfig = config.agentConfig ?? {};
 			const next: ProjectConfig = isScratchProject
 				? {
 						...scratchSupportedConfig(config),
@@ -161,15 +146,7 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 							agent: form.workerAgent,
 							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
 						},
-						orchestrator: {
-							...config.orchestrator,
-							agent: form.orchestratorAgent,
-							agentConfig: buildRoleAgentConfig(
-								config.orchestrator?.agentConfig,
-								form.orchestratorModel,
-								form.orchestratorMode,
-							),
-						},
+						orchestrator: config.orchestrator,
 						agentConfig: blankToUndefined({
 							...sharedAgentConfig,
 							permissions: form.permissions || undefined,
@@ -184,15 +161,7 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 							agent: form.workerAgent,
 							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode),
 						},
-						orchestrator: {
-							...config.orchestrator,
-							agent: form.orchestratorAgent,
-							agentConfig: buildRoleAgentConfig(
-								config.orchestrator?.agentConfig,
-								form.orchestratorModel,
-								form.orchestratorMode,
-							),
-						},
+						orchestrator: config.orchestrator,
 						agentConfig: blankToUndefined({
 							...sharedAgentConfig,
 							permissions: form.permissions || undefined,
@@ -205,25 +174,10 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 				body: { displayName, config: next },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
-			if (
-				form.orchestratorAgent !== initialOrchestratorAgent ||
-				(activeOrchestrator && activeOrchestrator.provider !== form.orchestratorAgent)
-			) {
-				try {
-					await spawnOrchestrator(projectId, "settings", true);
-				} catch (error) {
-					return {
-						replacementError:
-							error instanceof Error ? error.message : t("settings.project.replaceOrchestratorFailed"),
-					};
-				}
-			}
-			return { replacementError: null };
 		},
-		onSuccess: (result) => {
+		onSuccess: () => {
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
 			setSavedAt(Date.now());
-			setReplacementError(result.replacementError);
 			setValidationError(null);
 			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
 			onSaved();
@@ -239,7 +193,6 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 			validationError={validationError}
 			mutationError={mutation.isError ? mutation.error : null}
 			savedAt={savedAt}
-			replacementError={replacementError}
 		/>
 	);
 
@@ -249,7 +202,6 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 			onSubmit={(event) => {
 				event.preventDefault();
 				setSavedAt(null);
-				setReplacementError(null);
 				if (missingRequiredAgent) {
 					setValidationError(t("settings.project.agentsRequired"));
 					return;
@@ -302,7 +254,7 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 				</>
 			)}
 
-			{/* ── Agents: worker, orchestrator, model, permissions ───────── */}
+			{/* ── Agents: worker, model, permissions ─────────────────────── */}
 			{section === "agents" && (
 				<>
 					<SettingsSection title={t("settings.project.agents")}>
@@ -330,31 +282,6 @@ function SettingsBody({ project, projectId, onSaved, section = "general" }: { pr
 							mode={form.workerMode}
 							onModelChange={(workerModel) => setForm((f) => ({ ...f, workerModel }))}
 							onModeChange={(workerMode) => setForm((f) => ({ ...f, workerMode }))}
-						/>
-						<RequiredAgentField
-							id="orchestratorAgent"
-							variant="settings-row"
-							icon={Network}
-							value={form.orchestratorAgent}
-							placeholder={t("settings.project.selectOrchestrator")}
-							label={t("settings.project.defaultOrchestrator")}
-							authorized={agentCatalog?.authorized}
-							installed={agentCatalog?.installed}
-							supported={agentCatalog?.supported}
-							disabled={agentsQuery.isFetching && agentCatalog === undefined}
-							invalid={validationError !== null && form.orchestratorAgent === ""}
-							onChange={(v) =>
-								setForm((f) => ({ ...f, orchestratorAgent: v, orchestratorModel: "", orchestratorMode: "" }))
-							}
-						/>
-						<AgentModelField
-							role="orchestrator"
-							agentId={form.orchestratorAgent}
-							projectId={projectId}
-							model={form.orchestratorModel}
-							mode={form.orchestratorMode}
-							onModelChange={(orchestratorModel) => setForm((f) => ({ ...f, orchestratorModel }))}
-							onModeChange={(orchestratorMode) => setForm((f) => ({ ...f, orchestratorMode }))}
 						/>
 						<SettingsRow icon={Shield} label={t("settings.project.permissionMode")}>
 							<PermissionModeSelect
@@ -462,13 +389,11 @@ function SaveChangesFooter({
 	validationError,
 	mutationError,
 	savedAt,
-	replacementError,
 }: {
 	isPending: boolean;
 	validationError: string | null;
 	mutationError: unknown;
 	savedAt: number | null;
-	replacementError: string | null;
 }) {
 	const { t } = useTranslation();
 	return (
@@ -489,9 +414,6 @@ function SaveChangesFooter({
 			)}
 			{savedAt && !isPending && !mutationError && (
 				<span className="text-xs text-success">{t("settings.project.saved")}</span>
-			)}
-			{replacementError && !isPending && !mutationError && (
-				<span className="text-xs text-warning">{t("settings.project.restartFailed", { error: replacementError })}</span>
 			)}
 		</div>
 	);

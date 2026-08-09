@@ -478,31 +478,13 @@ describe("CommandPalette actions", () => {
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 
-	it("does not spawn Open orchestrator while the project is restarting", async () => {
+	it("never exposes Open orchestrator in the command palette", async () => {
 		ctx.params = { projectId: "proj-1" };
-		act(() => useUiStore.setState({ restartingProjectIds: new Set(["proj-1"]) }));
 		renderPalette();
 		act(() => useUiStore.getState().setCommandPaletteOpen(true));
 		await screen.findByPlaceholderText(/search projects/i);
-		fireEvent.click(screen.getByText("Open orchestrator"));
+		expect(screen.queryByText("Open orchestrator")).not.toBeInTheDocument();
 		expect(spawnMock).not.toHaveBeenCalled();
-		expect(navigateMock).not.toHaveBeenCalled();
-	});
-
-	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
-		ctx.params = { projectId: "proj-2" };
-		ctx.workspaces[1].orchestratorAgent = undefined;
-		renderPalette();
-		act(() => useUiStore.getState().setCommandPaletteOpen(true));
-		await screen.findByPlaceholderText(/search projects/i);
-		fireEvent.click(screen.getByText("Open orchestrator"));
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/settings",
-			params: { projectId: "proj-2" },
-		});
-		expect(spawnMock).not.toHaveBeenCalled();
-		await waitFor(() => expect(paletteInput()).toBeNull());
 	});
 
 	it("navigates and closes when selecting a project", async () => {
@@ -530,30 +512,6 @@ describe("CommandPalette actions", () => {
 			const selected = document.querySelector('[cmdk-item][data-selected="true"]');
 			expect(selected?.textContent).toContain("fix flake");
 		});
-	});
-
-	it("spawns only once when Open orchestrator is selected twice (in-flight guard)", async () => {
-		ctx.params = { projectId: "proj-2" };
-		spawnMock.mockReturnValueOnce(new Promise<string>(() => {}));
-		renderPalette();
-		act(() => useUiStore.getState().setCommandPaletteOpen(true));
-		await screen.findByPlaceholderText(/search projects/i);
-		const item = screen.getByText("Open orchestrator");
-		fireEvent.click(item);
-		fireEvent.click(item);
-		expect(spawnMock).toHaveBeenCalledTimes(1);
-	});
-
-	it("keeps the palette open and shows an error when spawning an orchestrator fails", async () => {
-		ctx.params = { projectId: "proj-2" };
-		spawnMock.mockRejectedValueOnce(new Error("daemon down"));
-		renderPalette();
-		act(() => useUiStore.getState().setCommandPaletteOpen(true));
-		await screen.findByPlaceholderText(/search projects/i);
-		fireEvent.click(screen.getByText("Open orchestrator"));
-		expect(await screen.findByRole("alert")).toHaveTextContent("daemon down");
-		expect(spawnMock).toHaveBeenCalledWith("proj-2", "command_palette");
-		expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
 	});
 
 	it("toggles the theme and closes", async () => {

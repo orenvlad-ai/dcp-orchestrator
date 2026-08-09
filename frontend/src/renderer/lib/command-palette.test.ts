@@ -85,7 +85,7 @@ describe("buildCommands grouping", () => {
 		const items = buildCommands({ workspaces: workspaces(), currentProjectId: "proj-1", currentSessionId: "w-pr" });
 		const map = byId(items);
 		expect(map.get("current-new-task")?.group).toBe("current");
-		expect(map.get("current-open-orchestrator")?.group).toBe("current");
+		expect(map.has("current-open-orchestrator")).toBe(false);
 		expect(map.get("current-project-settings")?.group).toBe("current");
 		expect(map.get("current-copy-branch")?.group).toBe("current");
 		expect(map.get("current-copy-branch")?.action).toEqual({ kind: "copy-branch", branch: "feature/w-pr" });
@@ -101,7 +101,7 @@ describe("buildCommands grouping", () => {
 		expect(byId(items).has("current-project-settings")).toBe(false);
 	});
 
-	it("disables New task and Open orchestrator while the project orchestrator is restarting", () => {
+	it("disables New task while keeping the manual orchestrator command absent during restart", () => {
 		const items = buildCommands({
 			workspaces: workspaces(),
 			currentProjectId: "proj-1",
@@ -110,8 +110,7 @@ describe("buildCommands grouping", () => {
 		const map = byId(items);
 		expect(map.get("current-new-task")?.disabled).toBe(true);
 		expect(map.get("current-new-task")?.disabledReason).toBe("Orchestrator restarting");
-		expect(map.get("current-open-orchestrator")?.disabled).toBe(true);
-		expect(map.get("current-open-orchestrator")?.disabledReason).toBe("Orchestrator restarting");
+		expect(map.has("current-open-orchestrator")).toBe(false);
 		expect(map.get("current-project-settings")?.disabled).toBeFalsy();
 	});
 

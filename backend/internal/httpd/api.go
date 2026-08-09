@@ -38,6 +38,7 @@ type APIDeps struct {
 	Browser             controllers.BrowserService
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
+	DCPTasks            controllers.DCPTaskService
 }
 
 // API owns one controller per resource and is the single Register call the
@@ -56,6 +57,7 @@ type API struct {
 	dev           *controllers.DevController
 	browser       *controllers.BrowserController
 	events        *EventsController
+	dcpTasks      *controllers.DCPTasksController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -85,6 +87,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
+		dcpTasks:      &controllers.DCPTasksController{Svc: deps.DCPTasks},
 	}
 }
 
@@ -113,6 +116,7 @@ func (a *API) Register(root chi.Router) {
 			a.shellTerms.Register(r)
 			a.dev.Register(r)
 			a.browser.Register(r)
+			a.dcpTasks.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.

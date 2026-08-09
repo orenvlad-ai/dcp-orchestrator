@@ -103,7 +103,28 @@ source_gates() {
 	grep -Fq '"exec", "--ignore-user-config", "--ephemeral", "--strict-config"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker isolation flags are absent'
 	! grep -Fq 'appendHookTrustBypassFlag(&cmd)' backend/internal/adapters/agent/codex/codex.go || fail 'forbidden hook-trust bypass is reachable'
 
-	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/|AGENTS\.md$|CLAUDE\.md$|DCP_PROVENANCE\.md$|NOTICE$|README\.md$|scripts/dcp-ci-gates\.sh$|frontend/forge\.config\.ts$|frontend/package(-lock)?\.json$)' || true)"
+	i11_migration='backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation.sql'
+	[[ -s "$i11_migration" ]] || fail 'I11 additive migration is absent'
+	grep -Fq 'CREATE TABLE dcp_tasks' "$i11_migration" || fail 'I11 durable task table is absent'
+	grep -Fq 'CREATE TABLE dcp_task_events' "$i11_migration" || fail 'I11 durable event stream is absent'
+	grep -Fq "CHECK (state = 'SUBMITTED')" "$i11_migration" || fail 'I11 physical state is not restricted to SUBMITTED'
+	grep -Fq "CHECK (target_project_id = 'dcp-lab')" "$i11_migration" || fail 'I11 physical target is not restricted to dcp-lab'
+	grep -Fq 'dcp_task_events_monotonic' "$i11_migration" || fail 'I11 monotonic event guard is absent'
+	grep -Fq 'dcp_tasks_immutable_contract' "$i11_migration" || fail 'I11 immutable/CAS guard is absent'
+	if sed '/-- +goose Down/,$d' "$i11_migration" | grep -Eiq '(^|[[:space:]])(ALTER|DROP)[[:space:]]'; then
+		fail 'I11 up migration is not strictly additive'
+	fi
+	grep -Fq 'r.Post("/dcp/tasks", c.submit)' backend/internal/httpd/controllers/dcp_tasks.go || fail 'I11 internal submit route is absent'
+	grep -Fq 'ValidateDCPTaskSchema' backend/internal/storage/sqlite/store/dcp_task_store.go || fail 'I11 startup schema validation is absent'
+	grep -Fq 'DCPTasks:            dcpTaskSvc' backend/internal/daemon/daemon.go || fail 'I11 daemon/API wiring is absent'
+	! grep -Fq 'refetchInterval' frontend/src/renderer/hooks/useDCPTasksQuery.ts || fail 'I11 renderer introduced a polling loop'
+	grep -Fq 'retry: false' frontend/src/renderer/hooks/useDCPTasksQuery.ts || fail 'I11 renderer task reads may create a retry loop'
+	grep -A2 -F 'export function manualOrchestratorSpawnHidden(): boolean' frontend/src/renderer/lib/orchestrator-spawn-sources.ts | grep -Fq 'return true;' || fail 'manual orchestrator affordances can be re-enabled'
+	grep -A2 -F 'export function showOrchestratorControl' frontend/src/renderer/lib/orchestrator-spawn-sources.ts | grep -Fq 'return false;' || fail 'existing orchestrators can reactivate manual UI'
+	grep -Fq 'export async function spawnOrchestrator' frontend/src/renderer/lib/spawn-orchestrator.ts || fail 'programmatic orchestrator helper was removed'
+	grep -Fq 'r.Post("/orchestrators", c.spawnOrchestrator)' backend/internal/httpd/controllers/sessions.go || fail 'programmatic orchestrator API was removed'
+
+	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/.*|AGENTS\.md|CLAUDE\.md|DCP_PROVENANCE\.md|NOTICE|README\.md|scripts/dcp-ci-gates\.sh|frontend/forge\.config\.ts|frontend/package(-lock)?\.json|backend/internal/daemon/daemon\.go|backend/internal/domain/dcp_task\.go|backend/internal/httpd/api\.go|backend/internal/httpd/apispec/openapi\.yaml|backend/internal/httpd/apispec/specgen/build\.go|backend/internal/httpd/controllers/dcp_tasks(_test)?\.go|backend/internal/httpd/controllers/dto\.go|backend/internal/service/dcptask/(repository|repository_test|service|service_test)\.go|backend/internal/storage/sqlite/gen/(dcp_tasks\.sql\.go|models\.go|sessions\.sql\.go)|backend/internal/storage/sqlite/migrate(_burned_versions)?_test\.go|backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation\.sql|backend/internal/storage/sqlite/queries/(dcp_tasks|sessions)\.sql|backend/internal/storage/sqlite/store/dcp_task_store(_test)?\.go|backend/sqlc\.yaml|frontend/src/api/schema\.ts|frontend/src/renderer/__tests__/integration/board-empty-states\.test\.tsx|frontend/src/renderer/components/(CommandPalette|ProjectSettingsForm|RestoreUnavailableDialog|SessionsBoard|ShellTopbar|Sidebar)(\.test)?\.tsx|frontend/src/renderer/hooks/useDCPTasksQuery\.ts|frontend/src/renderer/i18n/(de|en|es|fr|ja|ko|pt-BR|zh-CN)\.json|frontend/src/renderer/lib/(api-client|command-palette|orchestrator-spawn-sources|spawn-orchestrator)(\.test)?\.ts)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

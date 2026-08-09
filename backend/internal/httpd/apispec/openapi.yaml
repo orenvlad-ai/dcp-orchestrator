@@ -334,6 +334,170 @@ paths:
       summary: Check whether the desktop browser runtime is connected for a session
       tags:
       - browser
+  /api/v1/dcp/tasks:
+    get:
+      operationId: listDCPTasks
+      parameters:
+      - description: Optional project filter; only dcp-lab is accepted.
+        in: query
+        name: project
+        schema:
+          description: Optional project filter; only dcp-lab is accepted.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDCPTasksResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List durable synthetic DCP tasks
+      tags:
+      - dcpTasks
+    post:
+      operationId: submitDCPTask
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitDCPTaskRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DCPTaskResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DCPTaskResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit one model-free synthetic DCP task in SUBMITTED
+      tags:
+      - dcpTasks
+  /api/v1/dcp/tasks/{taskId}:
+    get:
+      operationId: getDCPTask
+      parameters:
+      - description: Durable DCP task identifier.
+        in: path
+        name: taskId
+        required: true
+        schema:
+          description: Durable DCP task identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DCPTaskResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read one durable synthetic DCP task
+      tags:
+      - dcpTasks
+  /api/v1/dcp/tasks/{taskId}/events:
+    get:
+      operationId: listDCPTaskEvents
+      parameters:
+      - description: Durable DCP task identifier.
+        in: path
+        name: taskId
+        required: true
+        schema:
+          description: Durable DCP task identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDCPTaskEventsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List the monotonic event stream for one DCP task
+      tags:
+      - dcpTasks
   /api/v1/dev/import-projects:
     post:
       operationId: runDevImportProjects
@@ -3245,6 +3409,185 @@ components:
       required:
       - data
       type: object
+    DCPApprovedScope:
+      properties:
+        schemaVersion:
+          enum:
+          - dcp.scope/v1
+          type: string
+        statement:
+          type: string
+      required:
+      - schemaVersion
+      - statement
+      type: object
+    DCPApprovedTask:
+      properties:
+        description:
+          type: string
+        schemaVersion:
+          enum:
+          - dcp.task/v1
+          type: string
+        title:
+          type: string
+      required:
+      - schemaVersion
+      - title
+      - description
+      type: object
+    DCPRepositoryIdentity:
+      properties:
+        headSha:
+          type: string
+        identityDigest:
+          type: string
+        markerDigest:
+          type: string
+        path:
+          type: string
+        projectId:
+          enum:
+          - dcp-lab
+          type: string
+        repository:
+          enum:
+          - dcp-lab
+          type: string
+        schemaVersion:
+          enum:
+          - dcp.repository/v1
+          type: string
+      required:
+      - schemaVersion
+      - projectId
+      - repository
+      - path
+      - headSha
+      - markerDigest
+      - identityDigest
+      type: object
+    DCPTask:
+      properties:
+        approvedDigest:
+          type: string
+        approvedScope:
+          $ref: '#/components/schemas/DCPApprovedScope'
+        approvedTask:
+          $ref: '#/components/schemas/DCPApprovedTask'
+        createdAt:
+          format: date-time
+          type: string
+        idempotencyKey:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        state:
+          enum:
+          - SUBMITTED
+          type: string
+        target:
+          $ref: '#/components/schemas/DCPRepositoryIdentity'
+        taskId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - taskId
+      - idempotencyKey
+      - approvedTask
+      - approvedScope
+      - approvedDigest
+      - target
+      - state
+      - revision
+      - createdAt
+      - updatedAt
+      type: object
+    DCPTaskEventResponse:
+      properties:
+        causationId:
+          type: string
+        correlationId:
+          type: string
+        eventId:
+          type: string
+        eventType:
+          enum:
+          - task.submitted
+          - system.reconciled
+          type: string
+        evidenceDigest:
+          type: string
+        fromState:
+          enum:
+          - SUBMITTED
+          type: string
+        idempotencyKey:
+          type: string
+        integrityDigest:
+          type: string
+        occurredAt:
+          format: date-time
+          type: string
+        payload: {}
+        recordedAt:
+          format: date-time
+          type: string
+        schemaVersion:
+          enum:
+          - dcp.event/v1
+          type: string
+        sequence:
+          format: int64
+          minimum: 1
+          type: integer
+        sourceId:
+          type: string
+        sourceKind:
+          enum:
+          - daemon
+          type: string
+        taskId:
+          type: string
+        taskRevision:
+          format: int64
+          minimum: 1
+          type: integer
+        toState:
+          enum:
+          - SUBMITTED
+          type: string
+      required:
+      - taskId
+      - sequence
+      - eventId
+      - schemaVersion
+      - eventType
+      - sourceKind
+      - sourceId
+      - correlationId
+      - idempotencyKey
+      - toState
+      - taskRevision
+      - occurredAt
+      - recordedAt
+      - payload
+      - evidenceDigest
+      - integrityDigest
+      type: object
+    DCPTaskResponse:
+      properties:
+        duplicate:
+          type: boolean
+        task:
+          $ref: '#/components/schemas/DCPTask'
+      required:
+      - task
+      - duplicate
+      type: object
     DegradedProject:
       properties:
         id:
@@ -3484,6 +3827,24 @@ components:
       - supported
       - installed
       - authorized
+      type: object
+    ListDCPTaskEventsResponse:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/DCPTaskEventResponse'
+          type: array
+      required:
+      - events
+      type: object
+    ListDCPTasksResponse:
+      properties:
+        tasks:
+          items:
+            $ref: '#/components/schemas/DCPTask'
+          type: array
+      required:
+      - tasks
       type: object
     ListNotificationsResponse:
       properties:
@@ -4690,6 +5051,26 @@ components:
             exists.
           type: string
       type: object
+    SubmitDCPTaskRequest:
+      properties:
+        approvedScope:
+          $ref: '#/components/schemas/DCPApprovedScope'
+        approvedTask:
+          $ref: '#/components/schemas/DCPApprovedTask'
+        idempotencyKey:
+          maxLength: 128
+          minLength: 1
+          type: string
+        target:
+          enum:
+          - dcp-lab
+          type: string
+      required:
+      - idempotencyKey
+      - target
+      - approvedTask
+      - approvedScope
+      type: object
     SubmitReviewInput:
       properties:
         body:
@@ -4924,3 +5305,5 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Model-free durable DCP task foundation
+  name: dcpTasks

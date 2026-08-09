@@ -39,10 +39,11 @@ import { useUiStore } from "../../stores/ui-store";
 type Project = { id: string; name: string; path: string; orchestratorAgent?: string };
 type Session = Record<string, unknown>;
 
-function respondWith(projects: Project[], sessions: Session[]) {
+function respondWith(projects: Project[], sessions: Session[], tasks: Record<string, unknown>[] = []) {
 	getMock.mockImplementation(async (url: string) => {
 		if (url === "/api/v1/projects") return { data: { projects }, error: undefined };
 		if (url === "/api/v1/sessions") return { data: { sessions }, error: undefined };
+		if (url === "/api/v1/dcp/tasks") return { data: { tasks }, error: undefined };
 		return { data: undefined, error: undefined };
 	});
 }
@@ -230,104 +231,57 @@ describe("project board with no sessions", () => {
 		expect(spawnOrchestratorMock).not.toHaveBeenCalled();
 	});
 
-	it("shows the task invitation instead of empty columns", async () => {
+	it("shows the task invitation without any manual orchestrator affordance", async () => {
 		respondWith([project], []);
 		renderBoard(<SessionsBoard projectId="proj-1" />);
 
 		expect(await screen.findByText("No worker sessions yet")).toBeInTheDocument();
-		// Board header + empty state each offer the pair; the orchestrator is primary in both.
-		expect(screen.getAllByRole("button", { name: "Spawn Orchestrator" }).length).toBeGreaterThan(0);
+		expect(screen.queryByRole("button", { name: "Spawn Orchestrator" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open Orchestrator" })).not.toBeInTheDocument();
 		expect(screen.getAllByRole("button", { name: "New task" }).length).toBeGreaterThan(0);
 		expect(screen.queryByText("Import to DCP Orchestrator")).not.toBeInTheDocument();
 		expect(columnCount()).toBe(0);
 	});
 
-	it("surfaces the daemon error when spawning the orchestrator fails", async () => {
-		respondWith([project], []);
-		spawnOrchestratorMock.mockRejectedValue(new Error("branch is already checked out in another worktree"));
-		renderBoard(<SessionsBoard projectId="proj-1" />);
+	it("renders exactly one synthetic SUBMITTED task in Working with its stable task id", async () => {
+		const dcpProject = { ...project, id: "dcp-lab", name: "DCP Lab" };
+		respondWith([dcpProject], [], [
+			{
+				taskId: "dcp_task_restart_stable",
+				idempotencyKey: "i11-ui-1",
+				approvedTask: {
+					schemaVersion: "dcp.task/v1",
+					title: "Synthetic persistence proof",
+					description: "No execution",
+				},
+				approvedScope: { schemaVersion: "dcp.scope/v1", statement: "Model-free lab only" },
+				approvedDigest: "a".repeat(64),
+				target: {
+					schemaVersion: "dcp.repository/v1",
+					projectId: "dcp-lab",
+					repository: "dcp-lab",
+					path: "/tmp/dcp-lab",
+					headSha: "b".repeat(40),
+					markerDigest: "c".repeat(64),
+					identityDigest: "d".repeat(64),
+				},
+				state: "SUBMITTED",
+				revision: 1,
+				createdAt: "2026-08-09T00:00:00Z",
+				updatedAt: "2026-08-09T00:00:00Z",
+			},
+		]);
+		renderBoard(<SessionsBoard projectId="dcp-lab" />);
 
-		await screen.findByText("No worker sessions yet");
-		const [spawnButton] = screen.getAllByRole("button", { name: "Spawn Orchestrator" });
-		await userEvent.click(spawnButton);
-
-		expect(await screen.findByText(/branch is already checked out/)).toBeInTheDocument();
-	});
-
-	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
-		const unconfiguredProject = { ...project, orchestratorAgent: undefined };
-		respondWith([unconfiguredProject], []);
-		renderBoard(<SessionsBoard projectId="proj-1" />);
-
-		await screen.findByText("No worker sessions yet");
-		const [spawnButton] = screen.getAllByRole("button", { name: "Spawn Orchestrator" });
-		await userEvent.click(spawnButton);
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/settings",
-			params: { projectId: "proj-1" },
-		});
-		expect(spawnOrchestratorMock).not.toHaveBeenCalled();
-	});
-
-	it("shows the project creation startup error after navigating to the project board", async () => {
-		respondWith([project], []);
-		useUiStore
-			.getState()
-			.setOrchestratorStartupError(
-				"proj-1",
-				"Project added, but orchestrator did not start: branch is already checked out in another worktree",
-			);
-		renderBoard(<SessionsBoard projectId="proj-1" />);
-
-		expect(await screen.findByText(/Project added, but orchestrator did not start/)).toBeInTheDocument();
-		expect(screen.getByText(/branch is already checked out/)).toBeInTheDocument();
-	});
-
-	it("clears the project creation startup error when retrying orchestrator spawn", async () => {
-		respondWith([project], []);
-		useUiStore
-			.getState()
-			.setOrchestratorStartupError(
-				"proj-1",
-				"Project added, but orchestrator did not start: branch is already checked out in another worktree",
-			);
-		spawnOrchestratorMock.mockResolvedValue("proj-1-orchestrator");
-		renderBoard(<SessionsBoard projectId="proj-1" />);
-
-		await screen.findByText(/Project added, but orchestrator did not start/);
-		const [spawnButton] = screen.getAllByRole("button", { name: "Spawn Orchestrator" });
-		await userEvent.click(spawnButton);
-
-		await waitFor(() =>
-			expect(screen.queryByText(/Project added, but orchestrator did not start/)).not.toBeInTheDocument(),
-		);
-		expect(useUiStore.getState().orchestratorStartupErrors["proj-1"]).toBeUndefined();
-	});
-
-	it("clears a project creation startup error when switching projects", async () => {
-		const otherProject: Project = { id: "proj-2", name: "other-app", path: "/repo/other-app" };
-		respondWith([project, otherProject], []);
-		useUiStore
-			.getState()
-			.setOrchestratorStartupError(
-				"proj-1",
-				"Project added, but orchestrator did not start: branch is already checked out in another worktree",
-			);
-		const { rerender } = renderBoard(<SessionsBoard projectId="proj-1" />);
-
-		await screen.findByText(/Project added, but orchestrator did not start/);
-		rerender(
-			<QueryClientProvider client={lastQueryClient!}>
-				<ShellProvider value={lastShell!}>
-					<SessionsBoard projectId="proj-2" />
-				</ShellProvider>
-			</QueryClientProvider>,
-		);
-
-		await screen.findByText("No worker sessions yet");
-		await waitFor(() => expect(useUiStore.getState().orchestratorStartupErrors["proj-1"]).toBeUndefined());
-		expect(screen.queryByText(/Project added, but orchestrator did not start/)).not.toBeInTheDocument();
+		const cards = await screen.findAllByTestId("board-dcp-task-card");
+		expect(cards).toHaveLength(1);
+		expect(cards[0]).toHaveAttribute("data-task-id", "dcp_task_restart_stable");
+		expect(cards[0]).toHaveTextContent("Synthetic persistence proof");
+		expect(cards[0]).toHaveTextContent("SUBMITTED");
+		expect(cards[0]).toHaveTextContent("Synthetic lab");
+		const working = screen.getByRole("region", { name: "Working sessions" });
+		expect(working).toContainElement(cards[0]);
+		expect(screen.queryByRole("button", { name: /orchestrator/i })).not.toBeInTheDocument();
 	});
 
 	it("clears a project creation startup error once an orchestrator exists", async () => {
@@ -343,28 +297,6 @@ describe("project board with no sessions", () => {
 		await screen.findByText("No worker sessions yet");
 		await waitFor(() => expect(useUiStore.getState().orchestratorStartupErrors["proj-1"]).toBeUndefined());
 		expect(screen.queryByText(/Project added, but orchestrator did not start/)).not.toBeInTheDocument();
-	});
-
-	it("clears a stale spawn error when switching projects", async () => {
-		const otherProject: Project = { id: "proj-2", name: "other-app", path: "/repo/other-app" };
-		respondWith([project, otherProject], []);
-		spawnOrchestratorMock.mockRejectedValue(new Error("branch is already checked out in another worktree"));
-		const { rerender } = renderBoard(<SessionsBoard projectId="proj-1" />);
-
-		await screen.findByText("No worker sessions yet");
-		const [spawnButton] = screen.getAllByRole("button", { name: "Spawn Orchestrator" });
-		await userEvent.click(spawnButton);
-		await screen.findByText(/branch is already checked out/);
-
-		rerender(
-			<QueryClientProvider client={lastQueryClient!}>
-				<ShellProvider value={lastShell!}>
-					<SessionsBoard projectId="proj-2" />
-				</ShellProvider>
-			</QueryClientProvider>,
-		);
-		await screen.findByText("No worker sessions yet");
-		expect(screen.queryByText(/branch is already checked out/)).not.toBeInTheDocument();
 	});
 
 	it("keeps the columns once the project has a session", async () => {
