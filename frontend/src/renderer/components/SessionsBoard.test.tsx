@@ -154,9 +154,9 @@ describe("SessionsBoard", () => {
 	});
 
 	it.each([
-		["active", "Working", "bg-status-working", true],
-		["idle", "Idle", "bg-status-idle", false],
-	] as const)("shows %s orchestrator activity in the in-panel board toolbar", (state, label, tone, pulses) => {
+		["active", "Working"],
+		["idle", "Idle"],
+	] as const)("hides the manual control for a %s orchestrator in the in-panel board toolbar", (state, label) => {
 		boardActionsInPanelMock.mockReturnValue(true);
 		workspaceQueryMock.mockReturnValue({
 			data: [
@@ -187,12 +187,8 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const button = screen.getByRole("button", { name: `Orchestrator, ${label}` });
-		const indicator = button.querySelector("span.size-dot-sm") as HTMLElement;
-		expect(indicator).toHaveAttribute("aria-hidden", "true");
-		expect(indicator).toHaveClass(tone);
-		expect(indicator).toHaveClass(pulses ? "animate-status-pulse" : "size-dot-sm");
-		if (!pulses) expect(indicator).not.toHaveClass("animate-status-pulse");
+		expect(screen.queryByRole("button", { name: `Orchestrator, ${label}` })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it("shows the Board crumb on the root board when actions live in the panel", () => {

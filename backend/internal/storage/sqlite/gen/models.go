@@ -30,6 +30,45 @@ type ChangeLog struct {
 	CreatedAt time.Time
 }
 
+type DcpTask struct {
+	TaskID               domain.DCPTaskID
+	IdempotencyKey       string
+	ApprovedTaskJson     string
+	ApprovedScopeJson    string
+	ApprovedDigest       string
+	TargetProjectID      string
+	TargetRepository     string
+	TargetPath           string
+	TargetHeadSha        string
+	TargetMarkerDigest   string
+	TargetIdentityDigest string
+	State                domain.DCPTaskState
+	Revision             int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type DcpTaskEvent struct {
+	TaskID          domain.DCPTaskID
+	Sequence        int64
+	EventID         string
+	SchemaVersion   string
+	EventType       string
+	SourceKind      string
+	SourceID        string
+	CorrelationID   string
+	CausationID     sql.NullString
+	IdempotencyKey  string
+	FromState       *domain.DCPTaskState
+	ToState         domain.DCPTaskState
+	TaskRevision    int64
+	OccurredAt      time.Time
+	RecordedAt      time.Time
+	PayloadJson     string
+	EvidenceDigest  string
+	IntegrityDigest string
+}
+
 type Notification struct {
 	ID         string
 	SessionID  domain.SessionID
@@ -199,9 +238,9 @@ type Session struct {
 	TerminateOnPRMerge bool
 	DiffBaseSha        string
 	DiffBaseRef        string
+	ReviewerHarness    domain.ReviewerHarness
 	IsPinned           bool
 	PinnedAt           sql.NullTime
-	ReviewerHarness    domain.ReviewerHarness
 }
 
 type SessionCleanupFact struct {

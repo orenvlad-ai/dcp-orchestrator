@@ -9,6 +9,8 @@ upstream_tree='36bf30cc4960c10f0d94fc63a8ff0a4dd22bb8a8'
 i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
+control_plane_commit='eb9ca41f23b2cfef51bda37f291cd44d6d29c173'
+operating_contract_revision='2026-08-08.10'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -50,6 +52,23 @@ source_gates() {
 	grep -Fq "$i8_parity_commit" DCP_PROVENANCE.md || fail 'provenance lacks I8 parity anchor'
 	grep -Fq "$i8_patch_sha256" DCP_PROVENANCE.md || fail 'provenance lacks exact I8 patch digest'
 
+	[[ -s AGENTS.md && -s CLAUDE.md ]] || fail 'DCP coding-agent operational entry is absent'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/CURRENT_OPERATING_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane operating contract'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/TARGET_ARCHITECTURE_V1.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane target contract'
+	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
+	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
+	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
+	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
+	grep -Fq 'I11 does not activate or imply task execution' AGENTS.md || fail 'AGENTS.md does not keep future I9 roles inactive'
+	grep -Fq 'Read and follow [`AGENTS.md`](AGENTS.md)' CLAUDE.md || fail 'compatibility agent entry does not defer to DCP AGENTS.md'
+	if grep -Fq 'All app state lives under `~/.ao` only' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'canonical, auto-updating install path' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'Hard rule: exactly one publisher' AGENTS.md CLAUDE.md \
+		|| grep -Fq '`0.0.0.0` **only while explicitly enabled**' AGENTS.md CLAUDE.md \
+		|| grep -Fq 'go run ./cmd/ao start' AGENTS.md CLAUDE.md; then
+		fail 'conflicting upstream operational rules returned'
+	fi
+
 	workflow_list="$(find .github/workflows -maxdepth 1 -type f -print | sort)"
 	[[ "$workflow_list" == '.github/workflows/dcp-ci.yml' ]] || fail 'only the bounded DCP CI workflow may be active'
 	! grep -Eiq 'workflow_dispatch|pull_request_target|repository_dispatch|^[[:space:]]*schedule:|^[[:space:]]*release:|gh[[:space:]]+release|upload-artifact|electron-forge[[:space:]]+publish' .github/workflows/dcp-ci.yml || fail 'release, schedule, privileged PR, or publishing path is active'
@@ -84,7 +103,28 @@ source_gates() {
 	grep -Fq '"exec", "--ignore-user-config", "--ephemeral", "--strict-config"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker isolation flags are absent'
 	! grep -Fq 'appendHookTrustBypassFlag(&cmd)' backend/internal/adapters/agent/codex/codex.go || fail 'forbidden hook-trust bypass is reachable'
 
-	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/|DCP_PROVENANCE\.md$|NOTICE$|README\.md$|scripts/dcp-ci-gates\.sh$|frontend/forge\.config\.ts$|frontend/package(-lock)?\.json$)' || true)"
+	i11_migration='backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation.sql'
+	[[ -s "$i11_migration" ]] || fail 'I11 additive migration is absent'
+	grep -Fq 'CREATE TABLE dcp_tasks' "$i11_migration" || fail 'I11 durable task table is absent'
+	grep -Fq 'CREATE TABLE dcp_task_events' "$i11_migration" || fail 'I11 durable event stream is absent'
+	grep -Fq "CHECK (state = 'SUBMITTED')" "$i11_migration" || fail 'I11 physical state is not restricted to SUBMITTED'
+	grep -Fq "CHECK (target_project_id = 'dcp-lab')" "$i11_migration" || fail 'I11 physical target is not restricted to dcp-lab'
+	grep -Fq 'dcp_task_events_monotonic' "$i11_migration" || fail 'I11 monotonic event guard is absent'
+	grep -Fq 'dcp_tasks_immutable_contract' "$i11_migration" || fail 'I11 immutable/CAS guard is absent'
+	if sed '/-- +goose Down/,$d' "$i11_migration" | grep -Eiq '(^|[[:space:]])(ALTER|DROP)[[:space:]]'; then
+		fail 'I11 up migration is not strictly additive'
+	fi
+	grep -Fq 'r.Post("/dcp/tasks", c.submit)' backend/internal/httpd/controllers/dcp_tasks.go || fail 'I11 internal submit route is absent'
+	grep -Fq 'ValidateDCPTaskSchema' backend/internal/storage/sqlite/store/dcp_task_store.go || fail 'I11 startup schema validation is absent'
+	grep -Fq 'DCPTasks:            dcpTaskSvc' backend/internal/daemon/daemon.go || fail 'I11 daemon/API wiring is absent'
+	! grep -Fq 'refetchInterval' frontend/src/renderer/hooks/useDCPTasksQuery.ts || fail 'I11 renderer introduced a polling loop'
+	grep -Fq 'retry: false' frontend/src/renderer/hooks/useDCPTasksQuery.ts || fail 'I11 renderer task reads may create a retry loop'
+	grep -A2 -F 'export function manualOrchestratorSpawnHidden(): boolean' frontend/src/renderer/lib/orchestrator-spawn-sources.ts | grep -Fq 'return true;' || fail 'manual orchestrator affordances can be re-enabled'
+	grep -A2 -F 'export function showOrchestratorControl' frontend/src/renderer/lib/orchestrator-spawn-sources.ts | grep -Fq 'return false;' || fail 'existing orchestrators can reactivate manual UI'
+	grep -Fq 'export async function spawnOrchestrator' frontend/src/renderer/lib/spawn-orchestrator.ts || fail 'programmatic orchestrator helper was removed'
+	grep -Fq 'r.Post("/orchestrators", c.spawnOrchestrator)' backend/internal/httpd/controllers/sessions.go || fail 'programmatic orchestrator API was removed'
+
+	unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/.*|AGENTS\.md|CLAUDE\.md|DCP_PROVENANCE\.md|NOTICE|README\.md|scripts/dcp-ci-gates\.sh|frontend/forge\.config\.ts|frontend/package(-lock)?\.json|backend/internal/daemon/daemon\.go|backend/internal/domain/dcp_task\.go|backend/internal/httpd/api\.go|backend/internal/httpd/apispec/openapi\.yaml|backend/internal/httpd/apispec/specgen/build\.go|backend/internal/httpd/controllers/dcp_tasks(_test)?\.go|backend/internal/httpd/controllers/dto\.go|backend/internal/service/dcptask/(repository|repository_test|service|service_test)\.go|backend/internal/storage/sqlite/gen/(dcp_tasks\.sql\.go|models\.go|sessions\.sql\.go)|backend/internal/storage/sqlite/migrate(_burned_versions)?_test\.go|backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation\.sql|backend/internal/storage/sqlite/queries/(dcp_tasks|sessions)\.sql|backend/internal/storage/sqlite/store/dcp_task_store(_test)?\.go|backend/sqlc\.yaml|frontend/src/api/schema\.ts|frontend/src/renderer/__tests__/integration/board-empty-states\.test\.tsx|frontend/src/renderer/components/(CommandPalette|ProjectSettingsForm|RestoreUnavailableDialog|SessionsBoard|ShellTopbar|Sidebar)(\.test)?\.tsx|frontend/src/renderer/hooks/useDCPTasksQuery\.ts|frontend/src/renderer/i18n/(de|en|es|fr|ja|ko|pt-BR|zh-CN)\.json|frontend/src/renderer/lib/(api-client|command-palette|orchestrator-spawn-sources|spawn-orchestrator)(\.test)?\.ts)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

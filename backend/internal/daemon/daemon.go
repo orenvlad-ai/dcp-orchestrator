@@ -32,6 +32,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
+	dcptasksvc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcptask"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
@@ -95,6 +96,16 @@ func Run() error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	dcpTaskSvc := dcptasksvc.New(dcptasksvc.Deps{
+		Store: store,
+		Repository: dcptasksvc.GitRepositoryValidator{
+			TargetPath:          filepath.Join(filepath.Dir(cfg.DataDir), "targets", "dcp-lab"),
+			AllowedWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
+		},
+	})
+	if err := dcpTaskSvc.ValidateSchema(context.Background()); err != nil {
+		return fmt.Errorf("validate DCP task schema: %w", err)
+	}
 
 	// Refresh the embedded using-ao skill into the data dir so worker sessions
 	// in any project can read the ao CLI catalog from a stable absolute path.
@@ -284,6 +295,7 @@ func Run() error {
 		Browser:             browserService,
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
+		DCPTasks:            dcpTaskSvc,
 	})
 	if err != nil {
 		stop()

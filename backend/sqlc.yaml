@@ -96,6 +96,27 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
+          - column: "dcp_tasks.task_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DCPTaskID"
+          - column: "dcp_tasks.state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DCPTaskState"
+          - column: "dcp_task_events.task_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DCPTaskID"
+          - column: "dcp_task_events.from_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DCPTaskState"
+              pointer: true
+          - column: "dcp_task_events.to_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "DCPTaskState"
           - column: "sessions.issue_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

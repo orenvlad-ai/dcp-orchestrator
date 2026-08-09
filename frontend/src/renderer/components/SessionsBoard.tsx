@@ -7,6 +7,7 @@ import {
 	AlertTriangle,
 	Check,
 	Copy,
+	FlaskConical,
 	GitBranch,
 	LoaderCircle,
 	Plus,
@@ -40,6 +41,7 @@ import {
 	useTerminateSessionState,
 } from "../hooks/useTerminateSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useDCPTasksQuery, type DCPTask } from "../hooks/useDCPTasksQuery";
 import { NotificationCenter } from "./NotificationCenter";
 import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
 import { OrchestratorIcon } from "./icons";
@@ -86,6 +88,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const COLUMNS: Column[] = boardAttentionZoneOrder.map((zone) => getAttentionZoneViewForZone(zone, t));
 	const restoreSessionById = useRestoreSession();
 	const workspaceQuery = useWorkspaceQuery();
+	const dcpTasksQuery = useDCPTasksQuery(projectId);
 	const shell = useShellMaybe();
 	// Evaluated at render so platform mocks in tests can flip the in-panel chrome.
 	const boardActionsInPanel = usesBoardActionsInPanel();
@@ -97,6 +100,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	// Same crumb as ShellTopbar: project name in scope, else root-board "Board".
 	const boardLabel = workspace?.name ?? (projectId ? "" : t("shell.board"));
 	const sessions = workspaces.flatMap((w) => workerSessions(w.sessions));
+	const dcpTasks = dcpTasksQuery.data ?? [];
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
 	const showOrchestratorAction = showOrchestratorControl(orchestrator !== undefined);
 	const orchestratorActivityLabel = orchestrator ? getAgentActivityView(orchestrator.activity, t).label : undefined;
@@ -145,13 +149,14 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const isDaemonReady = usesPreviewWorkspaceData || (shell ? shell.daemonStatus.state === "ready" : true);
 	const daemonHasFailed = Boolean(shell?.daemonStatus.code);
 	const workspaceStartupState = shell?.workspaceStartupState ?? "ready";
-	const isLoaded = isDaemonReady && workspaceStartupState === "ready" && workspaceQuery.isSuccess;
+	const isLoaded = isDaemonReady && workspaceStartupState === "ready" && workspaceQuery.isSuccess && dcpTasksQuery.isSuccess;
 	const showStartup =
 		shell !== null &&
 		!daemonHasFailed &&
 		(!isDaemonReady || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
 	const showWelcome = !projectId && isLoaded && all.length === 0;
-	const showProjectEmpty = projectId !== undefined && isLoaded && workspaces.length > 0 && sessions.length === 0;
+	const showProjectEmpty =
+		projectId !== undefined && isLoaded && workspaces.length > 0 && sessions.length === 0 && dcpTasks.length === 0;
 	// Archived sessions cost one quiet line under the board until expanded.
 	const [archiveExpanded, setArchiveExpanded] = useState(false);
 	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
@@ -317,7 +322,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			) : null}
 
 			<div className="min-h-0 flex-1 overflow-hidden">
-				{projectId && health.state !== "ok" ? (
+				{showOrchestratorAction && projectId && health.state !== "ok" ? (
 					<div className="mx-3 my-3 flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground">
 						<AlertTriangle className="size-icon-base shrink-0 text-warning" aria-hidden="true" />
 						<span className="min-w-0 flex-1">{health.message}</span>
@@ -331,7 +336,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 				) : null}
 				{showStartup ? (
 					<DaemonStartupLoader />
-				) : workspaceStartupState === "error" || workspaceQuery.isError ? (
+				) : workspaceStartupState === "error" || workspaceQuery.isError || dcpTasksQuery.isError ? (
 					<p className="py-10 text-center text-xs text-passive">{t("shell.couldNotLoadSessions")}</p>
 				) : showWelcome ? (
 					<BoardWelcome />
@@ -358,6 +363,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 								<BoardColumn
 									key={`${projectId ?? "all"}:${col.zone}`}
 									col={col}
+									dcpTasks={col.zone === "working" ? dcpTasks : []}
 									sessions={byZone.get(col.zone) ?? []}
 									onOpen={openSession}
 									onTerminate={(session) => terminateSession.mutate(session)}
@@ -438,16 +444,20 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 function BoardColumn({
 	col,
+	dcpTasks,
 	sessions,
 	onOpen,
 	onTerminate,
 }: {
 	col: Column;
+	dcpTasks: DCPTask[];
 	sessions: WorkspaceSession[];
 	onOpen: (s: WorkspaceSession) => void;
 	onTerminate: (s: WorkspaceSession) => void;
 }) {
-	if (col.zone === "working") return <WorkLaneColumn sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
+	if (col.zone === "working") {
+		return <WorkLaneColumn dcpTasks={dcpTasks} sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
+	}
 	if (col.zone === "merge") return <MergeLaneColumn sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
 	return <ZoneColumn col={col} sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
 }
@@ -557,10 +567,12 @@ function splitLaneTones(t: TFunction): {
 }
 
 function WorkLaneColumn({
+	dcpTasks,
 	sessions,
 	onOpen,
 	onTerminate,
 }: {
+	dcpTasks: DCPTask[];
 	sessions: WorkspaceSession[];
 	onOpen: (s: WorkspaceSession) => void;
 	onTerminate: (s: WorkspaceSession) => void;
@@ -577,6 +589,7 @@ function WorkLaneColumn({
 			primarySessions={idleSessions}
 			primaryTone={tones.idle}
 			secondarySessions={workingSessions}
+			secondaryDCPTasks={dcpTasks}
 			secondaryTone={tones.working}
 			onOpen={onOpen}
 			onTerminate={onTerminate}
@@ -622,6 +635,7 @@ function SplitLaneColumn({
 	primarySessions,
 	primaryTone,
 	secondarySessions,
+	secondaryDCPTasks = [],
 	secondaryTone,
 	onOpen,
 	onTerminate,
@@ -631,13 +645,14 @@ function SplitLaneColumn({
 	primarySessions: WorkspaceSession[];
 	primaryTone: SplitLaneTone;
 	secondarySessions: WorkspaceSession[];
+	secondaryDCPTasks?: DCPTask[];
 	secondaryTone: SplitLaneTone;
 	onOpen: (s: WorkspaceSession) => void;
 	onTerminate: (s: WorkspaceSession) => void;
 }) {
 	const { t } = useTranslation();
 	const showPrimary = primarySessions.length > 0;
-	const showSecondary = secondarySessions.length > 0;
+	const showSecondary = secondarySessions.length > 0 || secondaryDCPTasks.length > 0;
 
 	return (
 		<section
@@ -661,7 +676,7 @@ function SplitLaneColumn({
 				<div className="ml-auto flex shrink-0 items-center gap-2 font-mono text-2xs leading-none text-passive">
 					<SessionCount count={primarySessions.length} label={primaryTone.countLabel} />
 					<span aria-hidden="true">/</span>
-					<SessionCount count={secondarySessions.length} label={secondaryTone.countLabel} />
+					<SessionCount count={secondarySessions.length + secondaryDCPTasks.length} label={secondaryTone.countLabel} />
 				</div>
 			</div>
 			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
@@ -687,6 +702,7 @@ function SplitLaneColumn({
 					{showSecondary ? (
 						<SecondaryLaneSection
 							sessions={secondarySessions}
+							dcpTasks={secondaryDCPTasks}
 							standalone={!showPrimary}
 							tone={secondaryTone}
 							onOpen={onOpen}
@@ -718,12 +734,14 @@ function SessionCount({ count, label }: { count: number; label: string }) {
 }
 
 function SecondaryLaneSection({
+	dcpTasks = [],
 	sessions,
 	onOpen,
 	onTerminate,
 	standalone,
 	tone,
 }: {
+	dcpTasks?: DCPTask[];
 	sessions: WorkspaceSession[];
 	onOpen: (s: WorkspaceSession) => void;
 	onTerminate?: (s: WorkspaceSession) => void;
@@ -743,7 +761,7 @@ function SecondaryLaneSection({
 				<div className="font-mono text-2xs font-medium uppercase tracking-wide-sm">
 					<LaneStatusLabel tone={tone} />
 				</div>
-				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length}</span>
+				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length + dcpTasks.length}</span>
 			</div>
 			<div className="flex flex-col gap-2.5 pt-3">
 				{sessions.map((session) => (
@@ -754,6 +772,45 @@ function SecondaryLaneSection({
 						onTerminate={onTerminate ? () => onTerminate(session) : undefined}
 					/>
 				))}
+				{dcpTasks.map((task) => (
+					<DCPTaskCard key={task.taskId} task={task} />
+				))}
+			</div>
+		</div>
+	);
+}
+
+function DCPTaskCard({ task }: { task: DCPTask }) {
+	const { t } = useTranslation();
+	return (
+		<div
+			className="w-full rounded-lg border border-status-working/40 bg-surface text-left"
+			data-testid="board-dcp-task-card"
+			data-task-id={task.taskId}
+			role="listitem"
+		>
+			<div className="flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
+				<span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-status-working/10 text-status-working">
+					<FlaskConical className="size-icon-sm" aria-hidden="true" />
+				</span>
+				<div className="min-w-0 flex-1">
+					<div className="line-clamp-2 text-sm-md font-semibold leading-tight tracking-tight text-foreground">
+						{task.approvedTask.title}
+					</div>
+					<div className="mt-1.5 truncate font-mono text-2xs text-passive" title={task.taskId}>
+						{task.taskId}
+					</div>
+				</div>
+			</div>
+			<div aria-hidden="true" className="mx-3.5 my-px h-px bg-border" />
+			<div className="flex items-center justify-between gap-2 px-3.5 py-2">
+				<span className="inline-flex min-w-0 items-center gap-1.5 text-2xs font-medium text-status-working">
+					<span aria-hidden="true" className="size-dot-sm shrink-0 rounded-full bg-current" />
+					{task.state}
+				</span>
+				<span className="shrink-0 font-mono text-micro uppercase tracking-wide-sm text-passive">
+					{t("dcpTask.syntheticLab")}
+				</span>
 			</div>
 		</div>
 	);

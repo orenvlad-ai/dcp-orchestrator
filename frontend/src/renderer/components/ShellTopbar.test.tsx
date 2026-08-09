@@ -168,7 +168,7 @@ describe("ShellTopbar status pill", () => {
 		expect(screen.queryByText("ao/sess-1")).not.toBeInTheDocument();
 		expect(screen.queryByText("Working")).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Kill session" })).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Open orchestrator" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it.each([
@@ -218,9 +218,9 @@ describe("ShellTopbar status pill", () => {
 
 describe("ShellTopbar orchestrator actions", () => {
 	it.each([
-		["active", "Working", "bg-status-working", true],
-		["waiting_input", "Input Needed", "bg-status-needs-you", false],
-	] as const)("shows %s orchestrator activity on the project board", (state, label, tone, pulses) => {
+		["active", "Working"],
+		["waiting_input", "Input Needed"],
+	] as const)("does not expose a manual control for a %s orchestrator on the project board", (state, label) => {
 		renderTopbarSessions(
 			[
 				{
@@ -231,12 +231,8 @@ describe("ShellTopbar orchestrator actions", () => {
 			"",
 		);
 
-		const button = screen.getByRole("button", { name: `Orchestrator, ${label}` });
-		const indicator = button.querySelector("span.size-dot-sm") as HTMLElement;
-		expect(indicator).toHaveAttribute("aria-hidden", "true");
-		expect(indicator).toHaveClass(tone);
-		expect(indicator).toHaveClass(pulses ? "animate-status-pulse" : "size-dot-sm");
-		if (!pulses) expect(indicator).not.toHaveClass("animate-status-pulse");
+		expect(screen.queryByRole("button", { name: `Orchestrator, ${label}` })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
 	});
 
 	it("marks Kanban as the primary action on orchestrator sessions", () => {
@@ -247,7 +243,7 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(screen.getByRole("button", { name: "New task" })).not.toHaveClass("bg-accent-strong");
 	});
 
-	it("opens project settings instead of spawning when no orchestrator agent is configured", async () => {
+	it("does not expose a manual orchestrator action when no orchestrator agent is configured", () => {
 		useWorkspaceQueryMock.mockReturnValue({
 			data: [
 				{
@@ -268,12 +264,8 @@ describe("ShellTopbar orchestrator actions", () => {
 			</QueryClientProvider>,
 		);
 
-		await userEvent.click(screen.getByRole("button", { name: "Open orchestrator" }));
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/settings",
-			params: { projectId: "proj-1" },
-		});
+		expect(screen.queryByRole("button", { name: "Open orchestrator" })).not.toBeInTheDocument();
+		expect(navigateMock).not.toHaveBeenCalled();
 		expect(spawnMock).not.toHaveBeenCalled();
 	});
 

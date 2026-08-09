@@ -79,6 +79,8 @@ func Build() ([]byte, error) {
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 		*(&openapi31.Tag{Name: "browser"}).WithDescription(
 			"Target-isolated desktop browser runtime (loopback only)"),
+		*(&openapi31.Tag{Name: "dcpTasks"}).WithDescription(
+			"Model-free durable DCP task foundation"),
 	}
 
 	for _, op := range operations() {
@@ -149,6 +151,13 @@ var schemaNames = map[string]string{
 	"DomainContainerReapConfig":       "ContainerReapConfig",
 	"DomainAgentConfig":               "AgentConfig",
 	"DomainRoleOverride":              "RoleOverride",
+	"DomainDCPTaskID":                 "DCPTaskID",
+	"DomainDCPTaskState":              "DCPTaskState",
+	"DomainDCPApprovedTask":           "DCPApprovedTask",
+	"DomainDCPApprovedScope":          "DCPApprovedScope",
+	"DomainDCPRepositoryIdentity":     "DCPRepositoryIdentity",
+	"DomainDCPTask":                   "DCPTask",
+	"DomainDCPTaskEvent":              "DCPTaskEvent",
 	// httpd/controllers (wire envelopes)
 	"ControllersListProjectsResponse":             "ListProjectsResponse",
 	"ControllersProjectResponse":                  "ProjectResponse",
@@ -217,6 +226,13 @@ var schemaNames = map[string]string{
 	"ControllersNotificationTarget":               "NotificationTarget",
 	"ControllersNotificationResponse":             "NotificationResponse",
 	"ControllersListNotificationsResponse":        "ListNotificationsResponse",
+	"ControllersDCPTaskIDParam":                   "DCPTaskIDParam",
+	"ControllersListDCPTasksQuery":                "ListDCPTasksQuery",
+	"ControllersSubmitDCPTaskRequest":             "SubmitDCPTaskRequest",
+	"ControllersDCPTaskResponse":                  "DCPTaskResponse",
+	"ControllersListDCPTasksResponse":             "ListDCPTasksResponse",
+	"ControllersDCPTaskEventResponse":             "DCPTaskEventResponse",
+	"ControllersListDCPTaskEventsResponse":        "ListDCPTaskEventsResponse",
 	"ControllersMarkNotificationReadRequest":      "MarkNotificationReadRequest",
 	"ControllersNotificationEnvelope":             "NotificationEnvelope",
 	"ControllersMarkAllNotificationsReadRequest":  "MarkAllNotificationsReadRequest",
@@ -362,7 +378,59 @@ func operations() []operation {
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, browserOperations()...)
 	ops = append(ops, shellTerminalOperations()...)
+	ops = append(ops, dcpTaskOperations()...)
 	return ops
+}
+
+func dcpTaskOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/dcp/tasks", id: "submitDCPTask", tag: "dcpTasks",
+			summary: "Submit one model-free synthetic DCP task in SUBMITTED",
+			reqBody: controllers.SubmitDCPTaskRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.DCPTaskResponse{}},
+				{http.StatusOK, controllers.DCPTaskResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/dcp/tasks", id: "listDCPTasks", tag: "dcpTasks",
+			summary:    "List durable synthetic DCP tasks",
+			pathParams: []any{controllers.ListDCPTasksQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListDCPTasksResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/dcp/tasks/{taskId}", id: "getDCPTask", tag: "dcpTasks",
+			summary:    "Read one durable synthetic DCP task",
+			pathParams: []any{controllers.DCPTaskIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.DCPTaskResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/dcp/tasks/{taskId}/events", id: "listDCPTaskEvents", tag: "dcpTasks",
+			summary:    "List the monotonic event stream for one DCP task",
+			pathParams: []any{controllers.DCPTaskIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListDCPTaskEventsResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
 }
 
 func browserOperations() []operation {

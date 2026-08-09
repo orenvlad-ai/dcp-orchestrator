@@ -14,6 +14,72 @@ import (
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 )
 
+// DCPTaskIDParam is the durable task route parameter. It is not a session id.
+type DCPTaskIDParam struct {
+	TaskID string `path:"taskId" description:"Durable DCP task identifier."`
+}
+
+// ListDCPTasksQuery scopes board reads to the only I11 project.
+type ListDCPTasksQuery struct {
+	Project string `query:"project,omitempty" description:"Optional project filter; only dcp-lab is accepted."`
+}
+
+// SubmitDCPTaskRequest is the internal loopback model-free submission command.
+type SubmitDCPTaskRequest struct {
+	IdempotencyKey string                  `json:"idempotencyKey" minLength:"1" maxLength:"128"`
+	Target         string                  `json:"target" enum:"dcp-lab"`
+	ApprovedTask   domain.DCPApprovedTask  `json:"approvedTask"`
+	ApprovedScope  domain.DCPApprovedScope `json:"approvedScope"`
+}
+
+type DCPTaskResponse struct {
+	Task      domain.DCPTask `json:"task"`
+	Duplicate bool           `json:"duplicate"`
+}
+
+type ListDCPTasksResponse struct {
+	Tasks []domain.DCPTask `json:"tasks"`
+}
+
+type DCPTaskEventResponse struct {
+	TaskID          domain.DCPTaskID     `json:"taskId"`
+	Sequence        int64                `json:"sequence" minimum:"1"`
+	EventID         string               `json:"eventId"`
+	SchemaVersion   string               `json:"schemaVersion" enum:"dcp.event/v1"`
+	EventType       string               `json:"eventType" enum:"task.submitted,system.reconciled"`
+	SourceKind      string               `json:"sourceKind" enum:"daemon"`
+	SourceID        string               `json:"sourceId"`
+	CorrelationID   string               `json:"correlationId"`
+	CausationID     string               `json:"causationId,omitempty"`
+	IdempotencyKey  string               `json:"idempotencyKey"`
+	ToState         domain.DCPTaskState  `json:"toState" enum:"SUBMITTED"`
+	FromState       *domain.DCPTaskState `json:"fromState,omitempty" enum:"SUBMITTED"`
+	TaskRevision    int64                `json:"taskRevision" minimum:"1"`
+	OccurredAt      time.Time            `json:"occurredAt"`
+	RecordedAt      time.Time            `json:"recordedAt"`
+	Payload         json.RawMessage      `json:"payload"`
+	EvidenceDigest  string               `json:"evidenceDigest"`
+	IntegrityDigest string               `json:"integrityDigest"`
+}
+
+type ListDCPTaskEventsResponse struct {
+	Events []DCPTaskEventResponse `json:"events"`
+}
+
+func newDCPTaskEventResponse(event domain.DCPTaskEvent) DCPTaskEventResponse {
+	return DCPTaskEventResponse{
+		TaskID: event.TaskID, Sequence: event.Sequence, EventID: event.EventID,
+		SchemaVersion: event.SchemaVersion, EventType: event.EventType,
+		SourceKind: event.SourceKind, SourceID: event.SourceID,
+		CorrelationID: event.CorrelationID, CausationID: event.CausationID,
+		IdempotencyKey: event.IdempotencyKey, FromState: event.FromState,
+		ToState: event.ToState, TaskRevision: event.TaskRevision,
+		OccurredAt: event.OccurredAt, RecordedAt: event.RecordedAt,
+		Payload: json.RawMessage(event.Payload), EvidenceDigest: event.EvidenceDigest,
+		IntegrityDigest: event.IntegrityDigest,
+	}
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 // TestMigrateAllowsEveryShippedHarness guards against the collapsed-migration
@@ -129,5 +130,66 @@ INSERT INTO projects (id, path, registered_at) VALUES ('alpha', '/repos/alpha', 
 	}
 	if strings.Contains(schema, "config") || strings.Contains(schema, "kind") {
 		t.Fatalf("OpenReadOnly migrated projects schema:\n%s", schema)
+	}
+}
+
+func TestMigrateI11FromI8SchemaPreservesSessions(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	// Version 47 is the exact pre-I11 physical boundary. Seed the existing AO
+	// registry/session through its typed store, then apply the additive slice.
+	upTo(t, db, 47)
+	ctx := context.Background()
+	store := sqlitestore.NewStore(db, db)
+	now := time.Unix(300, 0).UTC()
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{
+		ID:           "dcp-lab",
+		Path:         "/tmp/dcp-lab",
+		DisplayName:  "DCP Lab",
+		RegisteredAt: now,
+		Kind:         domain.ProjectKindSingleRepo,
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	session, err := store.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: domain.ProjectID("dcp-lab"),
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+		Activity: domain.Activity{
+			State:          domain.ActivityIdle,
+			LastActivityAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate I11: %v", err)
+	}
+	preserved, ok, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get preserved session: %v", err)
+	}
+	if !ok || preserved.ID != session.ID || preserved.Harness != domain.HarnessCodex {
+		t.Fatalf("session after I11 migration = %+v ok=%v", preserved, ok)
+	}
+	for _, table := range []string{"dcp_tasks", "dcp_task_events"} {
+		var count int
+		if err := db.QueryRow(
+			"SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table,
+		).Scan(&count); err != nil {
+			t.Fatalf("check %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count = %d, want 1", table, count)
+		}
 	}
 }
