@@ -359,7 +359,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	if mode == triggerPreserved && !preservedReviewContinuationEligible(hasReview, runs) {
+	if mode == triggerPreserved && !PreservedReviewContinuationEligible(hasReview, runs) {
 		return TriggerResult{}, nil
 	}
 
@@ -490,19 +490,35 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 
 func reviewKey(prURL, targetSHA string) string { return prURL + "\x00" + targetSHA }
 
-func preservedReviewContinuationEligible(hasReview bool, runs []domain.ReviewRun) bool {
+// PreservedReviewContinuationEligible identifies the one durable failure that
+// permits a terminated worker to stay visible to the stock SCM observer for a
+// replacement exact head. Requiring exactly one matching failure makes the
+// contour consumable: if the bounded continuation reaches the same failure (or
+// any other outcome), no later head can form an automatic retry loop.
+func PreservedReviewContinuationEligible(hasReview bool, runs []domain.ReviewRun) bool {
 	if !hasReview || len(runs) == 0 {
 		return false
 	}
 	latest := runs[0]
+	missingWorkspaceFailures := 0
+	if missingWorkspaceReviewFailure(latest) {
+		missingWorkspaceFailures++
+	}
 	for i := 1; i < len(runs); i++ {
+		if missingWorkspaceReviewFailure(runs[i]) {
+			missingWorkspaceFailures++
+		}
 		if !runs[i].CreatedAt.Before(latest.CreatedAt) {
 			latest = runs[i]
 		}
 	}
-	return latest.Status == domain.ReviewRunFailed &&
-		latest.Verdict == domain.VerdictNone &&
-		strings.Contains(latest.Body, missingWorkspaceFailureMarker)
+	return missingWorkspaceFailures == 1 && missingWorkspaceReviewFailure(latest)
+}
+
+func missingWorkspaceReviewFailure(run domain.ReviewRun) bool {
+	return run.Status == domain.ReviewRunFailed &&
+		run.Verdict == domain.VerdictNone &&
+		strings.Contains(run.Body, missingWorkspaceFailureMarker)
 }
 
 // ReconcileStartup folds persisted running rows against the exact supervised

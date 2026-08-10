@@ -34,6 +34,8 @@ type fakeStore struct {
 	projects       map[string]domain.ProjectRecord
 	workspaceRepos map[string][]domain.WorkspaceRepoRecord
 	prs            map[domain.SessionID][]domain.PullRequest
+	reviews        map[domain.SessionID]domain.Review
+	reviewRuns     map[domain.SessionID][]domain.ReviewRun
 	checks         map[string][]domain.PullRequestCheck
 	writeErr       error
 
@@ -98,6 +100,19 @@ func (s *fakeStore) ListPRsBySession(_ context.Context, id domain.SessionID) ([]
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.PullRequest(nil), s.prs[id]...), nil
+}
+
+func (s *fakeStore) GetReviewBySession(_ context.Context, id domain.SessionID) (domain.Review, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	review, ok := s.reviews[id]
+	return review, ok, nil
+}
+
+func (s *fakeStore) ListReviewRunsBySession(_ context.Context, id domain.SessionID) ([]domain.ReviewRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]domain.ReviewRun(nil), s.reviewRuns[id]...), nil
 }
 
 func (s *fakeStore) ListChecks(_ context.Context, prURL string) ([]domain.PullRequestCheck, error) {
@@ -296,6 +311,57 @@ func testStoreWithSession() *fakeStore {
 		projects: map[string]domain.ProjectRecord{"p": {ID: "p", RepoOriginURL: "https://github.com/o/r.git"}},
 		prs:      map[domain.SessionID][]domain.PullRequest{},
 		checks:   map[string][]domain.PullRequestCheck{},
+	}
+}
+
+func TestDiscoverSubjectsIncludesOnlyProvenTerminatedReviewContinuation(t *testing.T) {
+	store := testStoreWithSession()
+	sess := store.sessions[0]
+	sess.Kind = domain.KindWorker
+	sess.IsTerminated = true
+	sess.Activity.State = domain.ActivityExited
+	sess.Metadata.WorkspacePath = "/worktrees/p-1"
+	store.sessions[0] = sess
+	store.prs[sess.ID] = []domain.PullRequest{knownPR(1)}
+	provider := &fakeProvider{}
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(10, 0).UTC())
+
+	subjects, repos, err := obs.discoverSubjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 0 || len(repos) != 0 {
+		t.Fatalf("unproven terminated session was observed: subjects=%v repos=%v", subjects, repos)
+	}
+
+	store.reviews = map[domain.SessionID]domain.Review{sess.ID: {ID: "review-1", SessionID: sess.ID}}
+	store.reviewRuns = map[domain.SessionID][]domain.ReviewRun{sess.ID: {{
+		ID: "failed-1", ReviewID: "review-1", SessionID: sess.ID,
+		Status: domain.ReviewRunFailed, Verdict: domain.VerdictNone,
+		Body: "launch reviewer: session working directory mismatch: empty cwd", CreatedAt: time.Unix(1, 0),
+	}}}
+	subjects, repos, err = obs.discoverSubjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 1 || len(repos) != 1 {
+		t.Fatalf("proven continuation subjects=%d repos=%d, want 1/1", len(subjects), len(repos))
+	}
+	if got := subjects[prKey(testRepo, 1)]; got == nil || got.session.ID != sess.ID {
+		t.Fatalf("continued subject = %+v, want session %s", got, sess.ID)
+	}
+
+	store.reviewRuns[sess.ID] = append(store.reviewRuns[sess.ID], domain.ReviewRun{
+		ID: "failed-2", ReviewID: "review-1", SessionID: sess.ID,
+		Status: domain.ReviewRunFailed, Verdict: domain.VerdictNone,
+		Body: "launch reviewer: session working directory mismatch: empty cwd", CreatedAt: time.Unix(2, 0),
+	})
+	subjects, repos, err = obs.discoverSubjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 0 || len(repos) != 0 {
+		t.Fatalf("consumed continuation remained observable: subjects=%v repos=%v", subjects, repos)
 	}
 }
 

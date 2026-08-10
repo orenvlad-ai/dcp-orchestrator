@@ -503,6 +503,36 @@ func TestAutoTriggerContinuesProvenMissingWorkspaceOnOneNewExactHead(t *testing.
 	}
 }
 
+func TestPreservedReviewContinuationEligibilityIsSingleUse(t *testing.T) {
+	marker := "launch reviewer: session working directory mismatch: empty cwd"
+	failed := domain.ReviewRun{
+		ID: "failed-1", Status: domain.ReviewRunFailed, Verdict: domain.VerdictNone,
+		Body: marker, CreatedAt: time.Unix(1, 0),
+	}
+	if !PreservedReviewContinuationEligible(true, []domain.ReviewRun{failed}) {
+		t.Fatal("one latest proven missing-worktree failure should be eligible")
+	}
+	if PreservedReviewContinuationEligible(false, []domain.ReviewRun{failed}) {
+		t.Fatal("missing review ownership should be ineligible")
+	}
+	failed.Verdict = domain.VerdictChangesRequested
+	if PreservedReviewContinuationEligible(true, []domain.ReviewRun{failed}) {
+		t.Fatal("a persisted verdict should consume eligibility")
+	}
+	failed.Verdict = domain.VerdictNone
+	second := failed
+	second.ID = "failed-2"
+	second.CreatedAt = time.Unix(2, 0)
+	if PreservedReviewContinuationEligible(true, []domain.ReviewRun{failed, second}) {
+		t.Fatal("a second missing-worktree failure must consume the continuation")
+	}
+	other := second
+	other.Body = "reviewer preflight failed"
+	if PreservedReviewContinuationEligible(true, []domain.ReviewRun{failed, other}) {
+		t.Fatal("a newer non-proven failure must consume the continuation")
+	}
+}
+
 func TestAutoTriggerFailsClosedWhenPreservedWorkspaceCannotBePrepared(t *testing.T) {
 	worker := idleWorker()
 	worker.IsTerminated = true
