@@ -208,11 +208,12 @@ func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlit
 		return nil, nil, nil, fmt.Errorf("reviewer resolver: %w", err)
 	}
 	reviewEngine := reviewcore.New(reviewcore.Deps{
-		Store:    store,
-		Sessions: store,
-		PRs:      store,
-		Projects: store,
-		Launcher: reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir, cfg.RunFilePath),
+		Store:             store,
+		Sessions:          store,
+		PRs:               store,
+		Projects:          store,
+		Launcher:          reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir, cfg.RunFilePath),
+		WorkspacePreparer: reviewcore.NewWorkspacePreparer(store, store, ws.Restore),
 	})
 	reviewSvc := reviewsvc.New(reviewEngine, store, reviewsvc.WithLifecycleReducer(lcm))
 	return sessionSvc, reviewSvc, mgr, nil

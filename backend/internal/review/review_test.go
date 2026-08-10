@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -148,6 +151,19 @@ type fakeSessions struct {
 	records []domain.SessionRecord
 }
 
+type fakeReviewWorkspacePreparer struct {
+	rec       domain.SessionRecord
+	err       error
+	calls     int
+	targetSHA string
+}
+
+func (f *fakeReviewWorkspacePreparer) PrepareReviewWorkspace(_ context.Context, _ domain.SessionID, targetSHA string) (domain.SessionRecord, error) {
+	f.calls++
+	f.targetSHA = targetSHA
+	return f.rec, f.err
+}
+
 func (f fakeSessions) GetSession(_ context.Context, _ domain.SessionID) (domain.SessionRecord, bool, error) {
 	return f.rec, f.ok, nil
 }
@@ -167,9 +183,15 @@ func (f fakePRs) ListPRsBySession(_ context.Context, _ domain.SessionID) ([]doma
 	return f.prs, nil
 }
 
-type fakeProjects struct{ cfg domain.ProjectConfig }
+type fakeProjects struct {
+	cfg domain.ProjectConfig
+	rec *domain.ProjectRecord
+}
 
 func (f fakeProjects) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
+	if f.rec != nil {
+		return *f.rec, true, nil
+	}
 	return domain.ProjectRecord{ID: id, Config: f.cfg}, true, nil
 }
 
@@ -241,9 +263,13 @@ func liveWorker() domain.SessionRecord {
 }
 
 func newEngineForTest(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher) *Engine {
+	return newEngineForTestWithPreparer(store, sessions, prs, projects, launcher, nil)
+}
+
+func newEngineForTestWithPreparer(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher, preparer WorkspacePreparer) *Engine {
 	ids := 0
 	return New(Deps{
-		Store: store, Sessions: sessions, PRs: prs, Projects: projects, Launcher: launcher,
+		Store: store, Sessions: sessions, PRs: prs, Projects: projects, Launcher: launcher, WorkspacePreparer: preparer,
 		Clock: func() time.Time { return time.Unix(0, 0).UTC() },
 		NewID: func() string { ids++; return "id-" + string(rune('0'+ids)) },
 	})
@@ -253,10 +279,105 @@ func prAt(sha string) fakePRs {
 	return fakePRs{prs: []domain.PullRequest{{URL: "https://github.com/o/r/pull/1", Number: 1, HeadSHA: sha}}}
 }
 
+func newReviewGitRepo(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	runReviewGit(t, dir, "init")
+	runReviewGit(t, dir, "config", "user.email", "review@example.com")
+	runReviewGit(t, dir, "config", "user.name", "Review Tests")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runReviewGit(t, dir, "add", ".")
+	runReviewGit(t, dir, "commit", "-m", "initial")
+	runReviewGit(t, dir, "branch", "-M", "main")
+	return dir, strings.TrimSpace(runReviewGit(t, dir, "rev-parse", "HEAD"))
+}
+
+func runReviewGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git -C %s %s: %v\n%s", dir, strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
 func idleWorker() domain.SessionRecord {
 	rec := liveWorker()
 	rec.Activity.State = domain.ActivityIdle
 	return rec
+}
+
+func TestWorkspacePreparerRestoresExactCleanHeadWithoutWorkerLaunch(t *testing.T) {
+	repo, head := newReviewGitRepo(t)
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	worker.Metadata.WorkspacePath = repo
+	worker.Metadata.Branch = "main"
+	project := domain.ProjectRecord{ID: string(worker.ProjectID), Kind: domain.ProjectKindSingleRepo}
+	var got ports.WorkspaceConfig
+	preparer := NewWorkspacePreparer(fakeSessions{rec: worker, ok: true}, fakeProjects{rec: &project}, func(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+		got = cfg
+		return ports.WorkspaceInfo{Path: repo, Branch: "main", RepoPath: repo, SessionID: worker.ID, ProjectID: worker.ProjectID}, nil
+	})
+
+	rec, err := preparer.PrepareReviewWorkspace(context.Background(), worker.ID, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != worker.ID || got.Path != repo || got.Branch != "main" {
+		t.Fatalf("restore config = %+v", got)
+	}
+	if !rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Metadata.RuntimeLaunchID != "" || rec.Metadata.WorkspacePath != repo {
+		t.Fatalf("prepared record changed worker lifecycle: %+v", rec)
+	}
+}
+
+func TestWorkspacePreparerFailsClosedOnHeadCleanlinessAndProjectKind(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		projectKind domain.ProjectKind
+		target      func(string) string
+		dirty       bool
+		wantErr     string
+	}{
+		{name: "wrong exact head", projectKind: domain.ProjectKindSingleRepo, target: func(string) string { return strings.Repeat("0", 40) }, wantErr: "does not match exact review target"},
+		{name: "dirty worktree", projectKind: domain.ProjectKindSingleRepo, dirty: true, wantErr: "not clean"},
+		{name: "workspace project", projectKind: domain.ProjectKindWorkspace, wantErr: "single-repo project"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, head := newReviewGitRepo(t)
+			if tc.dirty {
+				if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			worker := idleWorker()
+			worker.IsTerminated = true
+			worker.Activity.State = domain.ActivityExited
+			worker.Metadata.WorkspacePath = repo
+			worker.Metadata.Branch = "main"
+			project := domain.ProjectRecord{ID: string(worker.ProjectID), Kind: tc.projectKind}
+			restoreCalls := 0
+			preparer := NewWorkspacePreparer(fakeSessions{rec: worker, ok: true}, fakeProjects{rec: &project}, func(_ context.Context, _ ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+				restoreCalls++
+				return ports.WorkspaceInfo{Path: repo, Branch: "main", SessionID: worker.ID, ProjectID: worker.ProjectID}, nil
+			})
+			target := head
+			if tc.target != nil {
+				target = tc.target(head)
+			}
+			if _, err := preparer.PrepareReviewWorkspace(context.Background(), worker.ID, target); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+			if tc.projectKind == domain.ProjectKindWorkspace && restoreCalls != 0 {
+				t.Fatalf("workspace project restore calls = %d", restoreCalls)
+			}
+		})
+	}
 }
 
 // --- tests ---
@@ -297,6 +418,12 @@ func TestAutoTriggerRequiresIdleWorkerAndEligiblePR(t *testing.T) {
 	}{
 		{name: "active", worker: func() domain.SessionRecord { r := idleWorker(); r.Activity.State = domain.ActivityActive; return r }(), pr: prAt("sha1").prs[0]},
 		{name: "active launch", worker: func() domain.SessionRecord { r := idleWorker(); r.Metadata.RuntimeLaunchID = "launch-1"; return r }(), pr: prAt("sha1").prs[0]},
+		{name: "terminated without proven workspace failure", worker: func() domain.SessionRecord {
+			r := idleWorker()
+			r.IsTerminated = true
+			r.Activity.State = domain.ActivityExited
+			return r
+		}(), pr: prAt("sha1").prs[0]},
 		{name: "draft", worker: idleWorker(), pr: func() domain.PullRequest { p := prAt("sha1").prs[0]; p.Draft = true; return p }()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -317,7 +444,8 @@ func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
 	old := domain.ReviewRun{ID: "old-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning, CreatedAt: time.Unix(1, 0)}
 	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{old}}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
-	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	preparer := &fakeReviewWorkspacePreparer{rec: worker}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher, preparer)
 
 	if err := eng.ReconcileStartup(context.Background()); err != nil {
 		t.Fatalf("ReconcileStartup: %v", err)
@@ -325,11 +453,80 @@ func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
 	if store.runs[0].Status != domain.ReviewRunFailed || launcher.spawnCount != 1 || len(store.runs) != 2 || store.runs[1].TargetSHA != "sha1" {
 		t.Fatalf("reconciled runs=%+v spawns=%d", store.runs, launcher.spawnCount)
 	}
+	if preparer.calls != 1 || preparer.targetSHA != "sha1" {
+		t.Fatalf("workspace preparer calls=%d target=%q", preparer.calls, preparer.targetSHA)
+	}
 	if err := eng.ReconcileStartup(context.Background()); err != nil {
 		t.Fatalf("second ReconcileStartup: %v", err)
 	}
 	if launcher.spawnCount != 1 || len(store.runs) != 2 {
 		t.Fatalf("recovery duplicated: runs=%d spawns=%d", len(store.runs), launcher.spawnCount)
+	}
+}
+
+func TestAutoTriggerContinuesProvenMissingWorkspaceOnOneNewExactHead(t *testing.T) {
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	failed := domain.ReviewRun{
+		ID: "failed-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunFailed,
+		Body:      "launch reviewer: reviewer runtime: runtime: session working directory mismatch: session review-mer-1 started in empty cwd, want /ws/mer-1",
+		CreatedAt: time.Unix(-1, 0),
+	}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{failed}}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	restored := worker
+	restored.Metadata.WorkspacePath = "/restored/mer-1"
+	preparer := &fakeReviewWorkspacePreparer{rec: restored}
+	prs := &fakePRs{prs: prAt("sha2").prs}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher, preparer)
+
+	first, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !first.Created || first.Run.TargetSHA != "sha2" {
+		t.Fatalf("continued AutoTrigger = %+v, err=%v", first, err)
+	}
+	if preparer.calls != 1 || preparer.targetSHA != "sha2" || launcher.spawnCount != 1 || launcher.gotSpec.WorkspacePath != restored.Metadata.WorkspacePath {
+		t.Fatalf("preparer=%+v launcher=%+v", preparer, launcher)
+	}
+	second, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || second.Created || launcher.spawnCount != 1 || preparer.calls != 1 {
+		t.Fatalf("same-head continuation duplicated: %+v err=%v preparer=%d spawns=%d", second, err, preparer.calls, launcher.spawnCount)
+	}
+	if _, err := store.UpdateReviewRunResult(context.Background(), first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "approved", "review-2"); err != nil {
+		t.Fatal(err)
+	}
+	prs.prs = prAt("sha3").prs
+	third, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || third.Created || launcher.spawnCount != 1 || preparer.calls != 1 {
+		t.Fatalf("consumed continuation retried on newer head: %+v err=%v preparer=%d spawns=%d", third, err, preparer.calls, launcher.spawnCount)
+	}
+}
+
+func TestAutoTriggerFailsClosedWhenPreservedWorkspaceCannotBePrepared(t *testing.T) {
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	failed := domain.ReviewRun{
+		ID: "failed-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunFailed,
+		Body: "session working directory mismatch:", CreatedAt: time.Unix(-1, 0),
+	}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{failed}}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	preparer := &fakeReviewWorkspacePreparer{err: errors.New("exact head mismatch")}
+	prs := &fakePRs{prs: prAt("sha2").prs}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher, preparer)
+
+	if res, err := eng.AutoTrigger(context.Background(), worker.ID); err == nil || res.Created || !strings.Contains(err.Error(), "exact head mismatch") {
+		t.Fatalf("AutoTrigger = %+v err=%v", res, err)
+	}
+	if len(store.runs) != 2 || store.runs[1].Status != domain.ReviewRunFailed || launcher.spawnCount != 0 || preparer.calls != 1 {
+		t.Fatalf("runs=%+v preparer=%d spawns=%d", store.runs, preparer.calls, launcher.spawnCount)
+	}
+	prs.prs = prAt("sha3").prs
+	if res, err := eng.AutoTrigger(context.Background(), worker.ID); err != nil || res.Created || preparer.calls != 1 {
+		t.Fatalf("failed preparation retried automatically: %+v err=%v preparer=%d", res, err, preparer.calls)
 	}
 }
 

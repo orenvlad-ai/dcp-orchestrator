@@ -12,6 +12,8 @@ import (
 	stdctx "context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // ErrInvalid and ErrNotFound let the transport layer map failures to 422/404.
@@ -66,13 +69,102 @@ type reviewerProcessInspector interface {
 	ReviewerProcessAlive(ctx stdctx.Context, handleID, runID string) (bool, error)
 }
 
+// WorkspacePreparer restores and verifies the preserved worker worktree
+// used by a reviewer. It is intentionally narrower than session restore: the
+// worker process stays terminated and no model is launched by this operation.
+type WorkspacePreparer interface {
+	PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error)
+}
+
+type preservedWorkspacePreparer struct {
+	sessions Sessions
+	projects Projects
+	restore  func(stdctx.Context, ports.WorkspaceConfig) (ports.WorkspaceInfo, error)
+}
+
+// NewWorkspacePreparer builds the model-free preserved-worktree boundary used
+// by automatic reviewer recovery. The caller supplies only the existing stock
+// workspace Restore method; this helper cannot spawn or resume a worker.
+func NewWorkspacePreparer(sessions Sessions, projects Projects, restore func(stdctx.Context, ports.WorkspaceConfig) (ports.WorkspaceInfo, error)) WorkspacePreparer {
+	return &preservedWorkspacePreparer{sessions: sessions, projects: projects, restore: restore}
+}
+
+func (p *preservedWorkspacePreparer) PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error) {
+	if id == "" || strings.TrimSpace(targetSHA) == "" {
+		return domain.SessionRecord{}, errors.New("review workspace requires session id and exact target sha")
+	}
+	rec, ok, err := p.sessions.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review session %s: %w", id, err)
+	}
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("%w: review session %s", ErrNotFound, id)
+	}
+	if !rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Metadata.RuntimeLaunchID != "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s is not a preserved terminated worker", id)
+	}
+	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s has incomplete workspace metadata", id)
+	}
+	project, ok, err := p.projects.GetProject(ctx, string(rec.ProjectID))
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review project: %w", err)
+	}
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("review project %s is not registered", rec.ProjectID)
+	}
+	if project.Kind.WithDefault() != domain.ProjectKindSingleRepo {
+		return domain.SessionRecord{}, errors.New("review workspace recovery requires a single-repo project")
+	}
+	if p.restore == nil {
+		return domain.SessionRecord{}, errors.New("review workspace restore is unavailable")
+	}
+	ws, err := p.restore(ctx, ports.WorkspaceConfig{
+		ProjectID: rec.ProjectID,
+		SessionID: rec.ID,
+		Kind:      rec.Kind,
+		Branch:    rec.Metadata.Branch,
+		Path:      rec.Metadata.WorkspacePath,
+	})
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("restore preserved worktree: %w", err)
+	}
+	if filepath.Clean(ws.Path) != filepath.Clean(rec.Metadata.WorkspacePath) || ws.Branch != rec.Metadata.Branch {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree identity mismatch: path %q branch %q", ws.Path, ws.Branch)
+	}
+	headCmd := aoprocess.CommandContext(ctx, "git", "-C", ws.Path, "rev-parse", "HEAD")
+	headOut, err := headCmd.Output()
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree head: %w", err)
+	}
+	head := strings.TrimSpace(string(headOut))
+	if head != targetSHA {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree head %s does not match exact review target %s", head, targetSHA)
+	}
+	statusCmd := aoprocess.CommandContext(ctx, "git", "-C", ws.Path, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return domain.SessionRecord{}, errors.New("restored worktree is not clean")
+	}
+	rec.Metadata.WorkspacePath = ws.Path
+	rec.Metadata.Branch = ws.Branch
+	rec.Metadata.WorkspaceRepoPath = ws.RepoPath
+	return rec, nil
+}
+
 type triggerMode int
 
 const (
 	triggerManual triggerMode = iota
 	triggerAutomatic
 	triggerRecovery
+	triggerPreserved
 )
+
+const missingWorkspaceFailureMarker = "session working directory mismatch:"
 
 // Deps wires the engine.
 type Deps struct {
@@ -81,6 +173,9 @@ type Deps struct {
 	PRs      PRs
 	Projects Projects
 	Launcher Launcher
+	// WorkspacePreparer is used only for a preserved terminated worker whose
+	// reviewer worktree must be restored model-free before a recovery launch.
+	WorkspacePreparer WorkspacePreparer
 
 	// Clock and NewID are injectable for deterministic tests.
 	Clock func() time.Time
@@ -89,13 +184,14 @@ type Deps struct {
 
 // Engine is the core code-review engine.
 type Engine struct {
-	store    Store
-	sessions Sessions
-	prs      PRs
-	projects Projects
-	launcher Launcher
-	clock    func() time.Time
-	newID    func() string
+	store             Store
+	sessions          Sessions
+	prs               PRs
+	projects          Projects
+	launcher          Launcher
+	workspacePreparer WorkspacePreparer
+	clock             func() time.Time
+	newID             func() string
 
 	// triggerMu guards triggerLocks; triggerLocks holds one mutex per worker
 	// session so concurrent Trigger calls for the same worker serialise (see
@@ -115,14 +211,15 @@ func New(d Deps) *Engine {
 		newID = uuid.NewString
 	}
 	return &Engine{
-		store:        d.Store,
-		sessions:     d.Sessions,
-		prs:          d.PRs,
-		projects:     d.Projects,
-		launcher:     d.Launcher,
-		clock:        clock,
-		newID:        newID,
-		triggerLocks: make(map[domain.SessionID]*sync.Mutex),
+		store:             d.Store,
+		sessions:          d.Sessions,
+		prs:               d.PRs,
+		projects:          d.Projects,
+		launcher:          d.Launcher,
+		workspacePreparer: d.WorkspacePreparer,
+		clock:             clock,
+		newID:             newID,
+		triggerLocks:      make(map[domain.SessionID]*sync.Mutex),
 	}
 }
 
@@ -184,10 +281,12 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 	return e.trigger(ctx, workerID, override, triggerManual, nil)
 }
 
-// AutoTrigger starts a review only for an idle, non-terminated worker and an
-// eligible exact PR head that has never had an AO review attempt. A technical
-// failure therefore remains actionable until the user uses the shared manual
-// trigger; lifecycle events cannot create a retry loop.
+// AutoTrigger starts a review for an idle, non-terminated worker and an eligible
+// exact PR head that has never had an AO review attempt. It also permits one
+// narrow continuation for a preserved terminated worker when the latest run
+// proves that the reviewer failed only because its worktree was missing. The
+// replacement head is still single-flight; any outcome consumes the
+// continuation and cannot form an automatic retry loop.
 func (e *Engine) AutoTrigger(ctx stdctx.Context, workerID domain.SessionID) (TriggerResult, error) {
 	return e.trigger(ctx, workerID, "", triggerAutomatic, nil)
 }
@@ -221,8 +320,13 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if mode == triggerManual && worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)
 	}
-	if mode == triggerAutomatic && (worker.IsTerminated || worker.Activity.State != domain.ActivityIdle || worker.Metadata.RuntimeLaunchID != "") {
-		return TriggerResult{}, nil
+	if mode == triggerAutomatic {
+		preservedTerminated := worker.Activity.State == domain.ActivityExited && worker.IsTerminated
+		if preservedTerminated && worker.Metadata.RuntimeLaunchID == "" {
+			mode = triggerPreserved
+		} else if worker.IsTerminated || worker.Activity.State != domain.ActivityIdle || worker.Metadata.RuntimeLaunchID != "" {
+			return TriggerResult{}, nil
+		}
 	}
 	if mode == triggerRecovery {
 		safelyStopped := worker.Activity.State == domain.ActivityIdle && !worker.IsTerminated
@@ -254,6 +358,9 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	reviewRow, hasReview, err := e.store.GetReviewBySession(ctx, workerID)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	if mode == triggerPreserved && !preservedReviewContinuationEligible(hasReview, runs) {
+		return TriggerResult{}, nil
 	}
 
 	harness, err := e.reviewerHarness(ctx, worker)
@@ -291,7 +398,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 		// useful. Ineligible PRs stay excluded: nothing can review those.
 		eligible := reviewState.Status == ReviewStateNeedsReview || reviewState.Status == ReviewStateChangesRequested
 		switch mode {
-		case triggerAutomatic:
+		case triggerAutomatic, triggerPreserved:
 			eligible = reviewState.Status == ReviewStateNeedsReview && reviewState.LatestRun == nil
 		case triggerRecovery:
 			_, explicitlyRecovered := recovery[reviewKey(reviewState.PRURL, reviewState.TargetSHA)]
@@ -346,6 +453,18 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	}
 
 	queue := reviewQueue(created)
+	if (mode == triggerRecovery && worker.IsTerminated) || mode == triggerPreserved {
+		if len(created) != 1 {
+			return TriggerResult{}, failRuns(0, fmt.Errorf("prepare reviewer workspace: preserved review requires exactly one exact-head run, got %d", len(created)))
+		}
+		if e.workspacePreparer == nil {
+			return TriggerResult{}, failRuns(0, errors.New("prepare reviewer workspace: preparer is unavailable"))
+		}
+		worker, err = e.workspacePreparer.PrepareReviewWorkspace(ctx, workerID, created[0].TargetSHA)
+		if err != nil {
+			return TriggerResult{}, failRuns(0, fmt.Errorf("prepare reviewer workspace: %w", err))
+		}
+	}
 	// Each pass gets a fresh reviewer process on the same stable terminal
 	// handle. Runtime panes intentionally preserve a shell after their command
 	// exits, so pane liveness cannot prove the reviewer agent is still present;
@@ -370,6 +489,21 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 }
 
 func reviewKey(prURL, targetSHA string) string { return prURL + "\x00" + targetSHA }
+
+func preservedReviewContinuationEligible(hasReview bool, runs []domain.ReviewRun) bool {
+	if !hasReview || len(runs) == 0 {
+		return false
+	}
+	latest := runs[0]
+	for i := 1; i < len(runs); i++ {
+		if !runs[i].CreatedAt.Before(latest.CreatedAt) {
+			latest = runs[i]
+		}
+	}
+	return latest.Status == domain.ReviewRunFailed &&
+		latest.Verdict == domain.VerdictNone &&
+		strings.Contains(latest.Body, missingWorkspaceFailureMarker)
+}
 
 // ReconcileStartup folds persisted running rows against the exact supervised
 // reviewer process before any automatic trigger. It never calls a model when
