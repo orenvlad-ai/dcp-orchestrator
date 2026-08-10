@@ -109,7 +109,9 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	appendWorkerIsolationFlags(&cmd)
 	appendNoUpdateCheckFlag(&cmd)
 	appendHideRateLimitNudgeFlag(&cmd)
-	appendApprovalFlags(&cmd, cfg.Permissions)
+	if err := appendApprovalFlags(&cmd, cfg.Permissions); err != nil {
+		return nil, err
+	}
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 
@@ -149,7 +151,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendWorkerIsolationFlags(&cmd)
 	appendNoUpdateCheckFlag(&cmd)
 	appendHideRateLimitNudgeFlag(&cmd)
-	appendApprovalFlags(&cmd, cfg.Permissions)
+	if err := appendApprovalFlags(&cmd, cfg.Permissions); err != nil {
+		return nil, false, err
+	}
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 	if cfg.SystemPrompt != "" {
@@ -329,11 +333,16 @@ func DoctorLaunchProbes() [][]string {
 	appendWorkerIsolationFlags(&execProbe)
 	appendNoUpdateCheckFlag(&execProbe)
 	appendHideRateLimitNudgeFlag(&execProbe)
+	appendInteractiveWorkspaceFlags(&execProbe, false)
 	appendWorkspaceTrustFlag(&execProbe, os.TempDir())
 	execProbe = append(execProbe, "--help")
 
-	featureProbe := make([]string, 0, 10)
+	featureProbe := make([]string, 0, 24)
 	appendWorkerIsolationFlags(&featureProbe)
+	appendNoUpdateCheckFlag(&featureProbe)
+	appendHideRateLimitNudgeFlag(&featureProbe)
+	appendInteractiveWorkspaceFlags(&featureProbe, false)
+	appendWorkspaceTrustFlag(&featureProbe, os.TempDir())
 	featureProbe = append(featureProbe, "features", "list")
 	return [][]string{execProbe, featureProbe}
 }
@@ -368,20 +377,35 @@ func appendModelFlag(cmd *[]string, cfg ports.AgentConfig) {
 	}
 }
 
-func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) {
-	switch ports.NormalizePermissionMode(permissions) {
-	case ports.PermissionModeDefault:
+func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) error {
+	switch permissions {
+	case "", ports.PermissionModeDefault:
 		// Codex sessions are AO-managed and run headlessly inside a terminal
 		// mux pane; default to no approval prompts unless project settings
 		// explicitly choose a more restrictive mode.
 		*cmd = append(*cmd, "--dangerously-bypass-approvals-and-sandbox")
 	case ports.PermissionModeAcceptEdits:
-		*cmd = append(*cmd, "--ask-for-approval", "on-request")
+		appendInteractiveWorkspaceFlags(cmd, false)
 	case ports.PermissionModeAuto:
-		*cmd = append(*cmd, "--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`)
+		appendInteractiveWorkspaceFlags(cmd, true)
 	case ports.PermissionModeBypassPermissions:
 		*cmd = append(*cmd, "--dangerously-bypass-approvals-and-sandbox")
+	default:
+		return fmt.Errorf("unsupported Codex permission mode %q", permissions)
 	}
+	return nil
+}
+
+// appendInteractiveWorkspaceFlags uses config and sandbox surfaces shared by
+// both the root and exec parsers. The installed Codex exposes
+// --ask-for-approval only at the root parser, so emitting it after exec fails
+// before a model request.
+func appendInteractiveWorkspaceFlags(cmd *[]string, autoReview bool) {
+	*cmd = append(*cmd, "-c", `approval_policy="on-request"`)
+	if autoReview {
+		*cmd = append(*cmd, "-c", `approvals_reviewer="auto_review"`)
+	}
+	*cmd = append(*cmd, "--sandbox", "workspace-write")
 }
 
 // fileExists is a package var so tests can stub it to scope candidate probing.

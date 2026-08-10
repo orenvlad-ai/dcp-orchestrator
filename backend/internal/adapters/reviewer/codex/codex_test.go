@@ -97,6 +97,27 @@ func TestReviewCommandRejectsSandboxBypass(t *testing.T) {
 	}
 }
 
+func TestReviewCommandReplacesWorkerConfigApprovalAndSandbox(t *testing.T) {
+	agent := &captureAgent{argv: []string{
+		"agent", "exec",
+		"-c", `approval_policy="on-request"`,
+		"-c", `approvals_reviewer="auto_review"`,
+		"--sandbox", "workspace-write",
+		"--", "review",
+	}}
+	got, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{Prompt: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got.Argv, " ")
+	if strings.Contains(joined, `approval_policy="on-request"`) || strings.Contains(joined, "workspace-write") {
+		t.Fatalf("reviewer retained worker approval/sandbox: %#v", got.Argv)
+	}
+	if !strings.Contains(joined, `approval_policy="never"`) || !strings.Contains(joined, "--sandbox read-only") {
+		t.Fatalf("reviewer command lost enforced read-only policy: %#v", got.Argv)
+	}
+}
+
 func TestReviewMessageReturnsTaskPrompt(t *testing.T) {
 	got, err := (&Reviewer{}).ReviewMessage(context.Background(), ports.ReviewInvocation{Prompt: "next review"})
 	if err != nil {

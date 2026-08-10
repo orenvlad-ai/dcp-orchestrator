@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -202,6 +203,7 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 		permission  ports.PermissionMode
 		want        []string
 		notExpected string
+		wantErr     bool
 	}{
 		{
 			name:       "default",
@@ -211,13 +213,13 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 		{
 			name:        "accept-edits",
 			permission:  ports.PermissionModeAcceptEdits,
-			want:        []string{"--ask-for-approval", "on-request"},
+			want:        []string{"-c", `approval_policy="on-request"`, "--sandbox", "workspace-write"},
 			notExpected: "--dangerously-bypass-approvals-and-sandbox",
 		},
 		{
 			name:        "auto",
 			permission:  ports.PermissionModeAuto,
-			want:        []string{"--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`},
+			want:        []string{"-c", `approval_policy="on-request"`, "-c", `approvals_reviewer="auto_review"`, "--sandbox", "workspace-write"},
 			notExpected: "--dangerously-bypass-approvals-and-sandbox",
 		},
 		{
@@ -230,6 +232,11 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 			permission: "",
 			want:       []string{"--dangerously-bypass-approvals-and-sandbox"},
 		},
+		{
+			name:       "unknown-fails-closed",
+			permission: "future-mode",
+			wantErr:    true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -238,8 +245,17 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 				Permissions: tt.permission,
 			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("GetLaunchCommand(%q) succeeded with %#v, want error", tt.permission, cmd)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if contains(cmd, "--ask-for-approval") {
+				t.Fatalf("command %#v contains unsupported exec-level --ask-for-approval", cmd)
 			}
 			if len(tt.want) > 0 && !containsSubsequence(cmd, tt.want) {
 				t.Fatalf("command %#v does not contain %#v", cmd, tt.want)
@@ -534,8 +550,9 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		"--disable", "multi_agent",
 		"-c", "check_for_update_on_startup=false",
 		"-c", "notice.hide_rate_limit_model_nudge=true",
-		"--ask-for-approval", "on-request",
+		"-c", `approval_policy="on-request"`,
 		"-c", `approvals_reviewer="auto_review"`,
+		"--sandbox", "workspace-write",
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
@@ -564,6 +581,19 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	}
 	if !containsSubsequence(cmd, []string{"--model", "gpt-5.4-mini"}) {
 		t.Fatalf("restore command %#v missing trimmed --model flag", cmd)
+	}
+}
+
+func TestGetRestoreCommandRejectsUnknownPermissionMode(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Permissions: "future-mode",
+		Session: ports.SessionRef{
+			Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"},
+		},
+	})
+	if err == nil || ok || cmd != nil {
+		t.Fatalf("GetRestoreCommand = (%#v, %v, %v), want fail-closed error", cmd, ok, err)
 	}
 }
 
@@ -709,10 +739,42 @@ func TestDoctorLaunchProbesMirrorLaunchFlags(t *testing.T) {
 	for _, want := range []string{
 		"--disable hooks", "--disable apps", "--disable plugins", "--disable multi_agent",
 		"notice.hide_rate_limit_model_nudge=true",
+		`approval_policy="on-request"`,
+		"--sandbox workspace-write",
 		`projects={`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("override probe missing %q in %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "--ask-for-approval") {
+		t.Fatalf("model-free probes contain unsupported exec-level approval flag: %s", joined)
+	}
+}
+
+func TestInstalledCodexParsesGeneratedWorkerCommandWithoutModelRequest(t *testing.T) {
+	binary, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	plugin := &Plugin{resolvedBinary: binary}
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Permissions:   ports.PermissionModeAcceptEdits,
+		WorkspacePath: canonicalTempDir(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = append(cmd, "--help")
+	t.Setenv("CODEX_HOME", t.TempDir())
+	probe := exec.Command(cmd[0], cmd[1:]...)
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("generated worker argv failed parser-only smoke: %v\n%s", err, out)
+	}
+	for _, args := range DoctorLaunchProbes() {
+		probe := exec.Command(binary, args...)
+		if out, err := probe.CombinedOutput(); err != nil {
+			t.Fatalf("offline worker capability probe %#v failed: %v\n%s", args, err, out)
 		}
 	}
 }
