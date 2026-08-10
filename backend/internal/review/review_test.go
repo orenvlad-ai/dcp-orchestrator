@@ -148,6 +148,19 @@ type fakeSessions struct {
 	records []domain.SessionRecord
 }
 
+type fakeReviewWorkspacePreparer struct {
+	rec       domain.SessionRecord
+	err       error
+	calls     int
+	targetSHA string
+}
+
+func (f *fakeReviewWorkspacePreparer) PrepareReviewWorkspace(_ context.Context, _ domain.SessionID, targetSHA string) (domain.SessionRecord, error) {
+	f.calls++
+	f.targetSHA = targetSHA
+	return f.rec, f.err
+}
+
 func (f fakeSessions) GetSession(_ context.Context, _ domain.SessionID) (domain.SessionRecord, bool, error) {
 	return f.rec, f.ok, nil
 }
@@ -241,9 +254,13 @@ func liveWorker() domain.SessionRecord {
 }
 
 func newEngineForTest(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher) *Engine {
+	return newEngineForTestWithPreparer(store, sessions, prs, projects, launcher, nil)
+}
+
+func newEngineForTestWithPreparer(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher, preparer reviewWorkspacePreparer) *Engine {
 	ids := 0
 	return New(Deps{
-		Store: store, Sessions: sessions, PRs: prs, Projects: projects, Launcher: launcher,
+		Store: store, Sessions: sessions, PRs: prs, Projects: projects, Launcher: launcher, WorkspacePreparer: preparer,
 		Clock: func() time.Time { return time.Unix(0, 0).UTC() },
 		NewID: func() string { ids++; return "id-" + string(rune('0'+ids)) },
 	})
@@ -297,6 +314,12 @@ func TestAutoTriggerRequiresIdleWorkerAndEligiblePR(t *testing.T) {
 	}{
 		{name: "active", worker: func() domain.SessionRecord { r := idleWorker(); r.Activity.State = domain.ActivityActive; return r }(), pr: prAt("sha1").prs[0]},
 		{name: "active launch", worker: func() domain.SessionRecord { r := idleWorker(); r.Metadata.RuntimeLaunchID = "launch-1"; return r }(), pr: prAt("sha1").prs[0]},
+		{name: "terminated without proven workspace failure", worker: func() domain.SessionRecord {
+			r := idleWorker()
+			r.IsTerminated = true
+			r.Activity.State = domain.ActivityExited
+			return r
+		}(), pr: prAt("sha1").prs[0]},
 		{name: "draft", worker: idleWorker(), pr: func() domain.PullRequest { p := prAt("sha1").prs[0]; p.Draft = true; return p }()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -317,7 +340,8 @@ func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
 	old := domain.ReviewRun{ID: "old-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex, PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning, CreatedAt: time.Unix(1, 0)}
 	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{old}}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
-	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	preparer := &fakeReviewWorkspacePreparer{rec: worker}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher, preparer)
 
 	if err := eng.ReconcileStartup(context.Background()); err != nil {
 		t.Fatalf("ReconcileStartup: %v", err)
@@ -325,11 +349,80 @@ func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
 	if store.runs[0].Status != domain.ReviewRunFailed || launcher.spawnCount != 1 || len(store.runs) != 2 || store.runs[1].TargetSHA != "sha1" {
 		t.Fatalf("reconciled runs=%+v spawns=%d", store.runs, launcher.spawnCount)
 	}
+	if preparer.calls != 1 || preparer.targetSHA != "sha1" {
+		t.Fatalf("workspace preparer calls=%d target=%q", preparer.calls, preparer.targetSHA)
+	}
 	if err := eng.ReconcileStartup(context.Background()); err != nil {
 		t.Fatalf("second ReconcileStartup: %v", err)
 	}
 	if launcher.spawnCount != 1 || len(store.runs) != 2 {
 		t.Fatalf("recovery duplicated: runs=%d spawns=%d", len(store.runs), launcher.spawnCount)
+	}
+}
+
+func TestAutoTriggerContinuesProvenMissingWorkspaceOnOneNewExactHead(t *testing.T) {
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	failed := domain.ReviewRun{
+		ID: "failed-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunFailed,
+		Body:      "launch reviewer: reviewer runtime: runtime: session working directory mismatch: session review-mer-1 started in empty cwd, want /ws/mer-1",
+		CreatedAt: time.Unix(-1, 0),
+	}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{failed}}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	restored := worker
+	restored.Metadata.WorkspacePath = "/restored/mer-1"
+	preparer := &fakeReviewWorkspacePreparer{rec: restored}
+	prs := &fakePRs{prs: prAt("sha2").prs}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher, preparer)
+
+	first, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !first.Created || first.Run.TargetSHA != "sha2" {
+		t.Fatalf("continued AutoTrigger = %+v, err=%v", first, err)
+	}
+	if preparer.calls != 1 || preparer.targetSHA != "sha2" || launcher.spawnCount != 1 || launcher.gotSpec.WorkspacePath != restored.Metadata.WorkspacePath {
+		t.Fatalf("preparer=%+v launcher=%+v", preparer, launcher)
+	}
+	second, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || second.Created || launcher.spawnCount != 1 || preparer.calls != 1 {
+		t.Fatalf("same-head continuation duplicated: %+v err=%v preparer=%d spawns=%d", second, err, preparer.calls, launcher.spawnCount)
+	}
+	if _, err := store.UpdateReviewRunResult(context.Background(), first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "approved", "review-2"); err != nil {
+		t.Fatal(err)
+	}
+	prs.prs = prAt("sha3").prs
+	third, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || third.Created || launcher.spawnCount != 1 || preparer.calls != 1 {
+		t.Fatalf("consumed continuation retried on newer head: %+v err=%v preparer=%d spawns=%d", third, err, preparer.calls, launcher.spawnCount)
+	}
+}
+
+func TestAutoTriggerFailsClosedWhenPreservedWorkspaceCannotBePrepared(t *testing.T) {
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	failed := domain.ReviewRun{
+		ID: "failed-run", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunFailed,
+		Body: "session working directory mismatch:", CreatedAt: time.Unix(-1, 0),
+	}
+	store := &fakeStore{review: &domain.Review{ID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{failed}}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	preparer := &fakeReviewWorkspacePreparer{err: errors.New("exact head mismatch")}
+	prs := &fakePRs{prs: prAt("sha2").prs}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher, preparer)
+
+	if res, err := eng.AutoTrigger(context.Background(), worker.ID); err == nil || res.Created || !strings.Contains(err.Error(), "exact head mismatch") {
+		t.Fatalf("AutoTrigger = %+v err=%v", res, err)
+	}
+	if len(store.runs) != 2 || store.runs[1].Status != domain.ReviewRunFailed || launcher.spawnCount != 0 || preparer.calls != 1 {
+		t.Fatalf("runs=%+v preparer=%d spawns=%d", store.runs, preparer.calls, launcher.spawnCount)
+	}
+	prs.prs = prAt("sha3").prs
+	if res, err := eng.AutoTrigger(context.Background(), worker.ID); err != nil || res.Created || preparer.calls != 1 {
+		t.Fatalf("failed preparation retried automatically: %+v err=%v preparer=%d", res, err, preparer.calls)
 	}
 }
 

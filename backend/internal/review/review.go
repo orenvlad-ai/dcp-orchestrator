@@ -12,6 +12,7 @@ import (
 	stdctx "context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,13 +67,23 @@ type reviewerProcessInspector interface {
 	ReviewerProcessAlive(ctx stdctx.Context, handleID, runID string) (bool, error)
 }
 
+// reviewWorkspacePreparer restores and verifies the preserved worker worktree
+// used by a reviewer. It is intentionally narrower than session restore: the
+// worker process stays terminated and no model is launched by this operation.
+type reviewWorkspacePreparer interface {
+	PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error)
+}
+
 type triggerMode int
 
 const (
 	triggerManual triggerMode = iota
 	triggerAutomatic
 	triggerRecovery
+	triggerPreserved
 )
+
+const missingWorkspaceFailureMarker = "session working directory mismatch:"
 
 // Deps wires the engine.
 type Deps struct {
@@ -81,6 +92,9 @@ type Deps struct {
 	PRs      PRs
 	Projects Projects
 	Launcher Launcher
+	// WorkspacePreparer is used only for a preserved terminated worker whose
+	// reviewer worktree must be restored model-free before a recovery launch.
+	WorkspacePreparer reviewWorkspacePreparer
 
 	// Clock and NewID are injectable for deterministic tests.
 	Clock func() time.Time
@@ -89,13 +103,14 @@ type Deps struct {
 
 // Engine is the core code-review engine.
 type Engine struct {
-	store    Store
-	sessions Sessions
-	prs      PRs
-	projects Projects
-	launcher Launcher
-	clock    func() time.Time
-	newID    func() string
+	store             Store
+	sessions          Sessions
+	prs               PRs
+	projects          Projects
+	launcher          Launcher
+	workspacePreparer reviewWorkspacePreparer
+	clock             func() time.Time
+	newID             func() string
 
 	// triggerMu guards triggerLocks; triggerLocks holds one mutex per worker
 	// session so concurrent Trigger calls for the same worker serialise (see
@@ -115,14 +130,15 @@ func New(d Deps) *Engine {
 		newID = uuid.NewString
 	}
 	return &Engine{
-		store:        d.Store,
-		sessions:     d.Sessions,
-		prs:          d.PRs,
-		projects:     d.Projects,
-		launcher:     d.Launcher,
-		clock:        clock,
-		newID:        newID,
-		triggerLocks: make(map[domain.SessionID]*sync.Mutex),
+		store:             d.Store,
+		sessions:          d.Sessions,
+		prs:               d.PRs,
+		projects:          d.Projects,
+		launcher:          d.Launcher,
+		workspacePreparer: d.WorkspacePreparer,
+		clock:             clock,
+		newID:             newID,
+		triggerLocks:      make(map[domain.SessionID]*sync.Mutex),
 	}
 }
 
@@ -184,10 +200,12 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 	return e.trigger(ctx, workerID, override, triggerManual, nil)
 }
 
-// AutoTrigger starts a review only for an idle, non-terminated worker and an
-// eligible exact PR head that has never had an AO review attempt. A technical
-// failure therefore remains actionable until the user uses the shared manual
-// trigger; lifecycle events cannot create a retry loop.
+// AutoTrigger starts a review for an idle, non-terminated worker and an eligible
+// exact PR head that has never had an AO review attempt. It also permits one
+// narrow continuation for a preserved terminated worker when the latest run
+// proves that the reviewer failed only because its worktree was missing. The
+// replacement head is still single-flight; any outcome consumes the
+// continuation and cannot form an automatic retry loop.
 func (e *Engine) AutoTrigger(ctx stdctx.Context, workerID domain.SessionID) (TriggerResult, error) {
 	return e.trigger(ctx, workerID, "", triggerAutomatic, nil)
 }
@@ -221,8 +239,13 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if mode == triggerManual && worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)
 	}
-	if mode == triggerAutomatic && (worker.IsTerminated || worker.Activity.State != domain.ActivityIdle || worker.Metadata.RuntimeLaunchID != "") {
-		return TriggerResult{}, nil
+	if mode == triggerAutomatic {
+		preservedTerminated := worker.Activity.State == domain.ActivityExited && worker.IsTerminated
+		if preservedTerminated && worker.Metadata.RuntimeLaunchID == "" {
+			mode = triggerPreserved
+		} else if worker.IsTerminated || worker.Activity.State != domain.ActivityIdle || worker.Metadata.RuntimeLaunchID != "" {
+			return TriggerResult{}, nil
+		}
 	}
 	if mode == triggerRecovery {
 		safelyStopped := worker.Activity.State == domain.ActivityIdle && !worker.IsTerminated
@@ -254,6 +277,9 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	reviewRow, hasReview, err := e.store.GetReviewBySession(ctx, workerID)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	if mode == triggerPreserved && !preservedReviewContinuationEligible(hasReview, runs) {
+		return TriggerResult{}, nil
 	}
 
 	harness, err := e.reviewerHarness(ctx, worker)
@@ -291,7 +317,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 		// useful. Ineligible PRs stay excluded: nothing can review those.
 		eligible := reviewState.Status == ReviewStateNeedsReview || reviewState.Status == ReviewStateChangesRequested
 		switch mode {
-		case triggerAutomatic:
+		case triggerAutomatic, triggerPreserved:
 			eligible = reviewState.Status == ReviewStateNeedsReview && reviewState.LatestRun == nil
 		case triggerRecovery:
 			_, explicitlyRecovered := recovery[reviewKey(reviewState.PRURL, reviewState.TargetSHA)]
@@ -346,6 +372,18 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	}
 
 	queue := reviewQueue(created)
+	if (mode == triggerRecovery && worker.IsTerminated) || mode == triggerPreserved {
+		if len(created) != 1 {
+			return TriggerResult{}, failRuns(0, fmt.Errorf("prepare reviewer workspace: preserved review requires exactly one exact-head run, got %d", len(created)))
+		}
+		if e.workspacePreparer == nil {
+			return TriggerResult{}, failRuns(0, errors.New("prepare reviewer workspace: preparer is unavailable"))
+		}
+		worker, err = e.workspacePreparer.PrepareReviewWorkspace(ctx, workerID, created[0].TargetSHA)
+		if err != nil {
+			return TriggerResult{}, failRuns(0, fmt.Errorf("prepare reviewer workspace: %w", err))
+		}
+	}
 	// Each pass gets a fresh reviewer process on the same stable terminal
 	// handle. Runtime panes intentionally preserve a shell after their command
 	// exits, so pane liveness cannot prove the reviewer agent is still present;
@@ -370,6 +408,21 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 }
 
 func reviewKey(prURL, targetSHA string) string { return prURL + "\x00" + targetSHA }
+
+func preservedReviewContinuationEligible(hasReview bool, runs []domain.ReviewRun) bool {
+	if !hasReview || len(runs) == 0 {
+		return false
+	}
+	latest := runs[0]
+	for i := 1; i < len(runs); i++ {
+		if !runs[i].CreatedAt.Before(latest.CreatedAt) {
+			latest = runs[i]
+		}
+	}
+	return latest.Status == domain.ReviewRunFailed &&
+		latest.Verdict == domain.VerdictNone &&
+		strings.Contains(latest.Body, missingWorkspaceFailureMarker)
+}
 
 // ReconcileStartup folds persisted running rows against the exact supervised
 // reviewer process before any automatic trigger. It never calls a model when

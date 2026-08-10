@@ -816,6 +816,92 @@ func runManagerGit(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestPrepareReviewWorkspaceRestoresExactCleanHeadWithoutRelaunch(t *testing.T) {
+	m, st, rt, ws := newManager()
+	repo := newManagerGitRepo(t)
+	head := strings.TrimSpace(runManagerGit(t, repo, "rev-parse", "HEAD"))
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: repo, Kind: domain.ProjectKindSingleRepo, Config: testRoleAgents()}
+	ws.path = repo
+	seedTerminal(st, "mer-1", domain.SessionMetadata{
+		WorkspacePath:   repo,
+		Branch:          "main",
+		RuntimeHandleID: "mer-1",
+	})
+
+	rec, err := m.PrepareReviewWorkspace(ctx, "mer-1", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ID != "mer-1" || !rec.IsTerminated || rec.Activity.State != domain.ActivityExited {
+		t.Fatalf("prepared record changed lifecycle state: %+v", rec)
+	}
+	if ws.lastCfg.SessionID != "mer-1" || ws.lastCfg.Path != repo || ws.lastCfg.Branch != "main" {
+		t.Fatalf("restore config = %+v", ws.lastCfg)
+	}
+	if rt.created != 0 || rt.destroyed != 0 {
+		t.Fatalf("review workspace preparation touched runtime: created=%d destroyed=%d", rt.created, rt.destroyed)
+	}
+	stored := st.sessions["mer-1"]
+	if !stored.IsTerminated || stored.Activity.State != domain.ActivityExited || stored.Metadata.RuntimeLaunchID != "" {
+		t.Fatalf("stored session changed: %+v", stored)
+	}
+}
+
+func TestPrepareReviewWorkspaceFailsClosedOnHeadStateOrProjectMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*fakeStore, *fakeWorkspace, string)
+		target  func(string) string
+		wantErr string
+	}{
+		{
+			name:    "wrong exact head",
+			target:  func(string) string { return strings.Repeat("0", 40) },
+			wantErr: "does not match exact review target",
+		},
+		{
+			name: "dirty worktree",
+			mutate: func(_ *fakeStore, _ *fakeWorkspace, repo string) {
+				if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "not clean",
+		},
+		{
+			name: "workspace project",
+			mutate: func(st *fakeStore, _ *fakeWorkspace, _ string) {
+				project := st.projects["mer"]
+				project.Kind = domain.ProjectKindWorkspace
+				st.projects["mer"] = project
+			},
+			wantErr: "single-repo project",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, rt, ws := newManager()
+			repo := newManagerGitRepo(t)
+			head := strings.TrimSpace(runManagerGit(t, repo, "rev-parse", "HEAD"))
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: repo, Kind: domain.ProjectKindSingleRepo, Config: testRoleAgents()}
+			ws.path = repo
+			seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: repo, Branch: "main", RuntimeHandleID: "mer-1"})
+			if tc.mutate != nil {
+				tc.mutate(st, ws, repo)
+			}
+			target := head
+			if tc.target != nil {
+				target = tc.target(head)
+			}
+			if _, err := m.PrepareReviewWorkspace(ctx, "mer-1", target); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+			if rt.created != 0 {
+				t.Fatalf("runtime created = %d", rt.created)
+			}
+		})
+	}
+}
+
 func seedTerminal(st *fakeStore, id domain.SessionID, meta domain.SessionMetadata) {
 	st.sessions[id] = domain.SessionRecord{ID: id, ProjectID: "mer", Metadata: meta, IsTerminated: true, Activity: domain.Activity{State: domain.ActivityExited}}
 }

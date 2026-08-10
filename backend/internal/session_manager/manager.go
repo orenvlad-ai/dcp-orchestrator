@@ -1792,6 +1792,65 @@ func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.Pr
 	return workspaceInfoFromRepoInfo(root), nil
 }
 
+// PrepareReviewWorkspace restores only the preserved worktree required by an
+// internal reviewer. It never relaunches the worker, changes session state, or
+// invokes an agent. The exact-head and clean-worktree checks keep a recovered
+// reviewer from inspecting any checkout other than the observed PR head.
+func (m *Manager) PrepareReviewWorkspace(ctx context.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error) {
+	if id == "" || strings.TrimSpace(targetSHA) == "" {
+		return domain.SessionRecord{}, errors.New("review workspace requires session id and exact target sha")
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review session %s: %w", id, err)
+	}
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("load review session %s: %w", id, ErrNotFound)
+	}
+	if !rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Metadata.RuntimeLaunchID != "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s is not a preserved terminated worker", id)
+	}
+	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s has incomplete workspace metadata", id)
+	}
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review project: %w", err)
+	}
+	if project.ID == "" {
+		return domain.SessionRecord{}, fmt.Errorf("review project %s is not registered", rec.ProjectID)
+	}
+	if project.Kind.WithDefault() != domain.ProjectKindSingleRepo {
+		return domain.SessionRecord{}, fmt.Errorf("review workspace recovery requires a single-repo project")
+	}
+	ws, err := m.restoreSessionWorkspace(ctx, project, rec)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("restore preserved worktree: %w", err)
+	}
+	if filepath.Clean(ws.Path) != filepath.Clean(rec.Metadata.WorkspacePath) || ws.Branch != rec.Metadata.Branch {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree identity mismatch: path %q branch %q", ws.Path, ws.Branch)
+	}
+	head, ok := spawnGitSingleLine(ctx, ws.Path, "rev-parse", "HEAD")
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree head")
+	}
+	if head != targetSHA {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree head %s does not match exact review target %s", head, targetSHA)
+	}
+	status := aoprocess.CommandContext(ctx, "git", "-C", ws.Path, "status", "--porcelain")
+	out, err := status.Output()
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return domain.SessionRecord{}, errors.New("restored worktree is not clean")
+	}
+	rec.Metadata.WorkspacePath = ws.Path
+	rec.Metadata.Branch = ws.Branch
+	rec.Metadata.WorkspaceRepoPath = ws.RepoPath
+	return rec, nil
+}
+
 func (m *Manager) workspaceProjectRestoreRows(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) ([]ports.WorkspaceRepoInfo, error) {
 	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
 	if err != nil {
