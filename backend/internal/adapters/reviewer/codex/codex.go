@@ -82,10 +82,16 @@ func reviewerArgv(argv []string) ([]string, error) {
 			i++
 			continue
 		case "-c", "--config":
-			if i+1 < len(argv) && strings.HasPrefix(argv[i+1], "approvals_reviewer=") {
+			if i+1 < len(argv) && (strings.HasPrefix(argv[i+1], "approval_policy=") || strings.HasPrefix(argv[i+1], "approvals_reviewer=")) {
 				i++
 				continue
 			}
+		case "--sandbox":
+			if i+1 >= len(argv) {
+				return nil, fmt.Errorf("codex reviewer command has an incomplete --sandbox option")
+			}
+			i++
+			continue
 		}
 		out = append(out, argv[i])
 	}
