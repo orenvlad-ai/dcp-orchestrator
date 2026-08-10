@@ -131,6 +131,8 @@ source_gates() {
 	grep -Fq '"--sandbox", "read-only"' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer sandbox is not read-only'
 	grep -Fq 'case "--ask-for-approval":' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer does not strip unsupported approval argv'
 	grep -Fq '"review", "supervise"' backend/internal/review/launcher.go || fail 'reviewer process is not supervised'
+	grep -Fq 'reviewerSubmitBinaryName = "ao"' backend/internal/review/launcher.go || fail 'stock reviewer verdict callback alias is absent'
+	grep -Fq 'os.SameFile(aliasInfo, exeInfo)' backend/internal/review/launcher.go || fail 'reviewer verdict callback is not bound to the exact supervisor executable'
 	grep -Fq 'reviews/process-exit' backend/internal/httpd/controllers/reviews.go || fail 'reviewer process exit is not persisted through the daemon'
 	grep -Fq 'func (e *Engine) AutoTrigger' backend/internal/review/review.go || fail 'shared automatic review trigger is absent'
 	grep -Fq 'func (e *Engine) ReconcileStartup' backend/internal/review/review.go || fail 'review restart reconciliation is absent'

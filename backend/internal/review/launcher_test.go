@@ -15,11 +15,12 @@ import (
 
 type fakeReviewer struct {
 	gotInv ports.ReviewInvocation
+	env    map[string]string
 }
 
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
-	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}}, nil
+	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env}, nil
 }
 func (f *fakeReviewer) ReviewMessage(_ context.Context, inv ports.ReviewInvocation) (string, error) {
 	f.gotInv = inv
@@ -154,9 +155,15 @@ func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	if !slices.Contains(rt.createCfg.Argv, "review") || !slices.Contains(rt.createCfg.Argv, "supervise") || !slices.Contains(rt.createCfg.Argv, "run-1") {
 		t.Fatalf("reviewer command is not supervised: %+v", rt.createCfg.Argv)
 	}
-	// No environment is used to carry review identity.
-	if len(rt.createCfg.Env) != 0 {
-		t.Fatalf("expected no env, got %v", rt.createCfg.Env)
+	// PATH carries only the exact local CLI alias. Review identity and daemon
+	// connection values remain outside the pane environment.
+	if len(rt.createCfg.Env) != 1 || rt.createCfg.Env["PATH"] == "" {
+		t.Fatalf("expected only local reviewer PATH, got %v", rt.createCfg.Env)
+	}
+	for _, name := range []string{"AO_SESSION_ID", "AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE"} {
+		if _, ok := rt.createCfg.Env[name]; ok {
+			t.Fatalf("reviewer pane env carries %s: %v", name, rt.createCfg.Env)
+		}
 	}
 	if reviewer.gotInv.RunID != "run-1" || reviewer.gotInv.TargetSHA != "sha1" || reviewer.gotInv.ReviewerID != "review-mer-1" {
 		t.Fatalf("invocation = %+v", reviewer.gotInv)
@@ -182,6 +189,87 @@ func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	}
 	if !strings.Contains(string(system), "Code reviewer role") || !strings.Contains(string(system), "exact file path in that request") || strings.Contains(string(system), filepath.ToSlash(taskPath)) {
 		t.Fatalf("system prompt = %q", system)
+	}
+}
+
+func TestLauncherSpawnBindsLocalReviewSubmitToSupervisorExecutable(t *testing.T) {
+	reviewer := &fakeReviewer{}
+	rt := &fakeRuntime{}
+	dataDir := t.TempDir()
+	foreignDir := t.TempDir()
+	foreignAO := filepath.Join(foreignDir, reviewerSubmitBinaryName)
+	if err := os.WriteFile(foreignAO, []byte("foreign"), 0o700); err != nil {
+		t.Fatalf("write foreign ao: %v", err)
+	}
+	binDir := filepath.Join(dataDir, "runtime", "reviewer-cli")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("create stale reviewer CLI directory: %v", err)
+	}
+	if err := os.Symlink(foreignAO, filepath.Join(binDir, reviewerSubmitBinaryName)); err != nil {
+		t.Fatalf("create stale foreign reviewer CLI alias: %v", err)
+	}
+	exeDir := t.TempDir()
+	exe := filepath.Join(exeDir, "dcp-orchestratord")
+	if err := os.WriteFile(exe, []byte("exact daemon"), 0o700); err != nil {
+		t.Fatalf("write exact daemon: %v", err)
+	}
+	l := &agentLauncher{
+		reviewers:  fakeReviewerResolver{reviewer: reviewer, ok: true},
+		runtime:    rt,
+		dataDir:    dataDir,
+		runFile:    filepath.Join(dataDir, "run", "running.json"),
+		executable: func() (string, error) { return exe, nil },
+	}
+	reviewer.env = map[string]string{"PATH": foreignDir, "KEEP": "value"}
+
+	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	alias := filepath.Join(binDir, reviewerSubmitBinaryName)
+	if got, err := os.Readlink(alias); err != nil || got != exe {
+		t.Fatalf("reviewer CLI alias = %q, %v; want %q", got, err, exe)
+	}
+	aliasInfo, err := os.Stat(alias)
+	if err != nil {
+		t.Fatalf("stat reviewer CLI alias: %v", err)
+	}
+	exeInfo, err := os.Stat(exe)
+	if err != nil {
+		t.Fatalf("stat exact daemon: %v", err)
+	}
+	if !os.SameFile(aliasInfo, exeInfo) {
+		t.Fatal("reviewer CLI alias is not the supervisor executable")
+	}
+	if len(rt.createCfg.Argv) == 0 || rt.createCfg.Argv[0] != exe {
+		t.Fatalf("supervisor executable = %#v, want first argv %q", rt.createCfg.Argv, exe)
+	}
+	wantPATH := binDir + string(os.PathListSeparator) + foreignDir
+	if rt.createCfg.Env["PATH"] != wantPATH || rt.createCfg.Env["KEEP"] != "value" {
+		t.Fatalf("reviewer env = %#v, want PATH %q and preserved base env", rt.createCfg.Env, wantPATH)
+	}
+	if strings.HasPrefix(rt.createCfg.Env["PATH"], foreignDir) {
+		t.Fatalf("foreign ao can precede exact alias: %q", rt.createCfg.Env["PATH"])
+	}
+}
+
+func TestLauncherSpawnFailsClosedWithoutExactSupervisorExecutable(t *testing.T) {
+	reviewer := &fakeReviewer{}
+	rt := &fakeRuntime{}
+	dataDir := t.TempDir()
+	l := &agentLauncher{
+		reviewers:  fakeReviewerResolver{reviewer: reviewer, ok: true},
+		runtime:    rt,
+		dataDir:    dataDir,
+		runFile:    filepath.Join(dataDir, "run", "running.json"),
+		executable: func() (string, error) { return "relative/dcp-orchestratord", nil },
+	}
+
+	if _, err := l.Spawn(context.Background(), launchSpec()); err == nil || !strings.Contains(err.Error(), "exact absolute path") {
+		t.Fatalf("Spawn error = %v, want exact executable rejection", err)
+	}
+	if rt.created {
+		t.Fatal("reviewer runtime started without an exact supervisor/verdict executable")
 	}
 }
 

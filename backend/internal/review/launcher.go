@@ -11,12 +11,13 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 const cancelInterruptDelay = 150 * time.Millisecond
 
 const reviewerTaskMessagePrefix = "Read and follow the AO review task in `"
+
+const reviewerSubmitBinaryName = "ao"
 
 // Launcher spawns, re-notifies, and probes a reviewer over a worker's worktree.
 // It is the side of the engine that talks to the reviewer registry and runtime;
@@ -67,10 +68,11 @@ type reviewerRuntime interface {
 // runtime. The reviewer reuses the worker's worktree (a fresh session worktree
 // would branch off the default branch and so would not contain the PR changes).
 type agentLauncher struct {
-	reviewers ports.ReviewerResolver
-	runtime   reviewerRuntime
-	dataDir   string
-	runFile   string
+	reviewers  ports.ReviewerResolver
+	runtime    reviewerRuntime
+	dataDir    string
+	runFile    string
+	executable func() (string, error)
 }
 
 type preLaunchReviewer interface {
@@ -83,7 +85,7 @@ func NewLauncher(reviewers ports.ReviewerResolver, runtime reviewerRuntime, data
 	if len(runFiles) > 0 {
 		runFile = runFiles[0]
 	}
-	return &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir, runFile: runFile}
+	return &agentLauncher{reviewers: reviewers, runtime: runtime, dataDir: dataDir, runFile: runFile, executable: os.Executable}
 }
 
 // Preflight checks whether the reviewer for the given harness can be launched
@@ -213,11 +215,15 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	if err := l.runtime.Destroy(ctx, ports.RuntimeHandle{ID: handleID}); err != nil {
 		return "", fmt.Errorf("reviewer replace stale pane: %w", err)
 	}
+	env, err := l.reviewerEnv(cmd.Env, argv[0])
+	if err != nil {
+		return "", fmt.Errorf("reviewer submit channel: %w", err)
+	}
 	handle, err := l.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: spec.WorkspacePath,
 		Argv:          argv,
-		Env:           pinnedEnv(cmd.Env),
+		Env:           env,
 	})
 	if err != nil {
 		return "", fmt.Errorf("reviewer runtime: %w", err)
@@ -234,7 +240,7 @@ func (l *agentLauncher) supervisedCommand(spec LaunchSpec, child []string) ([]st
 	if !filepath.IsAbs(dataDir) || !filepath.IsAbs(runFile) || dataDir != l.dataDir || runFile != l.runFile {
 		return nil, fmt.Errorf("reviewer supervisor requires exact absolute data-dir and run-file paths")
 	}
-	exe, err := os.Executable()
+	exe, err := l.executablePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve reviewer supervisor executable: %w", err)
 	}
@@ -265,22 +271,120 @@ func (l *agentLauncher) ReviewerProcessAlive(ctx context.Context, handleID, runI
 	})
 }
 
-// pinnedEnv returns the reviewer command's env with PATH pinned to the daemon's
-// own directory, so the bare `ao` the reviewer runs (e.g. `ao review submit`)
-// resolves to this daemon's CLI rather than a foreign `ao` first on the
-// inherited PATH. Mirrors the worker-session pin in the session manager.
-// Best-effort: an unpinnable daemon (not named "ao") keeps the inherited PATH.
-func pinnedEnv(base map[string]string) map[string]string {
-	path, err := sessionmanager.HookPATH(os.Executable, os.Getenv, base)
-	if err != nil {
-		return base
+// executablePath resolves the exact binary that owns both reviewer supervision
+// and the local verdict callback. Keeping one resolver for both uses prevents a
+// packaged/renamed daemon from supervising with one executable while exposing
+// another CLI to the reviewer.
+func (l *agentLauncher) executablePath() (string, error) {
+	resolve := l.executable
+	if resolve == nil {
+		resolve = os.Executable
 	}
+	exe, err := resolve()
+	if err != nil {
+		return "", err
+	}
+	if _, err := exactExecutableInfo(exe); err != nil {
+		return "", err
+	}
+	return exe, nil
+}
+
+func exactExecutableInfo(exe string) (os.FileInfo, error) {
+	if !filepath.IsAbs(exe) || filepath.Clean(exe) != exe {
+		return nil, fmt.Errorf("daemon executable must be an exact absolute path: %q", exe)
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return nil, fmt.Errorf("stat daemon executable: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, fmt.Errorf("daemon executable is not an executable regular file: %s", exe)
+	}
+	return info, nil
+}
+
+// reviewerEnv exposes the stock `ao review submit` command through a private,
+// pane-local alias bound to the exact executable that supervises this reviewer.
+// DCP's packaged daemon is intentionally named dcp-orchestratord, so merely
+// prepending its directory cannot make the stock bare `ao` callback resolve.
+// The alias lives below the daemon's own data directory and is atomically
+// replaced before every fresh reviewer launch. It never changes the user's
+// global PATH and always wins over any inherited or retired `ao` binary.
+func (l *agentLauncher) reviewerEnv(base map[string]string, supervisorExecutable string) (map[string]string, error) {
+	exeInfo, err := exactExecutableInfo(supervisorExecutable)
+	if err != nil {
+		return nil, err
+	}
+	exe := supervisorExecutable
+	dataDir := filepath.Clean(l.dataDir)
+	if !filepath.IsAbs(dataDir) || dataDir != l.dataDir {
+		return nil, fmt.Errorf("reviewer CLI alias requires an exact absolute data directory")
+	}
+	binDir := filepath.Join(dataDir, "runtime", "reviewer-cli")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create reviewer CLI directory: %w", err)
+	}
+	dirInfo, err := os.Lstat(binDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect reviewer CLI directory: %w", err)
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("reviewer CLI directory is not an exact directory: %s", binDir)
+	}
+	if err := os.Chmod(binDir, 0o700); err != nil {
+		return nil, fmt.Errorf("restrict reviewer CLI directory: %w", err)
+	}
+
+	alias := filepath.Join(binDir, reviewerSubmitBinaryName)
+	tmp, err := os.CreateTemp(binDir, ".ao-link-")
+	if err != nil {
+		return nil, fmt.Errorf("reserve reviewer CLI alias: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, fmt.Errorf("close reviewer CLI alias reservation: %w", err)
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		return nil, fmt.Errorf("prepare reviewer CLI alias: %w", err)
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := os.Symlink(exe, tmpPath); err != nil {
+		return nil, fmt.Errorf("create reviewer CLI alias: %w", err)
+	}
+	if err := os.Rename(tmpPath, alias); err != nil {
+		return nil, fmt.Errorf("activate reviewer CLI alias: %w", err)
+	}
+	link, err := os.Readlink(alias)
+	if err != nil {
+		return nil, fmt.Errorf("read reviewer CLI alias: %w", err)
+	}
+	if link != exe {
+		return nil, fmt.Errorf("reviewer CLI alias target mismatch: got %q, want %q", link, exe)
+	}
+	aliasInfo, err := os.Stat(alias)
+	if err != nil {
+		return nil, fmt.Errorf("stat reviewer CLI alias target: %w", err)
+	}
+	if !os.SameFile(aliasInfo, exeInfo) {
+		return nil, fmt.Errorf("reviewer CLI alias is not bound to the supervisor executable")
+	}
+
 	env := make(map[string]string, len(base)+1)
 	for k, v := range base {
 		env[k] = v
 	}
-	env["PATH"] = path
-	return env
+	path := base["PATH"]
+	if path == "" {
+		path = os.Getenv("PATH")
+	}
+	if path == "" {
+		env["PATH"] = binDir
+	} else {
+		env["PATH"] = binDir + string(os.PathListSeparator) + path
+	}
+	return env, nil
 }
 
 func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec LaunchSpec) error {
