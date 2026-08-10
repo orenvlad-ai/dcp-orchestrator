@@ -22,6 +22,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/observe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
 const (
@@ -64,6 +65,14 @@ type Store interface {
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListChecks(ctx context.Context, prURL string) ([]domain.PullRequestCheck, error)
 	WriteSCMObservation(ctx context.Context, pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, reviewMode ports.ReviewWriteMode) error
+}
+
+// preservedReviewStore is the optional existing Review/ReviewRun read surface
+// used to keep one proven terminated review continuation visible to the stock
+// observer. Stores without this contour retain the historical skip behavior.
+type preservedReviewStore interface {
+	GetReviewBySession(ctx context.Context, sessionID domain.SessionID) (domain.Review, bool, error)
+	ListReviewRunsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.ReviewRun, error)
 }
 
 // Lifecycle is the provider-neutral lifecycle notification sink.
@@ -482,7 +491,13 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	var sessionRepos []sessionRepo
 	for _, sess := range sessions {
 		if sess.IsTerminated {
-			continue
+			eligible, err := o.preservedTerminatedSessionEligible(ctx, sess)
+			if err != nil {
+				return nil, nil, fmt.Errorf("preserved review eligibility for session %s: %w", sess.ID, err)
+			}
+			if !eligible {
+				continue
+			}
 		}
 		branch := strings.TrimSpace(sess.Metadata.Branch)
 		if branch == "" {
@@ -550,6 +565,33 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		}
 	}
 	return out, sessionRepos, nil
+}
+
+// preservedTerminatedSessionEligible admits only the already-bounded review
+// engine continuation. It does not make terminated workers generally
+// observable: exact terminal state, no worker launch, durable review ownership,
+// and the one consumable missing-worktree failure are all required.
+func (o *Observer) preservedTerminatedSessionEligible(ctx context.Context, sess domain.SessionRecord) (bool, error) {
+	if sess.Kind != domain.KindWorker || !sess.IsTerminated || sess.Activity.State != domain.ActivityExited ||
+		sess.Metadata.RuntimeLaunchID != "" || strings.TrimSpace(sess.Metadata.WorkspacePath) == "" {
+		return false, nil
+	}
+	store, ok := o.store.(preservedReviewStore)
+	if !ok {
+		return false, nil
+	}
+	_, hasReview, err := store.GetReviewBySession(ctx, sess.ID)
+	if err != nil {
+		return false, err
+	}
+	if !hasReview {
+		return false, nil
+	}
+	runs, err := store.ListReviewRunsBySession(ctx, sess.ID)
+	if err != nil {
+		return false, err
+	}
+	return reviewcore.PreservedReviewContinuationEligible(true, runs), nil
 }
 
 // resolveScanRepos returns the deduped set of repos whose open-PR lists should be
