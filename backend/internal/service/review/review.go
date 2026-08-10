@@ -29,6 +29,7 @@ type Manager interface {
 	Cancel(ctx context.Context, workerID domain.SessionID) (reviewcore.CancelResult, error)
 	Submit(ctx context.Context, workerID domain.SessionID, runID string, verdict domain.ReviewVerdict, body, githubReviewID string) (domain.ReviewRun, error)
 	SubmitMany(ctx context.Context, workerID domain.SessionID, reviews []SubmittedReview) ([]domain.ReviewRun, error)
+	SubmitStructured(ctx context.Context, workerID domain.SessionID, result reviewcore.StructuredResult) (domain.ReviewRun, error)
 	List(ctx context.Context, workerID domain.SessionID) (reviewcore.SessionReviews, error)
 	ProcessExit(ctx context.Context, workerID domain.SessionID, report ProcessExitReport) ([]domain.ReviewRun, error)
 }
@@ -37,9 +38,10 @@ type Manager interface {
 // process supervisor. The service generates the persisted message so the
 // internal endpoint cannot inject arbitrary terminal output into the UI.
 type ProcessExitReport struct {
-	RunIDs   []string
-	Started  bool
-	ExitCode int
+	RunIDs        []string
+	Started       bool
+	ExitCode      int
+	ResultFailure string
 }
 
 // Service is the API-facing review service. It delegates to the core engine.
@@ -56,6 +58,7 @@ var _ Manager = (*Service)(nil)
 type Store interface {
 	GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error)
 	UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string) (bool, error)
+	UpdateBoundReviewRunResult(ctx context.Context, expected reviewcore.StructuredResultExpected, verdict domain.ReviewVerdict, body string) (bool, error)
 	MarkReviewRunDelivered(ctx context.Context, id string, deliveredAt time.Time) (bool, error)
 	ListPRsBySession(ctx context.Context, id domain.SessionID) ([]domain.PullRequest, error)
 }
@@ -130,7 +133,22 @@ func (s *Service) ProcessExit(ctx context.Context, workerID domain.SessionID, re
 		return nil, fmt.Errorf("review service store is not configured")
 	}
 	reason := "reviewer failed to start; inspect the reviewer terminal and retry Run Review"
-	if report.Started {
+	if report.ResultFailure != "" {
+		switch reviewcore.StructuredResultErrorKind(report.ResultFailure) {
+		case reviewcore.StructuredResultMissing:
+			reason = "reviewer exited without one structured result; no verdict was recorded"
+		case reviewcore.StructuredResultMalformed:
+			reason = "reviewer returned a malformed or ambiguous structured result; no verdict was recorded"
+		case reviewcore.StructuredResultForeign:
+			reason = "reviewer returned a result with foreign identity or ownership; no verdict was recorded"
+		default:
+			if report.ResultFailure == "submit_failed" {
+				reason = "trusted reviewer result submission failed; no synthetic verdict or automatic retry was created"
+			} else {
+				return nil, fmt.Errorf("%w: unknown structured result failure", ErrInvalid)
+			}
+		}
+	} else if report.Started {
 		if report.ExitCode == 0 {
 			reason = "reviewer exited without submitting a verdict; inspect the reviewer terminal and retry Run Review"
 		} else {
@@ -170,6 +188,57 @@ func (s *Service) ProcessExit(ctx context.Context, workerID domain.SessionID, re
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+// SubmitStructured records one schema-validated model result through a single
+// identity-bound SQLite update. The current open PR head and stable reviewer
+// handle are checked inside that same statement; duplicate, late, or foreign
+// results therefore mutate nothing.
+func (s *Service) SubmitStructured(ctx context.Context, workerID domain.SessionID, result reviewcore.StructuredResult) (domain.ReviewRun, error) {
+	if workerID == "" || string(workerID) != result.WorkerSessionID {
+		return domain.ReviewRun{}, fmt.Errorf("%w: structured result worker identity mismatch", ErrInvalid)
+	}
+	expected := reviewcore.StructuredResultExpected{
+		WorkerSessionID:  result.WorkerSessionID,
+		ReviewerHandleID: result.ReviewerHandleID,
+		BatchID:          result.BatchID,
+		RunID:            result.RunID,
+		PRURL:            result.PRURL,
+		TargetSHA:        result.TargetSHA,
+	}
+	if err := result.Validate(expected); err != nil {
+		return domain.ReviewRun{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if s.store == nil {
+		return domain.ReviewRun{}, fmt.Errorf("review service store is not configured")
+	}
+	verdict := domain.ReviewVerdict(result.Verdict)
+	body := result.Body()
+	updated, err := s.store.UpdateBoundReviewRunResult(ctx, expected, verdict, body)
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if !updated {
+		return domain.ReviewRun{}, fmt.Errorf("%w: structured review result is duplicate, late, stale-head, or foreign", ErrInvalid)
+	}
+	run, ok, err := s.store.GetReviewRun(ctx, result.RunID)
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if !ok || run.Status != domain.ReviewRunComplete || run.Verdict != verdict || run.Body != body {
+		return domain.ReviewRun{}, fmt.Errorf("structured review result was recorded but could not be verified")
+	}
+	if s.lifecycle == nil || verdict != domain.VerdictChangesRequested {
+		return run, nil
+	}
+	delivered, err := s.deliverSubmitted(ctx, workerID, []domain.ReviewRun{run})
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if len(delivered) == 1 {
+		return delivered[0], nil
+	}
+	return run, nil
 }
 
 // Cancel stops the live reviewer pane and marks running review passes as failed.

@@ -1563,6 +1563,8 @@ export interface components {
         ReviewProcessExitInput: {
             /** @description Reviewer child exit code when started. */
             exitCode: number;
+            /** @description Bounded structured-result failure category reported by the trusted supervisor. */
+            resultFailure?: string;
             /** @description Exact review run ids supervised by this process. */
             runIds: string[];
             /** @description Whether the reviewer child process started. */
@@ -1589,6 +1591,24 @@ export interface components {
             review: components["schemas"]["ReviewRun"];
             reviewerHandleId: string;
             reviews: components["schemas"]["ReviewRun"][];
+        };
+        ReviewStructuredFinding: {
+            body: string;
+            line: number;
+            path: string;
+            title: string;
+        };
+        ReviewStructuredResult: {
+            batchId: string;
+            findings: components["schemas"]["ReviewStructuredFinding"][];
+            prUrl: string;
+            reviewerHandleId: string;
+            runId: string;
+            summary: string;
+            targetSha: string;
+            verdict: string;
+            version: number;
+            workerSessionId: string;
         };
         RoleOverride: {
             agent?: string;
@@ -1814,6 +1834,8 @@ export interface components {
             reviews?: components["schemas"]["SubmitReviewItem"][];
             /** @description Review run id being completed. */
             runId?: string;
+            /** @description One schema-constrained reviewer result submitted by AO's trusted process supervisor. */
+            structuredResult?: components["schemas"]["ReviewStructuredResult"];
             /** @description Review verdict: approved or changes_requested. */
             verdict?: string;
         };

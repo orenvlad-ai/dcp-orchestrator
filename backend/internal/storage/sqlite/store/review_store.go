@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/gen"
 )
 
@@ -82,6 +83,28 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// UpdateBoundReviewRunResult atomically completes one still-running exact-head
+// run only when its session, batch, PR, current PR head, and stable reviewer
+// terminal all match the trusted supervisor contract.
+func (s *Store) UpdateBoundReviewRunResult(ctx context.Context, expected reviewcore.StructuredResultExpected, verdict domain.ReviewVerdict, body string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.UpdateBoundReviewRunResult(ctx, gen.UpdateBoundReviewRunResultParams{
+		Verdict:          verdict,
+		Body:             body,
+		RunID:            expected.RunID,
+		SessionID:        domain.SessionID(expected.WorkerSessionID),
+		BatchID:          expected.BatchID,
+		PRURL:            expected.PRURL,
+		TargetSha:        expected.TargetSHA,
+		ReviewerHandleID: expected.ReviewerHandleID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // SupersedeStaleRunningReviewRuns marks older running unverdicted passes for a

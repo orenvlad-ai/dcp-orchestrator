@@ -4503,6 +4503,10 @@ components:
         exitCode:
           description: Reviewer child exit code when started.
           type: integer
+        resultFailure:
+          description: Bounded structured-result failure category reported by the
+            trusted supervisor.
+          type: string
         runIds:
           description: Exact review run ids supervised by this process.
           items:
@@ -4576,6 +4580,58 @@ components:
       - review
       - reviews
       - reviewerHandleId
+      type: object
+    ReviewStructuredFinding:
+      properties:
+        body:
+          type: string
+        line:
+          type: integer
+        path:
+          type: string
+        title:
+          type: string
+      required:
+      - title
+      - body
+      - path
+      - line
+      type: object
+    ReviewStructuredResult:
+      properties:
+        batchId:
+          type: string
+        findings:
+          items:
+            $ref: '#/components/schemas/ReviewStructuredFinding'
+          type: array
+        prUrl:
+          type: string
+        reviewerHandleId:
+          type: string
+        runId:
+          type: string
+        summary:
+          type: string
+        targetSha:
+          type: string
+        verdict:
+          type: string
+        version:
+          type: integer
+        workerSessionId:
+          type: string
+      required:
+      - version
+      - workerSessionId
+      - reviewerHandleId
+      - batchId
+      - runId
+      - prUrl
+      - targetSha
+      - verdict
+      - summary
+      - findings
       type: object
     RoleOverride:
       properties:
@@ -5157,6 +5213,10 @@ components:
         runId:
           description: Review run id being completed.
           type: string
+        structuredResult:
+          $ref: '#/components/schemas/ReviewStructuredResult'
+          description: One schema-constrained reviewer result submitted by AO's trusted
+            process supervisor.
         verdict:
           description: 'Review verdict: approved or changes_requested.'
           type: string

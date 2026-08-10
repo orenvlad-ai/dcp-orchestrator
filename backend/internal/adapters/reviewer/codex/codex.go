@@ -3,9 +3,7 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	workeragent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
@@ -30,6 +28,11 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
+var _ ports.StructuredResultReviewer = (*Reviewer)(nil)
+
+// RequiresStructuredResult selects Codex's native JSON Schema and last-message
+// output instead of asking the model to invoke an AO bookkeeping command.
+func (r *Reviewer) RequiresStructuredResult() bool { return true }
 
 // ReviewCommand launches the reviewer with an enforced read-only filesystem
 // sandbox and no interactive approval prompts. The installed Codex CLI accepts
@@ -52,19 +55,16 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 	if err != nil {
 		return ports.ReviewCommandSpec{}, err
 	}
-	extra := []string{"-c", `approval_policy="never"`, "--sandbox", "read-only"}
-	// Shell commands inherit only Codex's core environment by default. Preserve
-	// the AO location overrides the reviewer needs to submit to this daemon.
-	for _, name := range []string{"AO_PORT", "AO_DATA_DIR", "AO_RUN_FILE"} {
-		value := os.Getenv(name)
-		if value == "" {
-			continue
-		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return ports.ReviewCommandSpec{}, fmt.Errorf("encode %s: %w", name, err)
-		}
-		extra = append(extra, "-c", "shell_environment_policy.set."+name+"="+string(encoded))
+	extra := []string{
+		"-c", `approval_policy="never"`,
+		"-c", `web_search="disabled"`,
+		"--sandbox", "read-only",
+	}
+	if (inv.ResultSchemaFile == "") != (inv.ResultFile == "") {
+		return ports.ReviewCommandSpec{}, fmt.Errorf("codex structured reviewer requires both schema and result paths")
+	}
+	if inv.ResultSchemaFile != "" {
+		extra = append(extra, "--output-schema", inv.ResultSchemaFile, "--output-last-message", inv.ResultFile)
 	}
 	return ports.ReviewCommandSpec{Argv: insertBeforePrompt(argv, extra...)}, nil
 }

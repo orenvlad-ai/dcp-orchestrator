@@ -21,6 +21,15 @@ type Reviewer interface {
 	ReviewMessage(ctx context.Context, inv ReviewInvocation) (string, error)
 }
 
+// StructuredResultReviewer marks a reviewer adapter whose successful process
+// returns one schema-constrained result artifact for trusted AO submission.
+// The launcher owns the artifact paths and the process supervisor owns reading
+// and persisting it; the model never receives daemon credentials or a control
+// command.
+type StructuredResultReviewer interface {
+	RequiresStructuredResult() bool
+}
+
 // ReviewCancelMode names how AO should stop a running reviewer.
 type ReviewCancelMode string
 
@@ -86,6 +95,11 @@ type ReviewInvocation struct {
 	// files for this reviewer. Adapters use it when a long-lived reviewer needs
 	// permission to read request-scoped task files created after launch.
 	TaskPromptRoot string
+	// ResultSchemaFile and ResultFile are AO-owned paths outside the worktree.
+	// They are populated only for a StructuredResultReviewer and consumed by a
+	// trusted process supervisor after the reviewer exits successfully.
+	ResultSchemaFile string
+	ResultFile       string
 }
 
 // ReviewTask is one PR/run in a multi-PR review trigger queue.

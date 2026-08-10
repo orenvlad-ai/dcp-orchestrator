@@ -45,6 +45,30 @@ Only if step 1 genuinely fails on the provider for a PR, still include that run 
 	return prompt, systemPrompt
 }
 
+// structuredReviewTexts is the DCP Codex contour: the model reviews only the
+// local exact-head checkout and returns data. It never posts to a provider or
+// invokes AO; the trusted supervisor records the validated result afterwards.
+func structuredReviewTexts(spec LaunchSpec) (prompt, systemPrompt string) {
+	systemPrompt = `## Read-only code reviewer role
+
+Review only the requested pull request changes in the current local checkout. Inspect the local diff and relevant local tests for correctness, security, error handling, regressions, and missing coverage. Prefer a few high-confidence findings over style comments.
+
+Do not edit files, push commits, use network or web search, post to a provider, or run AO/control-plane commands. Your only result is the final JSON object required by the supplied output schema. Use verdict approved with an empty findings array when there are no blocking findings. Use changes_requested with one or more precise findings when the change should not merge.`
+
+	prompt = fmt.Sprintf(`Review the one local exact-head task below.
+
+Worker session: %s
+Reviewer terminal: %s
+Batch: %s
+Run: %s
+Pull request: %s
+Exact head commit: %s
+
+Confirm the checkout is at the exact head above and inspect only local repository evidence. Return exactly one final JSON object with the schema-provided identity fields, verdict, a short summary, and bounded findings. A finding uses a repository-relative path when applicable and line 0 when no precise line applies. Do not call gh, ao, curl, network tools, or any control-plane command.`,
+		spec.WorkerID, reviewerHandleID(spec.WorkerID), spec.BatchID, spec.RunID, spec.PRURL, spec.TargetSHA)
+	return prompt, systemPrompt
+}
+
 func reviewQueueText(spec LaunchSpec) string {
 	if len(spec.ReviewQueue) <= 1 {
 		return fmt.Sprintf("\nReview task queue:\n* 1. %s (head commit %s, run %s)\n", spec.PRURL, spec.TargetSHA, spec.RunID)

@@ -357,6 +357,64 @@ func (q *Queries) SupersedeStaleRunningReviewRuns(ctx context.Context, arg Super
 	return result.RowsAffected()
 }
 
+const updateBoundReviewRunResult = `-- name: UpdateBoundReviewRunResult :execrows
+UPDATE review_run
+SET status = 'complete', verdict = ?1, body = ?2, github_review_id = ''
+WHERE review_run.id = ?3
+  AND review_run.session_id = ?4
+  AND review_run.batch_id = ?5
+  AND review_run.pr_url = ?6
+  AND review_run.target_sha = ?7
+  AND review_run.status = 'running'
+  AND review_run.verdict = ''
+  AND EXISTS (
+    SELECT 1
+    FROM review
+    WHERE review.id = review_run.review_id
+      AND review.session_id = review_run.session_id
+      AND review.reviewer_handle_id = ?8
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM pr
+    WHERE pr.url = review_run.pr_url
+      AND pr.session_id = review_run.session_id
+      AND pr.head_sha = review_run.target_sha
+      AND pr.pr_state = 'open'
+      AND pr.is_draft = 0
+      AND pr.is_merged = 0
+      AND pr.is_closed = 0
+  )
+`
+
+type UpdateBoundReviewRunResultParams struct {
+	Verdict          domain.ReviewVerdict
+	Body             string
+	RunID            string
+	SessionID        domain.SessionID
+	BatchID          string
+	PRURL            string
+	TargetSha        string
+	ReviewerHandleID string
+}
+
+func (q *Queries) UpdateBoundReviewRunResult(ctx context.Context, arg UpdateBoundReviewRunResultParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateBoundReviewRunResult,
+		arg.Verdict,
+		arg.Body,
+		arg.RunID,
+		arg.SessionID,
+		arg.BatchID,
+		arg.PRURL,
+		arg.TargetSha,
+		arg.ReviewerHandleID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateReviewRunResult = `-- name: UpdateReviewRunResult :execrows
 UPDATE review_run SET status = ?, verdict = ?, body = ?, github_review_id = ? WHERE id = ? AND status = 'running'
 `

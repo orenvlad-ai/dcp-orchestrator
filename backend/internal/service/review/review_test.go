@@ -9,17 +9,41 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
 type fakeStore struct {
-	run       domain.ReviewRun
-	ok        bool
-	batchRuns []domain.ReviewRun
-	prs       []domain.PullRequest
+	run            domain.ReviewRun
+	ok             bool
+	batchRuns      []domain.ReviewRun
+	prs            []domain.PullRequest
+	reviewerHandle string
 
 	updateCalls int
 	markCalls   int
 	markedIDs   []string
+}
+
+func (f *fakeStore) UpdateBoundReviewRunResult(_ context.Context, expected reviewcore.StructuredResultExpected, verdict domain.ReviewVerdict, body string) (bool, error) {
+	if !f.ok || f.run.Status != domain.ReviewRunRunning || f.run.ID != expected.RunID || string(f.run.SessionID) != expected.WorkerSessionID ||
+		f.run.BatchID != expected.BatchID || f.run.PRURL != expected.PRURL || f.run.TargetSHA != expected.TargetSHA || f.reviewerHandle != expected.ReviewerHandleID {
+		return false, nil
+	}
+	current := false
+	for _, pr := range f.prs {
+		if pr.URL == expected.PRURL && pr.SessionID == f.run.SessionID && pr.HeadSHA == expected.TargetSHA && !pr.Draft && !pr.Merged && !pr.Closed {
+			current = true
+			break
+		}
+	}
+	if !current {
+		return false, nil
+	}
+	f.updateCalls++
+	f.run.Status = domain.ReviewRunComplete
+	f.run.Verdict = verdict
+	f.run.Body = body
+	return true, nil
 }
 
 func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun, bool, error) {
@@ -121,6 +145,110 @@ func TestProcessExitFailsOnlyStillRunningExactRuns(t *testing.T) {
 	}
 	if st.updateCalls != 1 {
 		t.Fatalf("idempotent report updated twice: %d", st.updateCalls)
+	}
+}
+
+func structuredServiceResult() reviewcore.StructuredResult {
+	return reviewcore.StructuredResult{
+		Version:          reviewcore.StructuredResultVersion,
+		WorkerSessionID:  "mer-1",
+		ReviewerHandleID: "review-mer-1",
+		BatchID:          "batch-1",
+		RunID:            "run-1",
+		PRURL:            "https://github.com/o/r/pull/1",
+		TargetSHA:        strings.Repeat("1", 40),
+		Verdict:          "approved",
+		Summary:          "No blocking findings.",
+		Findings:         []reviewcore.StructuredFinding{},
+	}
+}
+
+func structuredServiceStore() *fakeStore {
+	result := structuredServiceResult()
+	return &fakeStore{
+		ok:             true,
+		reviewerHandle: result.ReviewerHandleID,
+		run: domain.ReviewRun{
+			ID: result.RunID, SessionID: "mer-1", BatchID: result.BatchID,
+			PRURL: result.PRURL, TargetSHA: result.TargetSHA, Status: domain.ReviewRunRunning,
+		},
+		prs: []domain.PullRequest{{URL: result.PRURL, SessionID: "mer-1", HeadSHA: result.TargetSHA}},
+	}
+}
+
+func TestSubmitStructuredPersistsOnceAndRejectsDuplicateOrLate(t *testing.T) {
+	st := structuredServiceStore()
+	svc := New(nil, st)
+	result := structuredServiceResult()
+
+	run, err := svc.SubmitStructured(context.Background(), "mer-1", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != result.Summary || st.updateCalls != 1 {
+		t.Fatalf("run=%+v updates=%d", run, st.updateCalls)
+	}
+	if _, err := svc.SubmitStructured(context.Background(), "mer-1", result); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate error = %v, want ErrInvalid", err)
+	}
+	if st.updateCalls != 1 {
+		t.Fatalf("duplicate result updated twice: %d", st.updateCalls)
+	}
+
+	lateStore := structuredServiceStore()
+	lateStore.run.Status = domain.ReviewRunFailed
+	if _, err := New(nil, lateStore).SubmitStructured(context.Background(), "mer-1", result); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("late result error = %v, want ErrInvalid", err)
+	}
+	if lateStore.updateCalls != 0 {
+		t.Fatalf("late result mutated storage: %d", lateStore.updateCalls)
+	}
+}
+
+func TestSubmitStructuredRejectsEveryForeignOrStaleBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*fakeStore, *reviewcore.StructuredResult)
+	}{
+		{name: "foreign worker", mutate: func(_ *fakeStore, result *reviewcore.StructuredResult) {
+			result.WorkerSessionID = "mer-2"
+			result.ReviewerHandleID = "review-mer-2"
+		}},
+		{name: "foreign terminal", mutate: func(store *fakeStore, _ *reviewcore.StructuredResult) { store.reviewerHandle = "review-mer-foreign" }},
+		{name: "foreign batch", mutate: func(_ *fakeStore, result *reviewcore.StructuredResult) { result.BatchID = "batch-foreign" }},
+		{name: "foreign run", mutate: func(_ *fakeStore, result *reviewcore.StructuredResult) { result.RunID = "run-foreign" }},
+		{name: "foreign PR", mutate: func(_ *fakeStore, result *reviewcore.StructuredResult) {
+			result.PRURL = "https://github.com/o/r/pull/2"
+		}},
+		{name: "foreign target", mutate: func(_ *fakeStore, result *reviewcore.StructuredResult) { result.TargetSHA = strings.Repeat("2", 40) }},
+		{name: "stale current head", mutate: func(store *fakeStore, _ *reviewcore.StructuredResult) { store.prs[0].HeadSHA = strings.Repeat("2", 40) }},
+		{name: "draft head", mutate: func(store *fakeStore, _ *reviewcore.StructuredResult) { store.prs[0].Draft = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := structuredServiceStore()
+			result := structuredServiceResult()
+			tc.mutate(store, &result)
+			if _, err := New(nil, store).SubmitStructured(context.Background(), "mer-1", result); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("error = %v, want ErrInvalid", err)
+			}
+			if store.updateCalls != 0 || store.run.Status != domain.ReviewRunRunning {
+				t.Fatalf("foreign result mutated run: %+v updates=%d", store.run, store.updateCalls)
+			}
+		})
+	}
+}
+
+func TestProcessExitRecordsBoundedStructuredFailureWithoutVerdict(t *testing.T) {
+	st := structuredServiceStore()
+	svc := New(nil, st)
+	runs, err := svc.ProcessExit(context.Background(), "mer-1", ProcessExitReport{
+		RunIDs: []string{"run-1"}, Started: true, ExitCode: 0, ResultFailure: string(reviewcore.StructuredResultForeign),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Status != domain.ReviewRunFailed || runs[0].Verdict != domain.VerdictNone || !strings.Contains(runs[0].Body, "foreign identity") {
+		t.Fatalf("runs = %+v", runs)
 	}
 }
 

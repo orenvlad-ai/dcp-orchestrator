@@ -19,6 +19,8 @@ const reviewerTaskMessagePrefix = "Read and follow the AO review task in `"
 
 const reviewerSubmitBinaryName = "ao"
 
+const reviewerResultDirectoryName = "reviewer-results"
+
 // Launcher spawns, re-notifies, and probes a reviewer over a worker's worktree.
 // It is the side of the engine that talks to the reviewer registry and runtime;
 // the engine owns the orchestration and persistence.
@@ -129,8 +131,11 @@ func reviewerHandleID(workerID domain.SessionID) string {
 	return "review-" + string(workerID)
 }
 
-func (l *agentLauncher) invocation(spec LaunchSpec) ports.ReviewInvocation {
+func (l *agentLauncher) invocation(spec LaunchSpec, structured bool) ports.ReviewInvocation {
 	prompt, systemPrompt := reviewTexts(spec)
+	if structured {
+		prompt, systemPrompt = structuredReviewTexts(spec)
+	}
 	return ports.ReviewInvocation{
 		ReviewerID:      reviewerHandleID(spec.WorkerID),
 		RunID:           spec.RunID,
@@ -151,8 +156,8 @@ func (l *agentLauncher) invocation(spec LaunchSpec) ports.ReviewInvocation {
 // Reviewer panes are shared by desktop, mobile, and direct runtime attaches,
 // so keeping the full text out of the PTY is the only device-independent way
 // to hide it.
-func (l *agentLauncher) prepareInvocation(spec LaunchSpec) (ports.ReviewInvocation, error) {
-	inv := l.invocation(spec)
+func (l *agentLauncher) prepareInvocation(spec LaunchSpec, structured bool) (ports.ReviewInvocation, error) {
+	inv := l.invocation(spec, structured)
 	if strings.TrimSpace(l.dataDir) == "" {
 		return ports.ReviewInvocation{}, fmt.Errorf("reviewer prompt data directory is required")
 	}
@@ -180,6 +185,58 @@ func (l *agentLauncher) prepareInvocation(spec LaunchSpec) (ports.ReviewInvocati
 	inv.SystemPromptFile = systemPath
 	inv.TaskPromptFile = taskPath
 	inv.TaskPromptRoot = promptRoot
+	if structured {
+		if len(spec.ReviewQueue) != 1 || spec.ReviewQueue[0].RunID != spec.RunID || spec.ReviewQueue[0].PRURL != spec.PRURL || spec.ReviewQueue[0].TargetSHA != spec.TargetSHA {
+			return ports.ReviewInvocation{}, fmt.Errorf("structured reviewer requires exactly one matching exact-head task")
+		}
+		expected := StructuredResultExpected{
+			WorkerSessionID:  string(spec.WorkerID),
+			ReviewerHandleID: reviewerHandleID(spec.WorkerID),
+			BatchID:          spec.BatchID,
+			RunID:            spec.RunID,
+			PRURL:            spec.PRURL,
+			TargetSHA:        spec.TargetSHA,
+		}
+		schema, err := StructuredResultSchema(expected)
+		if err != nil {
+			return ports.ReviewInvocation{}, fmt.Errorf("structured reviewer identity: %w", err)
+		}
+		resultDir := filepath.Join(l.dataDir, "runtime", reviewerResultDirectoryName, string(spec.WorkerID), spec.BatchID, spec.RunID)
+		if err := os.MkdirAll(resultDir, 0o700); err != nil {
+			return ports.ReviewInvocation{}, fmt.Errorf("create structured reviewer result directory: %w", err)
+		}
+		info, err := os.Lstat(resultDir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return ports.ReviewInvocation{}, fmt.Errorf("structured reviewer result directory is not an exact directory")
+		}
+		if err := os.Chmod(resultDir, 0o700); err != nil {
+			return ports.ReviewInvocation{}, fmt.Errorf("restrict structured reviewer result directory: %w", err)
+		}
+		schemaPath := filepath.Join(resultDir, "schema.json")
+		resultPath := filepath.Join(resultDir, "result.json")
+		for _, artifact := range []string{schemaPath, resultPath} {
+			if _, err := os.Lstat(artifact); err == nil {
+				return ports.ReviewInvocation{}, fmt.Errorf("structured reviewer artifact already exists: %s", artifact)
+			} else if !os.IsNotExist(err) {
+				return ports.ReviewInvocation{}, fmt.Errorf("inspect structured reviewer artifact: %w", err)
+			}
+		}
+		f, err := os.OpenFile(schemaPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return ports.ReviewInvocation{}, fmt.Errorf("create structured reviewer schema: %w", err)
+		}
+		if _, err := f.Write(append(schema, '\n')); err != nil {
+			_ = f.Close()
+			_ = os.Remove(schemaPath)
+			return ports.ReviewInvocation{}, fmt.Errorf("write structured reviewer schema: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(schemaPath)
+			return ports.ReviewInvocation{}, fmt.Errorf("close structured reviewer schema: %w", err)
+		}
+		inv.ResultSchemaFile = schemaPath
+		inv.ResultFile = resultPath
+	}
 	return inv, nil
 }
 
@@ -189,7 +246,11 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 		return "", fmt.Errorf("no reviewer adapter for harness %q", spec.Harness)
 	}
 	handleID := reviewerHandleID(spec.WorkerID)
-	inv, err := l.prepareInvocation(spec)
+	structured := false
+	if capable, ok := reviewer.(ports.StructuredResultReviewer); ok {
+		structured = capable.RequiresStructuredResult()
+	}
+	inv, err := l.prepareInvocation(spec, structured)
 	if err != nil {
 		return "", err
 	}
@@ -202,7 +263,7 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	if err != nil {
 		return "", fmt.Errorf("reviewer command: %w", err)
 	}
-	argv, err := l.supervisedCommand(spec, cmd.Argv)
+	argv, err := l.supervisedCommand(spec, inv, cmd.Argv)
 	if err != nil {
 		return "", err
 	}
@@ -215,9 +276,12 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	if err := l.runtime.Destroy(ctx, ports.RuntimeHandle{ID: handleID}); err != nil {
 		return "", fmt.Errorf("reviewer replace stale pane: %w", err)
 	}
-	env, err := l.reviewerEnv(cmd.Env, argv[0])
-	if err != nil {
-		return "", fmt.Errorf("reviewer submit channel: %w", err)
+	env := copyReviewerEnv(cmd.Env)
+	if !structured {
+		env, err = l.reviewerEnv(cmd.Env, argv[0])
+		if err != nil {
+			return "", fmt.Errorf("reviewer submit channel: %w", err)
+		}
 	}
 	handle, err := l.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     domain.SessionID(handleID),
@@ -231,7 +295,7 @@ func (l *agentLauncher) Spawn(ctx context.Context, spec LaunchSpec) (string, err
 	return handle.ID, nil
 }
 
-func (l *agentLauncher) supervisedCommand(spec LaunchSpec, child []string) ([]string, error) {
+func (l *agentLauncher) supervisedCommand(spec LaunchSpec, inv ports.ReviewInvocation, child []string) ([]string, error) {
 	if len(child) == 0 {
 		return nil, fmt.Errorf("reviewer produced empty command")
 	}
@@ -250,12 +314,33 @@ func (l *agentLauncher) supervisedCommand(spec LaunchSpec, child []string) ([]st
 			argv = append(argv, "--run", task.RunID)
 		}
 	}
+	if inv.ResultFile != "" || inv.ResultSchemaFile != "" {
+		if inv.ResultFile == "" || inv.ResultSchemaFile == "" {
+			return nil, fmt.Errorf("structured reviewer requires both result and schema paths")
+		}
+		argv = append(argv,
+			"--reviewer-handle", reviewerHandleID(spec.WorkerID),
+			"--batch", spec.BatchID,
+			"--pr-url", spec.PRURL,
+			"--target-sha", spec.TargetSHA,
+			"--result-file", inv.ResultFile,
+			"--result-schema", inv.ResultSchemaFile,
+		)
+	}
 	argv = append(argv,
 		"--supervisor-data-dir", dataDir,
 		"--supervisor-run-file", runFile,
 		"--",
 	)
 	return append(argv, child...), nil
+}
+
+func copyReviewerEnv(base map[string]string) map[string]string {
+	env := make(map[string]string, len(base))
+	for key, value := range base {
+		env[key] = value
+	}
+	return env
 }
 
 // ReviewerProcessAlive reports whether the exact supervised review generation
@@ -371,10 +456,7 @@ func (l *agentLauncher) reviewerEnv(base map[string]string, supervisorExecutable
 		return nil, fmt.Errorf("reviewer CLI alias is not bound to the supervisor executable")
 	}
 
-	env := make(map[string]string, len(base)+1)
-	for k, v := range base {
-		env[k] = v
-	}
+	env := copyReviewerEnv(base)
 	path := base["PATH"]
 	if path == "" {
 		path = os.Getenv("PATH")
@@ -392,7 +474,14 @@ func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec Launch
 	if !ok {
 		return fmt.Errorf("no reviewer adapter for harness %q", spec.Harness)
 	}
-	inv, err := l.prepareInvocation(spec)
+	structured := false
+	if capable, ok := reviewer.(ports.StructuredResultReviewer); ok {
+		structured = capable.RequiresStructuredResult()
+	}
+	if structured {
+		return fmt.Errorf("structured reviewer requires a fresh supervised process")
+	}
+	inv, err := l.prepareInvocation(spec, structured)
 	if err != nil {
 		return err
 	}

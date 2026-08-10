@@ -590,6 +590,30 @@ func TestReconcileStartupPreservesActiveReview(t *testing.T) {
 	}
 }
 
+func TestReconcileStartupPreservesStructuredVerdictWithoutSecondReviewer(t *testing.T) {
+	worker := idleWorker()
+	approved := domain.ReviewRun{
+		ID: "run-structured", ReviewID: "review-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunComplete,
+		Verdict: domain.VerdictApproved, Body: "No blocking findings.", CreatedAt: time.Unix(1, 0),
+	}
+	store := &fakeStore{
+		review: &domain.Review{ID: "review-1", SessionID: worker.ID, ReviewerHandleID: "review-mer-1", Harness: domain.ReviewerCodex},
+		runs:   []domain.ReviewRun{approved},
+	}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	for i := 0; i < 2; i++ {
+		if err := eng.ReconcileStartup(context.Background()); err != nil {
+			t.Fatalf("ReconcileStartup %d: %v", i+1, err)
+		}
+	}
+	if launcher.spawnCount != 0 || len(store.runs) != 1 || store.runs[0].Verdict != domain.VerdictApproved {
+		t.Fatalf("restart duplicated or changed verdict: runs=%+v spawns=%d", store.runs, launcher.spawnCount)
+	}
+}
+
 func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	store := &fakeStore{}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
