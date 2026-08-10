@@ -12,6 +12,7 @@ import (
 	stdctx "context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // ErrInvalid and ErrNotFound let the transport layer map failures to 422/404.
@@ -67,11 +69,90 @@ type reviewerProcessInspector interface {
 	ReviewerProcessAlive(ctx stdctx.Context, handleID, runID string) (bool, error)
 }
 
-// reviewWorkspacePreparer restores and verifies the preserved worker worktree
+// WorkspacePreparer restores and verifies the preserved worker worktree
 // used by a reviewer. It is intentionally narrower than session restore: the
 // worker process stays terminated and no model is launched by this operation.
-type reviewWorkspacePreparer interface {
+type WorkspacePreparer interface {
 	PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error)
+}
+
+type preservedWorkspacePreparer struct {
+	sessions Sessions
+	projects Projects
+	restore  func(stdctx.Context, ports.WorkspaceConfig) (ports.WorkspaceInfo, error)
+}
+
+// NewWorkspacePreparer builds the model-free preserved-worktree boundary used
+// by automatic reviewer recovery. The caller supplies only the existing stock
+// workspace Restore method; this helper cannot spawn or resume a worker.
+func NewWorkspacePreparer(sessions Sessions, projects Projects, restore func(stdctx.Context, ports.WorkspaceConfig) (ports.WorkspaceInfo, error)) WorkspacePreparer {
+	return &preservedWorkspacePreparer{sessions: sessions, projects: projects, restore: restore}
+}
+
+func (p *preservedWorkspacePreparer) PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error) {
+	if id == "" || strings.TrimSpace(targetSHA) == "" {
+		return domain.SessionRecord{}, errors.New("review workspace requires session id and exact target sha")
+	}
+	rec, ok, err := p.sessions.GetSession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review session %s: %w", id, err)
+	}
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("%w: review session %s", ErrNotFound, id)
+	}
+	if !rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Metadata.RuntimeLaunchID != "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s is not a preserved terminated worker", id)
+	}
+	if rec.Metadata.WorkspacePath == "" || rec.Metadata.Branch == "" {
+		return domain.SessionRecord{}, fmt.Errorf("review session %s has incomplete workspace metadata", id)
+	}
+	project, ok, err := p.projects.GetProject(ctx, string(rec.ProjectID))
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("load review project: %w", err)
+	}
+	if !ok {
+		return domain.SessionRecord{}, fmt.Errorf("review project %s is not registered", rec.ProjectID)
+	}
+	if project.Kind.WithDefault() != domain.ProjectKindSingleRepo {
+		return domain.SessionRecord{}, errors.New("review workspace recovery requires a single-repo project")
+	}
+	if p.restore == nil {
+		return domain.SessionRecord{}, errors.New("review workspace restore is unavailable")
+	}
+	ws, err := p.restore(ctx, ports.WorkspaceConfig{
+		ProjectID: rec.ProjectID,
+		SessionID: rec.ID,
+		Kind:      rec.Kind,
+		Branch:    rec.Metadata.Branch,
+		Path:      rec.Metadata.WorkspacePath,
+	})
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("restore preserved worktree: %w", err)
+	}
+	if filepath.Clean(ws.Path) != filepath.Clean(rec.Metadata.WorkspacePath) || ws.Branch != rec.Metadata.Branch {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree identity mismatch: path %q branch %q", ws.Path, ws.Branch)
+	}
+	headCmd := aoprocess.CommandContext(ctx, "git", "-C", ws.Path, "rev-parse", "HEAD")
+	headOut, err := headCmd.Output()
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree head: %w", err)
+	}
+	head := strings.TrimSpace(string(headOut))
+	if head != targetSHA {
+		return domain.SessionRecord{}, fmt.Errorf("restored worktree head %s does not match exact review target %s", head, targetSHA)
+	}
+	statusCmd := aoprocess.CommandContext(ctx, "git", "-C", ws.Path, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return domain.SessionRecord{}, fmt.Errorf("verify restored worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return domain.SessionRecord{}, errors.New("restored worktree is not clean")
+	}
+	rec.Metadata.WorkspacePath = ws.Path
+	rec.Metadata.Branch = ws.Branch
+	rec.Metadata.WorkspaceRepoPath = ws.RepoPath
+	return rec, nil
 }
 
 type triggerMode int
@@ -94,7 +175,7 @@ type Deps struct {
 	Launcher Launcher
 	// WorkspacePreparer is used only for a preserved terminated worker whose
 	// reviewer worktree must be restored model-free before a recovery launch.
-	WorkspacePreparer reviewWorkspacePreparer
+	WorkspacePreparer WorkspacePreparer
 
 	// Clock and NewID are injectable for deterministic tests.
 	Clock func() time.Time
@@ -108,7 +189,7 @@ type Engine struct {
 	prs               PRs
 	projects          Projects
 	launcher          Launcher
-	workspacePreparer reviewWorkspacePreparer
+	workspacePreparer WorkspacePreparer
 	clock             func() time.Time
 	newID             func() string
 

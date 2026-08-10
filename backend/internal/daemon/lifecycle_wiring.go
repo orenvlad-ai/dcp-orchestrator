@@ -213,7 +213,7 @@ func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlit
 		PRs:               store,
 		Projects:          store,
 		Launcher:          reviewcore.NewLauncher(reviewers, runtime, cfg.DataDir, cfg.RunFilePath),
-		WorkspacePreparer: mgr,
+		WorkspacePreparer: reviewcore.NewWorkspacePreparer(store, store, ws.Restore),
 	})
 	reviewSvc := reviewsvc.New(reviewEngine, store, reviewsvc.WithLifecycleReducer(lcm))
 	return sessionSvc, reviewSvc, mgr, nil

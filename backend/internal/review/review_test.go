@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -180,9 +183,15 @@ func (f fakePRs) ListPRsBySession(_ context.Context, _ domain.SessionID) ([]doma
 	return f.prs, nil
 }
 
-type fakeProjects struct{ cfg domain.ProjectConfig }
+type fakeProjects struct {
+	cfg domain.ProjectConfig
+	rec *domain.ProjectRecord
+}
 
 func (f fakeProjects) GetProject(_ context.Context, id string) (domain.ProjectRecord, bool, error) {
+	if f.rec != nil {
+		return *f.rec, true, nil
+	}
 	return domain.ProjectRecord{ID: id, Config: f.cfg}, true, nil
 }
 
@@ -257,7 +266,7 @@ func newEngineForTest(store Store, sessions Sessions, prs PRs, projects Projects
 	return newEngineForTestWithPreparer(store, sessions, prs, projects, launcher, nil)
 }
 
-func newEngineForTestWithPreparer(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher, preparer reviewWorkspacePreparer) *Engine {
+func newEngineForTestWithPreparer(store Store, sessions Sessions, prs PRs, projects Projects, launcher Launcher, preparer WorkspacePreparer) *Engine {
 	ids := 0
 	return New(Deps{
 		Store: store, Sessions: sessions, PRs: prs, Projects: projects, Launcher: launcher, WorkspacePreparer: preparer,
@@ -270,10 +279,105 @@ func prAt(sha string) fakePRs {
 	return fakePRs{prs: []domain.PullRequest{{URL: "https://github.com/o/r/pull/1", Number: 1, HeadSHA: sha}}}
 }
 
+func newReviewGitRepo(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	runReviewGit(t, dir, "init")
+	runReviewGit(t, dir, "config", "user.email", "review@example.com")
+	runReviewGit(t, dir, "config", "user.name", "Review Tests")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runReviewGit(t, dir, "add", ".")
+	runReviewGit(t, dir, "commit", "-m", "initial")
+	runReviewGit(t, dir, "branch", "-M", "main")
+	return dir, strings.TrimSpace(runReviewGit(t, dir, "rev-parse", "HEAD"))
+}
+
+func runReviewGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git -C %s %s: %v\n%s", dir, strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
 func idleWorker() domain.SessionRecord {
 	rec := liveWorker()
 	rec.Activity.State = domain.ActivityIdle
 	return rec
+}
+
+func TestWorkspacePreparerRestoresExactCleanHeadWithoutWorkerLaunch(t *testing.T) {
+	repo, head := newReviewGitRepo(t)
+	worker := idleWorker()
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	worker.Metadata.WorkspacePath = repo
+	worker.Metadata.Branch = "main"
+	project := domain.ProjectRecord{ID: string(worker.ProjectID), Kind: domain.ProjectKindSingleRepo}
+	var got ports.WorkspaceConfig
+	preparer := NewWorkspacePreparer(fakeSessions{rec: worker, ok: true}, fakeProjects{rec: &project}, func(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+		got = cfg
+		return ports.WorkspaceInfo{Path: repo, Branch: "main", RepoPath: repo, SessionID: worker.ID, ProjectID: worker.ProjectID}, nil
+	})
+
+	rec, err := preparer.PrepareReviewWorkspace(context.Background(), worker.ID, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != worker.ID || got.Path != repo || got.Branch != "main" {
+		t.Fatalf("restore config = %+v", got)
+	}
+	if !rec.IsTerminated || rec.Activity.State != domain.ActivityExited || rec.Metadata.RuntimeLaunchID != "" || rec.Metadata.WorkspacePath != repo {
+		t.Fatalf("prepared record changed worker lifecycle: %+v", rec)
+	}
+}
+
+func TestWorkspacePreparerFailsClosedOnHeadCleanlinessAndProjectKind(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		projectKind domain.ProjectKind
+		target      func(string) string
+		dirty       bool
+		wantErr     string
+	}{
+		{name: "wrong exact head", projectKind: domain.ProjectKindSingleRepo, target: func(string) string { return strings.Repeat("0", 40) }, wantErr: "does not match exact review target"},
+		{name: "dirty worktree", projectKind: domain.ProjectKindSingleRepo, dirty: true, wantErr: "not clean"},
+		{name: "workspace project", projectKind: domain.ProjectKindWorkspace, wantErr: "single-repo project"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, head := newReviewGitRepo(t)
+			if tc.dirty {
+				if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			worker := idleWorker()
+			worker.IsTerminated = true
+			worker.Activity.State = domain.ActivityExited
+			worker.Metadata.WorkspacePath = repo
+			worker.Metadata.Branch = "main"
+			project := domain.ProjectRecord{ID: string(worker.ProjectID), Kind: tc.projectKind}
+			restoreCalls := 0
+			preparer := NewWorkspacePreparer(fakeSessions{rec: worker, ok: true}, fakeProjects{rec: &project}, func(_ context.Context, _ ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+				restoreCalls++
+				return ports.WorkspaceInfo{Path: repo, Branch: "main", SessionID: worker.ID, ProjectID: worker.ProjectID}, nil
+			})
+			target := head
+			if tc.target != nil {
+				target = tc.target(head)
+			}
+			if _, err := preparer.PrepareReviewWorkspace(context.Background(), worker.ID, target); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+			if tc.projectKind == domain.ProjectKindWorkspace && restoreCalls != 0 {
+				t.Fatalf("workspace project restore calls = %d", restoreCalls)
+			}
+		})
+	}
 }
 
 // --- tests ---
