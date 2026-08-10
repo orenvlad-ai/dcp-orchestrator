@@ -3,10 +3,15 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
+	storepkg "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 func TestInsertReviewRunDuplicatePRSHAMapsToSentinel(t *testing.T) {
@@ -279,6 +284,115 @@ func TestReviewUpsertReusesRowAndRunRoundTrip(t *testing.T) {
 	} else if ok {
 		t.Fatal("second update completed an already-complete run")
 	}
+}
+
+func TestUpdateBoundReviewRunResultIsAtomicAndExactHeadBound(t *testing.T) {
+	sha := "1111111111111111111111111111111111111111"
+	prURL := "https://github.com/o/r/pull/1"
+	setup := func(t *testing.T) (*storepkg.Store, reviewcore.StructuredResultExpected) {
+		t.Helper()
+		s := newTestStore(t)
+		ctx := context.Background()
+		seedProject(t, s, "mer")
+		rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC().Truncate(time.Second)
+		if err := s.WriteSCMObservation(ctx, domain.PullRequest{URL: prURL, SessionID: rec.ID, Number: 1, HeadSHA: sha, UpdatedAt: now}, nil, nil, nil, nil, ports.ReviewWriteReplace); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpsertReview(ctx, domain.Review{
+			ID: "rev-1", SessionID: rec.ID, ProjectID: rec.ProjectID, Harness: domain.ReviewerCodex,
+			ReviewerHandleID: "review-" + string(rec.ID), CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertReviewRun(ctx, domain.ReviewRun{
+			ID: "run-1", ReviewID: "rev-1", SessionID: rec.ID, BatchID: "batch-1", Harness: domain.ReviewerCodex,
+			PRURL: prURL, TargetSHA: sha, Status: domain.ReviewRunRunning, CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s, reviewcore.StructuredResultExpected{
+			WorkerSessionID: string(rec.ID), ReviewerHandleID: "review-" + string(rec.ID), BatchID: "batch-1", RunID: "run-1", PRURL: prURL, TargetSHA: sha,
+		}
+	}
+
+	t.Run("one winner under concurrent duplicate submits", func(t *testing.T) {
+		s, expected := setup(t)
+		var winners atomic.Int32
+		errs := make(chan error, 16)
+		var wg sync.WaitGroup
+		for range 16 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ok, err := s.UpdateBoundReviewRunResult(context.Background(), expected, domain.VerdictApproved, "approved")
+				if err != nil {
+					errs <- err
+					return
+				}
+				if ok {
+					winners.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("concurrent update: %v", err)
+		}
+		if got := winners.Load(); got != 1 {
+			t.Fatalf("successful updates = %d, want exactly one", got)
+		}
+		run, _, _ := s.GetReviewRun(context.Background(), expected.RunID)
+		if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != "approved" {
+			t.Fatalf("run = %+v", run)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*reviewcore.StructuredResultExpected)
+	}{
+		{name: "session", mutate: func(e *reviewcore.StructuredResultExpected) { e.WorkerSessionID = "mer-foreign" }},
+		{name: "terminal", mutate: func(e *reviewcore.StructuredResultExpected) { e.ReviewerHandleID = "review-mer-foreign" }},
+		{name: "batch", mutate: func(e *reviewcore.StructuredResultExpected) { e.BatchID = "batch-foreign" }},
+		{name: "run", mutate: func(e *reviewcore.StructuredResultExpected) { e.RunID = "run-foreign" }},
+		{name: "pr", mutate: func(e *reviewcore.StructuredResultExpected) { e.PRURL = "https://github.com/o/r/pull/2" }},
+		{name: "target", mutate: func(e *reviewcore.StructuredResultExpected) { e.TargetSHA = "2222222222222222222222222222222222222222" }},
+	} {
+		t.Run("reject "+tc.name, func(t *testing.T) {
+			s, expected := setup(t)
+			tc.mutate(&expected)
+			ok, err := s.UpdateBoundReviewRunResult(context.Background(), expected, domain.VerdictApproved, "foreign")
+			if err != nil || ok {
+				t.Fatalf("update ok=%v err=%v", ok, err)
+			}
+			run, _, _ := s.GetReviewRun(context.Background(), "run-1")
+			if run.Status != domain.ReviewRunRunning || run.Verdict != domain.VerdictNone {
+				t.Fatalf("foreign binding mutated run: %+v", run)
+			}
+		})
+	}
+
+	t.Run("reject stale observed head", func(t *testing.T) {
+		s, expected := setup(t)
+		pr, ok, err := s.GetPR(context.Background(), expected.PRURL)
+		if err != nil || !ok {
+			t.Fatal(err)
+		}
+		pr.HeadSHA = "2222222222222222222222222222222222222222"
+		pr.UpdatedAt = pr.UpdatedAt.Add(time.Second)
+		if err := s.WriteSCMObservation(context.Background(), pr, nil, nil, nil, nil, ports.ReviewWriteReplace); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := s.UpdateBoundReviewRunResult(context.Background(), expected, domain.VerdictApproved, "stale")
+		if err != nil || updated {
+			t.Fatalf("stale head update=%v err=%v", updated, err)
+		}
+	})
 }
 
 func TestCancelRunningReviewRunsBySession(t *testing.T) {

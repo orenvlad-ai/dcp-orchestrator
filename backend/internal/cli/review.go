@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
 )
 
 // reviewRun mirrors the daemon's domain.ReviewRun for the CLI client.
@@ -73,11 +76,12 @@ type submitReviewItem struct {
 
 // submitReviewRequest mirrors controllers.SubmitReviewInput.
 type submitReviewRequest struct {
-	RunID          string             `json:"runId,omitempty"`
-	Verdict        string             `json:"verdict,omitempty"`
-	Body           string             `json:"body,omitempty"`
-	GithubReviewID string             `json:"githubReviewId,omitempty"`
-	Reviews        []submitReviewItem `json:"reviews,omitempty"`
+	RunID            string                       `json:"runId,omitempty"`
+	Verdict          string                       `json:"verdict,omitempty"`
+	Body             string                       `json:"body,omitempty"`
+	GithubReviewID   string                       `json:"githubReviewId,omitempty"`
+	Reviews          []submitReviewItem           `json:"reviews,omitempty"`
+	StructuredResult *reviewcore.StructuredResult `json:"structuredResult,omitempty"`
 }
 
 type reviewSubmitOptions struct {
@@ -98,12 +102,25 @@ type reviewSuperviseOptions struct {
 	runIDs            []string
 	supervisorDataDir string
 	supervisorRunFile string
+	reviewerHandle    string
+	batchID           string
+	prURL             string
+	targetSHA         string
+	resultFile        string
+	resultSchema      string
 }
 
 type reviewProcessExitRequest struct {
-	RunIDs   []string `json:"runIds"`
-	Started  bool     `json:"started"`
-	ExitCode int      `json:"exitCode"`
+	RunIDs        []string `json:"runIds"`
+	Started       bool     `json:"started"`
+	ExitCode      int      `json:"exitCode"`
+	ResultFailure string   `json:"resultFailure,omitempty"`
+}
+
+type supervisedStructuredReview struct {
+	expected   reviewcore.StructuredResultExpected
+	resultFile string
+	schemaFile string
 }
 
 type reviewListOptions struct {
@@ -154,25 +171,85 @@ func newReviewSuperviseCommand(ctx *commandContext) *cobra.Command {
 				return usageError{err}
 			}
 			defer restoreConnection()
-			return ctx.runSupervisedReview(cmd.Context(), opts.session, opts.runIDs, args)
+			structured, err := structuredReviewOptions(opts)
+			if err != nil {
+				return usageError{err}
+			}
+			return ctx.runSupervisedReview(cmd.Context(), opts.session, opts.runIDs, structured, args)
 		},
 	}
 	cmd.Flags().StringVar(&opts.session, "session", "", "AO worker session id")
 	cmd.Flags().StringArrayVar(&opts.runIDs, "run", nil, "AO review run id (repeat for a batch)")
 	cmd.Flags().StringVar(&opts.supervisorDataDir, "supervisor-data-dir", "", "AO data directory used only by the process supervisor")
 	cmd.Flags().StringVar(&opts.supervisorRunFile, "supervisor-run-file", "", "AO run-file used only by the process supervisor")
+	cmd.Flags().StringVar(&opts.reviewerHandle, "reviewer-handle", "", "Exact reviewer runtime handle (internal)")
+	cmd.Flags().StringVar(&opts.batchID, "batch", "", "Exact review batch id (internal)")
+	cmd.Flags().StringVar(&opts.prURL, "pr-url", "", "Exact reviewed PR URL (internal)")
+	cmd.Flags().StringVar(&opts.targetSHA, "target-sha", "", "Exact reviewed PR head SHA (internal)")
+	cmd.Flags().StringVar(&opts.resultFile, "result-file", "", "AO-owned structured result path (internal)")
+	cmd.Flags().StringVar(&opts.resultSchema, "result-schema", "", "AO-owned structured result schema path (internal)")
 	return cmd
 }
 
-func (c *commandContext) runSupervisedReview(ctx context.Context, session string, runIDs, argv []string) error {
+func structuredReviewOptions(opts reviewSuperviseOptions) (*supervisedStructuredReview, error) {
+	values := []string{opts.reviewerHandle, opts.batchID, opts.prURL, opts.targetSHA, opts.resultFile, opts.resultSchema}
+	present := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			present++
+		}
+	}
+	if present == 0 {
+		return nil, nil
+	}
+	if present != len(values) || len(opts.runIDs) != 1 {
+		return nil, errors.New("structured reviewer requires one run and every exact result identity flag")
+	}
+	expected := reviewcore.StructuredResultExpected{
+		WorkerSessionID:  opts.session,
+		ReviewerHandleID: strings.TrimSpace(opts.reviewerHandle),
+		BatchID:          strings.TrimSpace(opts.batchID),
+		RunID:            opts.runIDs[0],
+		PRURL:            strings.TrimSpace(opts.prURL),
+		TargetSHA:        strings.TrimSpace(opts.targetSHA),
+	}
+	if _, err := reviewcore.StructuredResultSchema(expected); err != nil {
+		return nil, fmt.Errorf("invalid structured reviewer identity: %w", err)
+	}
+	dataDir := filepath.Clean(opts.supervisorDataDir)
+	resultFile := filepath.Clean(opts.resultFile)
+	schemaFile := filepath.Clean(opts.resultSchema)
+	if resultFile != opts.resultFile || schemaFile != opts.resultSchema || !filepath.IsAbs(resultFile) || !filepath.IsAbs(schemaFile) || resultFile == schemaFile {
+		return nil, errors.New("structured reviewer artifact paths must be distinct exact absolute paths")
+	}
+	root := filepath.Join(dataDir, "runtime", "reviewer-results")
+	for _, artifact := range []string{resultFile, schemaFile} {
+		rel, err := filepath.Rel(root, artifact)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, errors.New("structured reviewer artifacts must remain below the AO result root")
+		}
+	}
+	schemaInfo, err := os.Lstat(schemaFile)
+	if err != nil || !schemaInfo.Mode().IsRegular() || schemaInfo.Mode()&os.ModeSymlink != 0 || schemaInfo.Mode().Perm()&0o022 != 0 {
+		return nil, errors.New("structured reviewer schema is not an owner-controlled regular file")
+	}
+	if _, err := os.Lstat(resultFile); err == nil {
+		return nil, errors.New("structured reviewer result already exists before process start")
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect structured reviewer result: %w", err)
+	}
+	return &supervisedStructuredReview{expected: expected, resultFile: resultFile, schemaFile: schemaFile}, nil
+}
+
+func (c *commandContext) runSupervisedReview(ctx context.Context, session string, runIDs []string, structured *supervisedStructuredReview, argv []string) error {
 	child := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv comes from the selected reviewer adapter.
-	child.Env = supervisedChildEnv(os.Environ())
+	child.Env = supervisedReviewerChildEnv(os.Environ())
 	child.Stdin = c.deps.In
 	child.Stdout = c.deps.Out
 	child.Stderr = c.deps.Err
 	if err := child.Start(); err != nil {
 		_, _ = fmt.Fprintf(c.deps.Err, "ao: start managed reviewer: %v\n", err)
-		c.reportReviewProcessExit(session, runIDs, false, -1)
+		c.reportReviewProcessExit(session, runIDs, false, -1, "")
 		return err
 	}
 	interrupts := make(chan os.Signal, 1)
@@ -187,15 +264,46 @@ func (c *commandContext) runSupervisedReview(ctx context.Context, session string
 			exitCode = exitErr.ExitCode()
 		}
 	}
-	c.reportReviewProcessExit(session, runIDs, true, exitCode)
+	resultFailure := ""
+	if waitErr == nil && structured != nil {
+		result, err := reviewcore.ReadStructuredResult(structured.resultFile, structured.expected)
+		if err != nil {
+			resultFailure = string(reviewcore.StructuredResultKind(err))
+			waitErr = fmt.Errorf("structured review result rejected: %w", err)
+		} else {
+			path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
+			var response reviewRunResponse
+			if err := c.postJSON(ctx, path, submitReviewRequest{StructuredResult: &result}, &response); err != nil {
+				resultFailure = "submit_failed"
+				waitErr = fmt.Errorf("record structured review result: %w", err)
+			}
+		}
+	}
+	if structured != nil && resultFailure != "submit_failed" {
+		_ = os.Remove(structured.resultFile)
+		_ = os.Remove(structured.schemaFile)
+	}
+	c.reportReviewProcessExit(session, runIDs, true, exitCode, resultFailure)
 	return waitErr
 }
 
-func (c *commandContext) reportReviewProcessExit(session string, runIDs []string, started bool, exitCode int) {
+func supervisedReviewerChildEnv(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "AO_") || key == "GH_TOKEN" || key == "GITHUB_TOKEN" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func (c *commandContext) reportReviewProcessExit(session string, runIDs []string, started bool, exitCode int, resultFailure string) {
 	ctx, cancel := context.WithTimeout(context.Background(), supervisedExitReportTimeout)
 	defer cancel()
 	path := "sessions/" + url.PathEscape(session) + "/reviews/process-exit"
-	req := reviewProcessExitRequest{RunIDs: runIDs, Started: started, ExitCode: exitCode}
+	req := reviewProcessExitRequest{RunIDs: runIDs, Started: started, ExitCode: exitCode, ResultFailure: resultFailure}
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
 		c.reportHookFailure("review", "process-exited", session, err)
 	}

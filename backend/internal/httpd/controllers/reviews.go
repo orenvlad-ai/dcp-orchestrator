@@ -62,18 +62,20 @@ type SubmitReviewItem struct {
 
 // SubmitReviewInput is the body of POST /api/v1/sessions/{sessionId}/reviews/submit.
 type SubmitReviewInput struct {
-	RunID          string             `json:"runId,omitempty" description:"Review run id being completed."`
-	Verdict        string             `json:"verdict,omitempty" description:"Review verdict: approved or changes_requested."`
-	Body           string             `json:"body,omitempty" description:"Review body recorded by AO. Required for changes_requested."`
-	GithubReviewID string             `json:"githubReviewId,omitempty" description:"Id of the GitHub PR review the reviewer posted, if any."`
-	Reviews        []SubmitReviewItem `json:"reviews,omitempty" description:"Batched review results recorded by one reviewer CLI command."`
+	RunID            string                       `json:"runId,omitempty" description:"Review run id being completed."`
+	Verdict          string                       `json:"verdict,omitempty" description:"Review verdict: approved or changes_requested."`
+	Body             string                       `json:"body,omitempty" description:"Review body recorded by AO. Required for changes_requested."`
+	GithubReviewID   string                       `json:"githubReviewId,omitempty" description:"Id of the GitHub PR review the reviewer posted, if any."`
+	Reviews          []SubmitReviewItem           `json:"reviews,omitempty" description:"Batched review results recorded by one reviewer CLI command."`
+	StructuredResult *reviewcore.StructuredResult `json:"structuredResult,omitempty" description:"One schema-constrained reviewer result submitted by AO's trusted process supervisor."`
 }
 
 // ReviewProcessExitInput is emitted only by AO's hidden process supervisor.
 type ReviewProcessExitInput struct {
-	RunIDs   []string `json:"runIds" description:"Exact review run ids supervised by this process."`
-	Started  bool     `json:"started" description:"Whether the reviewer child process started."`
-	ExitCode int      `json:"exitCode" description:"Reviewer child exit code when started."`
+	RunIDs        []string `json:"runIds" description:"Exact review run ids supervised by this process."`
+	Started       bool     `json:"started" description:"Whether the reviewer child process started."`
+	ExitCode      int      `json:"exitCode" description:"Reviewer child exit code when started."`
+	ResultFailure string   `json:"resultFailure,omitempty" description:"Bounded structured-result failure category reported by the trusted supervisor."`
 }
 
 // ReviewsController owns the session-scoped /reviews routes. A nil Svc returns 501.
@@ -101,7 +103,7 @@ func (c *ReviewsController) processExit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	runs, err := c.Svc.ProcessExit(r.Context(), sessionID(r), reviewsvc.ProcessExitReport{
-		RunIDs: in.RunIDs, Started: in.Started, ExitCode: in.ExitCode,
+		RunIDs: in.RunIDs, Started: in.Started, ExitCode: in.ExitCode, ResultFailure: in.ResultFailure,
 	})
 	if err != nil {
 		writeReviewError(w, r, err)
@@ -199,6 +201,19 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 	var in SubmitReviewInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "Invalid request body", nil)
+		return
+	}
+	if in.StructuredResult != nil {
+		if in.RunID != "" || in.Verdict != "" || in.Body != "" || in.GithubReviewID != "" || len(in.Reviews) != 0 {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "Structured result cannot be combined with reviewer CLI fields", nil)
+			return
+		}
+		run, err := c.Svc.SubmitStructured(r.Context(), sessionID(r), *in.StructuredResult)
+		if err != nil {
+			writeReviewError(w, r, err)
+			return
+		}
+		envelope.WriteJSON(w, http.StatusOK, ReviewRunResponse{Review: run, Reviews: []domain.ReviewRun{run}})
 		return
 	}
 	reviews := make([]reviewsvc.SubmittedReview, 0, len(in.Reviews))

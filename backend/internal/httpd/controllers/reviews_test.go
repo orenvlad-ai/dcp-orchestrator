@@ -27,7 +27,13 @@ type fakeReviewService struct {
 	cancel           reviewcore.CancelResult
 	list             reviewcore.SessionReviews
 	submitted        []reviewsvc.SubmittedReview
+	structured       *reviewcore.StructuredResult
 	processExit      reviewsvc.ProcessExitReport
+}
+
+func (f *fakeReviewService) SubmitStructured(_ context.Context, _ domain.SessionID, result reviewcore.StructuredResult) (domain.ReviewRun, error) {
+	f.structured = &result
+	return domain.ReviewRun{ID: result.RunID, SessionID: domain.SessionID(result.WorkerSessionID), Verdict: domain.ReviewVerdict(result.Verdict), Body: result.Body()}, nil
 }
 
 func (f *fakeReviewService) Trigger(
@@ -184,5 +190,22 @@ func TestReviewsSubmitAcceptsBatchedReviews(t *testing.T) {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("body missing %s: %s", want, body)
 		}
+	}
+}
+
+func TestReviewsSubmitRoutesOneStructuredResultThroughExistingEndpoint(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+	resultJSON := `{"version":1,"workerSessionId":"mer-1","reviewerHandleId":"review-mer-1","batchId":"batch-1","runId":"run-1","prUrl":"https://github.com/o/r/pull/1","targetSha":"1111111111111111111111111111111111111111","verdict":"approved","summary":"No blocking findings.","findings":[]}`
+	payload := `{"structuredResult":` + resultJSON + `}`
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", payload)
+	assertJSON(t, headers)
+	if status != http.StatusOK || svc.structured == nil || svc.structured.RunID != "run-1" || !strings.Contains(string(body), `"verdict":"approved"`) {
+		t.Fatalf("status=%d structured=%+v body=%s", status, svc.structured, body)
+	}
+
+	_, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", `{"runId":"run-1","structuredResult":`+resultJSON+`}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("combined structured/CLI fields status=%d, want 400", status)
 	}
 }

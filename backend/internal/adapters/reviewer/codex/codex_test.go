@@ -43,10 +43,12 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	r := &Reviewer{agent: agent}
 
 	got, err := r.ReviewCommand(context.Background(), ports.ReviewInvocation{
-		ReviewerID:    "review-w1",
-		WorkspacePath: "/ws/w1",
-		Prompt:        "review it",
-		SystemPrompt:  "review only",
+		ReviewerID:       "review-w1",
+		WorkspacePath:    "/ws/w1",
+		Prompt:           "review it",
+		SystemPrompt:     "review only",
+		ResultSchemaFile: "/ao/results/schema.json",
+		ResultFile:       "/ao/results/result.json",
 	})
 	if err != nil {
 		t.Fatalf("ReviewCommand: %v", err)
@@ -55,10 +57,10 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	want := []string{
 		"agent", "exec",
 		"-c", `approval_policy="never"`,
+		"-c", `web_search="disabled"`,
 		"--sandbox", "read-only",
-		"-c", `shell_environment_policy.set.AO_PORT="3103"`,
-		"-c", `shell_environment_policy.set.AO_DATA_DIR="/tmp/ao data"`,
-		"-c", `shell_environment_policy.set.AO_RUN_FILE="/tmp/ao data/running.json"`,
+		"--output-schema", "/ao/results/schema.json",
+		"--output-last-message", "/ao/results/result.json",
 		"--", "review it",
 	}
 	if !slices.Equal(got.Argv, want) {
@@ -69,6 +71,21 @@ func TestReviewCommandUsesReadOnlySandbox(t *testing.T) {
 	}
 	if agent.got.SystemPrompt != "review only" {
 		t.Fatalf("system prompt = %q", agent.got.SystemPrompt)
+	}
+	for _, arg := range got.Argv {
+		if strings.Contains(arg, "AO_PORT") || strings.Contains(arg, "AO_DATA_DIR") || strings.Contains(arg, "AO_RUN_FILE") || strings.Contains(arg, "network_access=true") {
+			t.Fatalf("reviewer command leaks control-plane/network configuration: %#v", got.Argv)
+		}
+	}
+}
+
+func TestReviewCommandRejectsPartialStructuredPaths(t *testing.T) {
+	agent := &captureAgent{}
+	_, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{
+		Prompt: "review", ResultFile: "/ao/results/result.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "both schema and result") {
+		t.Fatalf("ReviewCommand error = %v, want partial structured path rejection", err)
 	}
 }
 

@@ -18,6 +18,35 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: UpdateReviewRunResult :execrows
 UPDATE review_run SET status = ?, verdict = ?, body = ?, github_review_id = ? WHERE id = ? AND status = 'running';
 
+-- name: UpdateBoundReviewRunResult :execrows
+UPDATE review_run
+SET status = 'complete', verdict = sqlc.arg(verdict), body = sqlc.arg(body), github_review_id = ''
+WHERE review_run.id = sqlc.arg(run_id)
+  AND review_run.session_id = sqlc.arg(session_id)
+  AND review_run.batch_id = sqlc.arg(batch_id)
+  AND review_run.pr_url = sqlc.arg(pr_url)
+  AND review_run.target_sha = sqlc.arg(target_sha)
+  AND review_run.status = 'running'
+  AND review_run.verdict = ''
+  AND EXISTS (
+    SELECT 1
+    FROM review
+    WHERE review.id = review_run.review_id
+      AND review.session_id = review_run.session_id
+      AND review.reviewer_handle_id = sqlc.arg(reviewer_handle_id)
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM pr
+    WHERE pr.url = review_run.pr_url
+      AND pr.session_id = review_run.session_id
+      AND pr.head_sha = review_run.target_sha
+      AND pr.pr_state = 'open'
+      AND pr.is_draft = 0
+      AND pr.is_merged = 0
+      AND pr.is_closed = 0
+  );
+
 -- name: SupersedeStaleRunningReviewRuns :execrows
 UPDATE review_run SET status = 'failed', body = ? WHERE session_id = ? AND pr_url = ? AND target_sha != ? AND status = 'running' AND verdict = '';
 

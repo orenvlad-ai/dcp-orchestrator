@@ -18,6 +18,10 @@ type fakeReviewer struct {
 	env    map[string]string
 }
 
+type fakeStructuredReviewer struct{ fakeReviewer }
+
+func (f *fakeStructuredReviewer) RequiresStructuredResult() bool { return true }
+
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
 	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env}, nil
@@ -189,6 +193,66 @@ func TestLauncherSpawnReturnsStableHandle(t *testing.T) {
 	}
 	if !strings.Contains(string(system), "Code reviewer role") || !strings.Contains(string(system), "exact file path in that request") || strings.Contains(string(system), filepath.ToSlash(taskPath)) {
 		t.Fatalf("system prompt = %q", system)
+	}
+}
+
+func TestLauncherStructuredSpawnOwnsResultChannelWithoutModelControlPlaneAccess(t *testing.T) {
+	reviewer := &fakeStructuredReviewer{}
+	reviewer.env = map[string]string{"KEEP": "value"}
+	rt := &fakeRuntime{}
+	dataDir := t.TempDir()
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir)
+	spec := launchSpec()
+	spec.Harness = domain.ReviewerCodex
+	spec.TargetSHA = strings.Repeat("1", 40)
+	spec.ReviewQueue = []ports.ReviewTask{{RunID: spec.RunID, PRURL: spec.PRURL, TargetSHA: spec.TargetSHA}}
+
+	if _, err := l.Spawn(context.Background(), spec); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if len(rt.createCfg.Env) != 1 || rt.createCfg.Env["KEEP"] != "value" || rt.createCfg.Env["PATH"] != "" {
+		t.Fatalf("structured reviewer received a model-controlled CLI alias: %#v", rt.createCfg.Env)
+	}
+	for _, name := range []string{"--reviewer-handle", "--batch", "--pr-url", "--target-sha", "--result-file", "--result-schema"} {
+		if !slices.Contains(rt.createCfg.Argv, name) {
+			t.Fatalf("supervisor argv missing %s: %#v", name, rt.createCfg.Argv)
+		}
+	}
+	if reviewer.gotInv.ResultSchemaFile == "" || reviewer.gotInv.ResultFile == "" {
+		t.Fatalf("structured invocation paths = %+v", reviewer.gotInv)
+	}
+	if _, err := os.Stat(reviewer.gotInv.ResultSchemaFile); err != nil {
+		t.Fatalf("schema file: %v", err)
+	}
+	if _, err := os.Stat(reviewer.gotInv.ResultFile); !os.IsNotExist(err) {
+		t.Fatalf("result must not exist before Codex writes it: %v", err)
+	}
+	task, err := os.ReadFile(reviewer.gotInv.TaskPromptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"ao review submit", "gh api", "post a review"} {
+		if strings.Contains(strings.ToLower(string(task)), forbidden) {
+			t.Fatalf("structured task requires a model control command %q: %s", forbidden, task)
+		}
+	}
+}
+
+func TestLauncherStructuredSpawnRejectsMultipleOrMismatchedTasks(t *testing.T) {
+	reviewer := &fakeStructuredReviewer{}
+	rt := &fakeRuntime{}
+	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, t.TempDir())
+	spec := launchSpec()
+	spec.TargetSHA = strings.Repeat("1", 40)
+	spec.ReviewQueue = []ports.ReviewTask{
+		{RunID: spec.RunID, PRURL: spec.PRURL, TargetSHA: spec.TargetSHA},
+		{RunID: "run-2", PRURL: "https://github.com/o/r/pull/2", TargetSHA: strings.Repeat("2", 40)},
+	}
+	if _, err := l.Spawn(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("Spawn error = %v, want bounded single-task rejection", err)
+	}
+	if rt.created {
+		t.Fatal("runtime started for an ambiguous structured review batch")
 	}
 }
 

@@ -9,10 +9,10 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `eb9ca41f23b2cfef51bda37f291cd44d6d29c173`](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/AGENTS.md)
-2. [current operating contract revision `2026-08-08.10`](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/docs/TARGET_ARCHITECTURE_V1.md)
-4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/eb9ca41f23b2cfef51bda37f291cd44d6d29c173/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `32cde47a24508cb2d135830f5ca06e57aeba78d6`](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/AGENTS.md)
+2. [current operating contract revision `2026-08-10.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/docs/TARGET_ARCHITECTURE_V1.md)
+4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -48,10 +48,11 @@ is the exact immutable revision pinned by current `dev-control-plane`.
   upstream launcher/bootstrap path for DCP.
 - The DCP adapter target remains the disposable, remote-free `dcp-lab`
   repository beneath the explicit lab root. I12 additionally permits only the
-  existing disposable `orenvlad-ai/dcp-review-lab#1` and its preserved
-  `DCP Review Canary` session for one reviewer proof. Real repositories,
-  other remotes, `wb-core`, WBC, production, hosted systems, and public
-  distribution are out of scope.
+  disposable `orenvlad-ai/dcp-review-lab` repository for its separately
+  authorized reviewer canaries. Existing PRs and sessions are immutable audit
+  evidence and must not be changed or reused. Real repositories, other remotes,
+  `wb-core`, WBC, production, hosted systems, and public distribution are out
+  of scope.
 - The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
   crash collection/upload, release, or external service path. Do not restore
   inherited upstream paths for any of them.
@@ -76,6 +77,19 @@ service, scheduler, queue, watcher, heartbeat, webhook, second registry/DB,
 arbiter, Admission Controller, Release Train, auto-merge, multi-pass repair
 loop, hosted projection, production target, or new DCP-task execution path.
 Never synthesize owner acceptance.
+
+The active Codex reviewer success path is deterministic after model exit. The
+model receives no network, daemon connection variables, GitHub credentials, or
+control-plane command channel and emits exactly one bounded JSON result through
+Codex's native output-schema/last-message files. The trusted AO supervisor
+validates schema, worker/reviewer/batch/run identity, the current exact open PR
+head, and terminal ownership, then records the verdict once through the existing
+daemon and guarded ReviewRun update. Missing, malformed, ambiguous, duplicate,
+late, foreign, or stale-head results fail closed without a verdict or retry. The
+private exact-binary `ao` alias remains only for compatibility with other stock
+reviewer adapters; Codex success never depends on a model-issued command. This
+adds no migration, result database, service, watcher, scheduler, or second state
+authority.
 
 Manual Spawn/Open Orchestrator affordances are absent from normal DCP UI. Keep
 the existing daemon/API/programmatic agent and orchestrator capability needed
