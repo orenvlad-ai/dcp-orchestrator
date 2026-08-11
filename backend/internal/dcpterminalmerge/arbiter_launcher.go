@@ -35,6 +35,11 @@ type arbiterLauncher struct {
 	command    func(context.Context, string, ...string) ([]byte, error)
 }
 
+const (
+	arbiterCodexVersion        = "codex-cli 0.145.0"
+	arbiterRolloutBudgetConfig = "features.rollout_budget={enabled=true,limit_tokens=16384,reminder_at_remaining_tokens=[2048],sampling_token_weight=1.0,prefill_token_weight=1.0}"
+)
+
 func NewArbiterLauncher(runtime arbiterRuntime, dataDir, runFile string) ArbiterLauncher {
 	return &arbiterLauncher{
 		runtime: runtime, dataDir: filepath.Clean(dataDir), runFile: filepath.Clean(runFile),
@@ -92,9 +97,30 @@ func (l *arbiterLauncher) Preflight(ctx context.Context, incident domain.DCPRele
 	if err != nil || !filepath.IsAbs(codex) {
 		return errors.New("dcp arbiter: exact installed Codex binary is unavailable")
 	}
-	probe := append(arbiterCodexBaseArgs(), "--help")
-	if output, err := l.command(ctx, codex, probe...); err != nil {
-		return fmt.Errorf("dcp arbiter: installed Codex cannot enforce exact argv: %w: %s", err, strings.TrimSpace(string(output)))
+	version, err := l.command(ctx, codex, "--version")
+	if err != nil {
+		return fmt.Errorf("dcp arbiter: inspect installed Codex version: %w", err)
+	}
+	if strings.TrimSpace(string(version)) != arbiterCodexVersion {
+		return fmt.Errorf("dcp arbiter: installed Codex version is not exact: %s", strings.TrimSpace(string(version)))
+	}
+	// Force the qualified CLI to parse the complete isolated exec configuration,
+	// then stop on a deliberately absent local schema before it can construct a
+	// provider request. A help probe does not load strict configuration.
+	missingSchema := filepath.Join(artifacts.directory, "preflight-schema-must-not-exist.json")
+	if _, err := os.Lstat(missingSchema); err == nil {
+		return errors.New("dcp arbiter: strict-config preflight sentinel already exists")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("dcp arbiter: inspect strict-config preflight sentinel: %w", err)
+	}
+	probe := append(arbiterCodexBaseArgs(), "--output-schema", missingSchema, "--", "DCP model-free strict configuration preflight")
+	output, probeErr := l.command(ctx, codex, probe...)
+	expected := "Failed to read output schema file " + missingSchema + ":"
+	if probeErr == nil {
+		return errors.New("dcp arbiter: strict-config preflight did not stop on the absent local schema")
+	}
+	if !strings.Contains(string(output), expected) {
+		return fmt.Errorf("dcp arbiter: installed Codex cannot strictly parse exact argv: %w: %s", probeErr, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -169,13 +195,9 @@ func arbiterCodexBaseArgs() []string {
 		args = append(args, "--disable", feature)
 	}
 	args = append(args,
-		"--enable", "rollout_budget",
 		"-c", `approval_policy="never"`, "-c", `web_search="disabled"`,
 		"-c", `model_reasoning_effort="xhigh"`,
-		"-c", "rollout_budget.limit_tokens=16384",
-		"-c", "rollout_budget.reminder_at_remaining_tokens=2048",
-		"-c", "rollout_budget.sampling_token_weight=1",
-		"-c", "rollout_budget.prefill_token_weight=1",
+		"-c", arbiterRolloutBudgetConfig,
 		"-c", "check_for_update_on_startup=false",
 		"--sandbox", "read-only", "--model", ArbiterModel, "--skip-git-repo-check")
 	return args

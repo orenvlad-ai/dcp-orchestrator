@@ -71,6 +71,76 @@ func TestMigrateAllowsEveryShippedHarness(t *testing.T) {
 	}
 }
 
+func TestArbiterPrelaunchConfigRecoveryPreservesAuditAndRearmsSameIncident(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE dcp_review_lab_arbiter_v1 (
+    incident_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL,
+    identity_digest TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    model_call_count INTEGER NOT NULL,
+    error_code TEXT NOT NULL,
+    finished_at TIMESTAMP,
+    model TEXT NOT NULL,
+    reasoning TEXT NOT NULL,
+    token_budget INTEGER NOT NULL,
+    runtime_handle_id TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    decision_digest TEXT NOT NULL,
+    recovery_wake_count INTEGER NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+INSERT INTO dcp_review_lab_arbiter_v1 VALUES (
+    'dcp-global-release-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    1,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'failed', 1, 'child_failed', '2026-08-11 17:53:31',
+    'gpt-5.6-sol', 'xhigh', 16384, 'dcp-global-release-arbiter-v1',
+    '', '', 0, '2026-08-11 17:53:31'
+);`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationsFS.ReadFile("migrations/0053_dcp_arbiter_prelaunch_config_recovery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(migration), "-- +goose Down")
+	if len(parts) != 2 {
+		t.Fatal("migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(parts[0]); err != nil {
+		t.Fatalf("apply up: %v", err)
+	}
+	var status, errorCode string
+	var callCount int
+	if err := db.QueryRow(`SELECT status, model_call_count, error_code FROM dcp_review_lab_arbiter_v1`).Scan(&status, &callCount, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if status != "requested" || callCount != 0 || errorCode != "" {
+		t.Fatalf("rearmed row = status:%s calls:%d error:%s", status, callCount, errorCode)
+	}
+	var auditCount int
+	var priorFinished, reason, sourceSHA, contractSHA string
+	if err := db.QueryRow(`
+SELECT count(*), prior_finished_at, recovery_reason,
+       failed_launcher_source_sha, correction_contract_sha
+FROM dcp_review_lab_arbiter_v1_prelaunch_recovery
+`).Scan(&auditCount, &priorFinished, &reason, &sourceSHA, &contractSHA); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 || priorFinished == "" || reason != "strict_config_top_level_rollout_budget_rejected" ||
+		sourceSHA != "d5f9fd4b3459596fcb2d79efc0023bad4f7f0aa0" || contractSHA != "4d3e0736635579db053516813e2d5944f903f777" {
+		t.Fatalf("recovery audit = count:%d finished:%s reason:%s source:%s contract:%s", auditCount, priorFinished, reason, sourceSHA, contractSHA)
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "missing")
 	if _, err := OpenReadOnly(context.Background(), dataDir); err == nil {

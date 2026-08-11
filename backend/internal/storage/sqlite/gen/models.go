@@ -102,6 +102,21 @@ type DcpReviewLabArbiterV1 struct {
 	FinishedAt             sql.NullTime
 }
 
+type DcpReviewLabArbiterV1PrelaunchRecovery struct {
+	IncidentID              string
+	Generation              int64
+	IdentityDigest          string
+	InputDigest             string
+	PriorStatus             string
+	PriorModelCallCount     int64
+	PriorErrorCode          string
+	PriorFinishedAt         time.Time
+	FailedLauncherSourceSha string
+	CorrectionContractSha   string
+	RecoveryReason          string
+	RearmedAt               time.Time
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string
