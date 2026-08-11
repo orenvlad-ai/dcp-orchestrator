@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"reflect"
 	"sort"
@@ -94,6 +95,13 @@ type trackerIntakeConfig struct {
 	Assignee string `json:"assignee,omitempty"`
 }
 
+// reviewerConfig mirrors domain.ReviewerConfig for exact --config-json
+// round-tripping. Keeping it typed prevents the CLI from silently discarding
+// the explicit reviewer list used by the bounded DCP synthetic PR profile.
+type reviewerConfig struct {
+	Harness string `json:"harness"`
+}
+
 // projectConfig mirrors the daemon's typed domain.ProjectConfig for the CLI
 // client. The CLI sets common fields via flags and the whole object via
 // --config-json.
@@ -109,6 +117,7 @@ type projectConfig struct {
 	AgentConfig       agentConfig         `json:"agentConfig,omitempty"`
 	Worker            roleOverride        `json:"worker,omitempty"`
 	Orchestrator      roleOverride        `json:"orchestrator,omitempty"`
+	Reviewers         []reviewerConfig    `json:"reviewers,omitempty"`
 	TrackerIntake     trackerIntakeConfig `json:"trackerIntake,omitempty"`
 }
 
@@ -341,8 +350,13 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 	}
 	if opts.configJSON != "" {
 		var cfg projectConfig
-		if err := json.Unmarshal([]byte(opts.configJSON), &cfg); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(opts.configJSON))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg); err != nil {
 			return projectConfig{}, usageError{fmt.Errorf("--config-json is not a valid JSON object: %w", err)}
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return projectConfig{}, usageError{errors.New("--config-json must contain exactly one JSON object")}
 		}
 		return cfg, nil
 	}

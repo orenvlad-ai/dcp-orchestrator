@@ -84,6 +84,33 @@ func TestProjectSetConfig_TrackerIntakeJSON(t *testing.T) {
 	}
 }
 
+func TestProjectSetConfig_ReviewerJSONIsPreservedAndUnknownFieldsFailClosed(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "set-config", "demo", "--config-json", `{"reviewers":[{"harness":"codex"}]}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got setConfigRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if len(got.Config.Reviewers) != 1 || got.Config.Reviewers[0].Harness != "codex" {
+		t.Fatalf("reviewers = %#v, want one codex reviewer", got.Config.Reviewers)
+	}
+
+	_, _, err = executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "set-config", "demo", "--config-json", `{"reviewerz":[{"harness":"codex"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown project config field error = %v", err)
+	}
+}
+
 func TestBuildProjectConfigTrackerIntakeFlags(t *testing.T) {
 	got, err := buildProjectConfig(projectSetConfigOptions{
 		trackerIntake:   true,
