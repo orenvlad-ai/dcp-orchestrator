@@ -126,7 +126,7 @@ func (q *Queries) FailDCPReviewLabAdmission(ctx context.Context, arg FailDCPRevi
 }
 
 const getClaimedDCPReviewLabAdmission = `-- name: GetClaimedDCPReviewLabAdmission :one
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission WHERE status = 'claimed' LIMIT 1
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission WHERE status = 'claimed' LIMIT 1
 `
 
 func (q *Queries) GetClaimedDCPReviewLabAdmission(ctx context.Context) (DcpReviewLabAdmission, error) {
@@ -151,12 +151,13 @@ func (q *Queries) GetClaimedDCPReviewLabAdmission(ctx context.Context) (DcpRevie
 		&i.RefreshWakeCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecoveredIncidentPacket,
 	)
 	return i, err
 }
 
 const getDCPReviewLabAdmissionByID = `-- name: GetDCPReviewLabAdmissionByID :one
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission WHERE id = ?
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission WHERE id = ?
 `
 
 func (q *Queries) GetDCPReviewLabAdmissionByID(ctx context.Context, id string) (DcpReviewLabAdmission, error) {
@@ -181,12 +182,13 @@ func (q *Queries) GetDCPReviewLabAdmissionByID(ctx context.Context, id string) (
 		&i.RefreshWakeCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecoveredIncidentPacket,
 	)
 	return i, err
 }
 
 const getDCPReviewLabAdmissionByRun = `-- name: GetDCPReviewLabAdmissionByRun :one
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission WHERE review_run_id = ?
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission WHERE review_run_id = ?
 `
 
 func (q *Queries) GetDCPReviewLabAdmissionByRun(ctx context.Context, reviewRunID string) (DcpReviewLabAdmission, error) {
@@ -211,12 +213,13 @@ func (q *Queries) GetDCPReviewLabAdmissionByRun(ctx context.Context, reviewRunID
 		&i.RefreshWakeCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecoveredIncidentPacket,
 	)
 	return i, err
 }
 
 const getNextWaitingDCPReviewLabAdmission = `-- name: GetNextWaitingDCPReviewLabAdmission :one
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission WHERE status = 'waiting' ORDER BY sequence ASC LIMIT 1
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission WHERE status = 'waiting' ORDER BY sequence ASC LIMIT 1
 `
 
 func (q *Queries) GetNextWaitingDCPReviewLabAdmission(ctx context.Context) (DcpReviewLabAdmission, error) {
@@ -241,12 +244,13 @@ func (q *Queries) GetNextWaitingDCPReviewLabAdmission(ctx context.Context) (DcpR
 		&i.RefreshWakeCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecoveredIncidentPacket,
 	)
 	return i, err
 }
 
 const getRefreshingDCPReviewLabAdmissionBySession = `-- name: GetRefreshingDCPReviewLabAdmissionBySession :one
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission WHERE session_id = ? AND status = 'refreshing'
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission WHERE session_id = ? AND status = 'refreshing'
 `
 
 func (q *Queries) GetRefreshingDCPReviewLabAdmissionBySession(ctx context.Context, sessionID string) (DcpReviewLabAdmission, error) {
@@ -271,6 +275,7 @@ func (q *Queries) GetRefreshingDCPReviewLabAdmissionBySession(ctx context.Contex
 		&i.RefreshWakeCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RecoveredIncidentPacket,
 	)
 	return i, err
 }
@@ -337,7 +342,7 @@ func (q *Queries) InsertDCPReviewLabAdmission(ctx context.Context, arg InsertDCP
 }
 
 const listDCPReviewLabAdmissions = `-- name: ListDCPReviewLabAdmissions :many
-SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at FROM dcp_review_lab_admission ORDER BY sequence ASC
+SELECT sequence, id, review_run_id, review_id, session_id, pr_url, pr_number, target_sha, review_base_sha, admitted_base_sha, status, lease_id, merge_commit_sha, error_code, incident_packet, refresh_wake_count, created_at, updated_at, recovered_incident_packet FROM dcp_review_lab_admission ORDER BY sequence ASC
 `
 
 func (q *Queries) ListDCPReviewLabAdmissions(ctx context.Context) ([]DcpReviewLabAdmission, error) {
@@ -368,6 +373,7 @@ func (q *Queries) ListDCPReviewLabAdmissions(ctx context.Context) ([]DcpReviewLa
 			&i.RefreshWakeCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RecoveredIncidentPacket,
 		); err != nil {
 			return nil, err
 		}
@@ -423,6 +429,68 @@ func (q *Queries) RecordDCPReviewLabIncident(ctx context.Context, arg RecordDCPR
 		arg.SessionID,
 		arg.TargetSha,
 		arg.ExpectedLeaseID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverDCPReviewLabCanonicalBaseIncident = `-- name: RecoverDCPReviewLabCanonicalBaseIncident :execrows
+UPDATE dcp_review_lab_admission
+SET status = 'waiting',
+    lease_id = '',
+    admitted_base_sha = '',
+    error_code = '',
+    recovered_incident_packet = incident_packet,
+    incident_packet = '',
+    updated_at = ?1
+WHERE dcp_review_lab_admission.id = ?2
+  AND dcp_review_lab_admission.review_run_id = ?3
+  AND dcp_review_lab_admission.session_id = ?4
+  AND dcp_review_lab_admission.pr_url = ?5
+  AND dcp_review_lab_admission.target_sha = ?6
+  AND dcp_review_lab_admission.status = 'incident'
+  AND dcp_review_lab_admission.error_code = 'canonical_main_diverged'
+  AND dcp_review_lab_admission.lease_id = 'dcp-incident-' || dcp_review_lab_admission.id
+  AND dcp_review_lab_admission.refresh_wake_count = 0
+  AND dcp_review_lab_admission.recovered_incident_packet = ''
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.schemaVersion') = 'dcp.review-lab.arbiter-needed/v1'
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.reason') = 'canonical_main_diverged'
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.admissionId') = dcp_review_lab_admission.id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.sessionId') = dcp_review_lab_admission.session_id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.reviewRunId') = dcp_review_lab_admission.review_run_id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.targetSha') = dcp_review_lab_admission.target_sha
+  AND EXISTS (
+    SELECT 1 FROM review_run rr
+    WHERE rr.id = dcp_review_lab_admission.review_run_id
+      AND rr.session_id = dcp_review_lab_admission.session_id
+      AND rr.pr_url = dcp_review_lab_admission.pr_url
+      AND rr.target_sha = dcp_review_lab_admission.target_sha
+      AND rr.status = 'complete'
+      AND rr.verdict = 'approved'
+      AND rr.result_channel = 'structured_dcp_v1'
+      AND rr.terminal_merge_status = ''
+  )
+`
+
+type RecoverDCPReviewLabCanonicalBaseIncidentParams struct {
+	UpdatedAt   time.Time
+	ID          string
+	ReviewRunID string
+	SessionID   string
+	PRURL       string
+	TargetSha   string
+}
+
+func (q *Queries) RecoverDCPReviewLabCanonicalBaseIncident(ctx context.Context, arg RecoverDCPReviewLabCanonicalBaseIncidentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverDCPReviewLabCanonicalBaseIncident,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ReviewRunID,
+		arg.SessionID,
+		arg.PRURL,
+		arg.TargetSha,
 	)
 	if err != nil {
 		return 0, err

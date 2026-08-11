@@ -9,10 +9,10 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3`](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/AGENTS.md)
-2. [current operating contract revision `2026-08-11.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/docs/TARGET_ARCHITECTURE_V1.md)
-4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `90f258a3943b824a31481bfaf132b06b442891f7`](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/AGENTS.md)
+2. [current operating contract revision `2026-08-11.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/docs/TARGET_ARCHITECTURE_V1.md)
+4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -94,8 +94,13 @@ own terminal merge. The other is durably passive: no heartbeat, watcher,
 polling loop, or model activity. A merge completion drains the next row
 model-free; `BEHIND` permits exactly one same-worker native continuation and a
 fresh exact-head review, while proven conflict/ambiguity records one structured
-`dcp.review-lab.arbiter-needed/v1` packet and stops. This does not add a second
-task/card identity, registry, database, daemon, scheduler, queue service,
+`dcp.review-lab.arbiter-needed/v1` packet and stops. If the first merge advances
+exact `origin/main` while the provider retains the reviewed base SHA on a still
+`MERGEABLE`/`CLEAN` second PR, startup may recover only the resulting
+`canonical_main_diverged` false incident after proving both fast-forward
+ancestry and a clean merge tree; the original packet remains durably retained
+and recovery performs no model call. This does not add a second task/card
+identity, registry, database, daemon, scheduler, queue service,
 reviewer service, arbiter, Human Gate, Release Train, general retry/recovery or
 auto-merge policy, hosted projection, production target, deploy path, or broad
 runtime capability. Arbiter v1 remains a separately dispatched second stage

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -145,6 +146,47 @@ func TestDCPAdmissionRefreshingHeadPhysicallyBlocksLaterClaim(t *testing.T) {
 	}
 	if _, claimed, err := s.GetClaimedDCPReviewLabAdmission(ctx); err != nil || claimed {
 		t.Fatalf("claimed row exists=%v err=%v", claimed, err)
+	}
+}
+
+func TestDCPAdmissionCanonicalBaseRecoveryPreservesIncidentPacketOnce(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedProject(t, s, "lab")
+	a := seedAdmissionCandidate(t, s, "lab", 1)
+	packetBytes, err := json.Marshal(map[string]any{
+		"schemaVersion": "dcp.review-lab.arbiter-needed/v1",
+		"reason":        "canonical_main_diverged",
+		"admissionId":   a.ID,
+		"sessionId":     string(a.SessionID),
+		"reviewRunId":   a.ReviewRunID,
+		"targetSha":     a.TargetSHA,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := string(packetBytes)
+	recorded, err := s.RecordDCPReviewLabIncident(ctx, a, "dcp-incident-"+a.ID, a.ReviewBaseSHA, "canonical_main_diverged", packet, time.Unix(10, 0).UTC())
+	if err != nil || !recorded {
+		t.Fatalf("record incident = %v, %v", recorded, err)
+	}
+	a, ok, err := s.GetDCPReviewLabAdmissionByID(ctx, a.ID)
+	if err != nil || !ok {
+		t.Fatalf("incident = %+v ok=%v err=%v", a, ok, err)
+	}
+	recovered, err := s.RecoverDCPReviewLabCanonicalBaseIncident(ctx, a, time.Unix(11, 0).UTC())
+	if err != nil || !recovered {
+		t.Fatalf("recover = %v, %v", recovered, err)
+	}
+	got, ok, err := s.GetDCPReviewLabAdmissionByID(ctx, a.ID)
+	if err != nil || !ok {
+		t.Fatalf("recovered row = %+v ok=%v err=%v", got, ok, err)
+	}
+	if got.Status != domain.DCPAdmissionWaiting || got.LeaseID != "" || got.ErrorCode != "" || got.IncidentPacket != "" || got.RecoveredIncidentPacket != packet {
+		t.Fatalf("recovered row = %+v", got)
+	}
+	if recovered, err := s.RecoverDCPReviewLabCanonicalBaseIncident(ctx, got, time.Unix(12, 0).UTC()); err != nil || recovered {
+		t.Fatalf("duplicate recover = %v, %v", recovered, err)
 	}
 }
 

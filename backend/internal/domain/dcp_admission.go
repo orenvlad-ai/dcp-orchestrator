@@ -5,24 +5,25 @@ import "time"
 // DCPReviewLabAdmission is the bounded FIFO/lease record subordinate to one
 // exact-head structured ReviewRun. It never replaces the native session/card.
 type DCPReviewLabAdmission struct {
-	Sequence         int64
-	ID               string
-	ReviewRunID      string
-	ReviewID         string
-	SessionID        SessionID
-	PRURL            string
-	PRNumber         int64
-	TargetSHA        string
-	ReviewBaseSHA    string
-	AdmittedBaseSHA  string
-	Status           DCPAdmissionStatus
-	LeaseID          string
-	MergeCommitSHA   string
-	ErrorCode        string
-	IncidentPacket   string
-	RefreshWakeCount int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	Sequence                int64
+	ID                      string
+	ReviewRunID             string
+	ReviewID                string
+	SessionID               SessionID
+	PRURL                   string
+	PRNumber                int64
+	TargetSHA               string
+	ReviewBaseSHA           string
+	AdmittedBaseSHA         string
+	Status                  DCPAdmissionStatus
+	LeaseID                 string
+	MergeCommitSHA          string
+	ErrorCode               string
+	IncidentPacket          string
+	RecoveredIncidentPacket string
+	RefreshWakeCount        int64
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // DCPAdmissionStatus is the durable mechanical state of one exact review-lab

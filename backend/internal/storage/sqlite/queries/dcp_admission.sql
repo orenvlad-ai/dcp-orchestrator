@@ -44,6 +44,43 @@ SELECT * FROM dcp_review_lab_admission WHERE status = 'waiting' ORDER BY sequenc
 -- name: GetRefreshingDCPReviewLabAdmissionBySession :one
 SELECT * FROM dcp_review_lab_admission WHERE session_id = ? AND status = 'refreshing';
 
+-- name: RecoverDCPReviewLabCanonicalBaseIncident :execrows
+UPDATE dcp_review_lab_admission
+SET status = 'waiting',
+    lease_id = '',
+    admitted_base_sha = '',
+    error_code = '',
+    recovered_incident_packet = incident_packet,
+    incident_packet = '',
+    updated_at = sqlc.arg(updated_at)
+WHERE dcp_review_lab_admission.id = sqlc.arg(id)
+  AND dcp_review_lab_admission.review_run_id = sqlc.arg(review_run_id)
+  AND dcp_review_lab_admission.session_id = sqlc.arg(session_id)
+  AND dcp_review_lab_admission.pr_url = sqlc.arg(pr_url)
+  AND dcp_review_lab_admission.target_sha = sqlc.arg(target_sha)
+  AND dcp_review_lab_admission.status = 'incident'
+  AND dcp_review_lab_admission.error_code = 'canonical_main_diverged'
+  AND dcp_review_lab_admission.lease_id = 'dcp-incident-' || dcp_review_lab_admission.id
+  AND dcp_review_lab_admission.refresh_wake_count = 0
+  AND dcp_review_lab_admission.recovered_incident_packet = ''
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.schemaVersion') = 'dcp.review-lab.arbiter-needed/v1'
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.reason') = 'canonical_main_diverged'
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.admissionId') = dcp_review_lab_admission.id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.sessionId') = dcp_review_lab_admission.session_id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.reviewRunId') = dcp_review_lab_admission.review_run_id
+  AND json_extract(dcp_review_lab_admission.incident_packet, '$.targetSha') = dcp_review_lab_admission.target_sha
+  AND EXISTS (
+    SELECT 1 FROM review_run rr
+    WHERE rr.id = dcp_review_lab_admission.review_run_id
+      AND rr.session_id = dcp_review_lab_admission.session_id
+      AND rr.pr_url = dcp_review_lab_admission.pr_url
+      AND rr.target_sha = dcp_review_lab_admission.target_sha
+      AND rr.status = 'complete'
+      AND rr.verdict = 'approved'
+      AND rr.result_channel = 'structured_dcp_v1'
+      AND rr.terminal_merge_status = ''
+  );
+
 -- name: ResumeDCPReviewLabAdmissionAfterRefresh :execrows
 UPDATE dcp_review_lab_admission
 SET review_run_id = sqlc.arg(new_review_run_id),

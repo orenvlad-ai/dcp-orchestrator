@@ -63,6 +63,16 @@ func (s *Store) GetRefreshingDCPReviewLabAdmissionBySession(ctx context.Context,
 	return dcpAdmissionResult(row, err)
 }
 
+func (s *Store) RecoverDCPReviewLabCanonicalBaseIncident(ctx context.Context, a domain.DCPReviewLabAdmission, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.RecoverDCPReviewLabCanonicalBaseIncident(ctx, gen.RecoverDCPReviewLabCanonicalBaseIncidentParams{
+		UpdatedAt: now, ID: a.ID, ReviewRunID: a.ReviewRunID, SessionID: string(a.SessionID),
+		PRURL: a.PRURL, TargetSha: a.TargetSHA,
+	})
+	return n == 1, err
+}
+
 func (s *Store) ResumeDCPReviewLabAdmissionAfterRefresh(ctx context.Context, a domain.DCPReviewLabAdmission, run domain.ReviewRun, reviewBaseSHA string, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -232,7 +242,8 @@ func dcpAdmissionFromRow(row gen.DcpReviewLabAdmission) domain.DCPReviewLabAdmis
 		SessionID: domain.SessionID(row.SessionID), PRURL: row.PRURL, PRNumber: row.PRNumber,
 		TargetSHA: row.TargetSha, ReviewBaseSHA: row.ReviewBaseSha, AdmittedBaseSHA: row.AdmittedBaseSha,
 		Status: domain.DCPAdmissionStatus(row.Status), LeaseID: row.LeaseID, MergeCommitSHA: row.MergeCommitSha,
-		ErrorCode: row.ErrorCode, IncidentPacket: row.IncidentPacket, RefreshWakeCount: row.RefreshWakeCount,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		ErrorCode: row.ErrorCode, IncidentPacket: row.IncidentPacket, RecoveredIncidentPacket: row.RecoveredIncidentPacket,
+		RefreshWakeCount: row.RefreshWakeCount,
+		CreatedAt:        row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
