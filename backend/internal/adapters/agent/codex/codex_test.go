@@ -30,6 +30,44 @@ func canonicalTempDir(t *testing.T) string {
 	return dir
 }
 
+func linkedWorktree(t *testing.T) (workspace, gitDir, commonDir string) {
+	t.Helper()
+	return linkedWorktreeAt(t, canonicalTempDir(t))
+}
+
+func linkedWorktreeAt(t *testing.T, root string) (workspace, gitDir, commonDir string) {
+	t.Helper()
+	repo := filepath.Join(root, "repo")
+	workspace = filepath.Join(root, "worker")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestCommand(t, "git", "-C", repo, "init", "--quiet")
+	runTestCommand(t, "git", "-C", repo, "config", "user.name", "DCP Test")
+	runTestCommand(t, "git", "-C", repo, "config", "user.email", "dcp-test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("linked worktree test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestCommand(t, "git", "-C", repo, "add", "README.md")
+	runTestCommand(t, "git", "-C", repo, "commit", "--quiet", "-m", "seed")
+	runTestCommand(t, "git", "-C", repo, "worktree", "add", "--quiet", "-b", "worker", workspace)
+
+	var err error
+	gitDir, commonDir, err = workspaceGitMetadataRoots(context.Background(), workspace)
+	if err != nil {
+		t.Fatalf("workspaceGitMetadataRoots: %v", err)
+	}
+	return workspace, gitDir, commonDir
+}
+
+func runTestCommand(t *testing.T, name string, args ...string) {
+	t.Helper()
+	command := exec.Command(name, args...)
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%s %#v: %v\n%s", name, args, err, out)
+	}
+}
+
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {
 	plugin := &Plugin{}
 	if got := plugin.ExitDetectionMode(); got != ports.AgentExitDetectionSupervisorIdleOnSuccess {
@@ -242,8 +280,14 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &Plugin{resolvedBinary: "codex"}
+			workspace := ""
+			var gitDir, commonDir string
+			if tt.permission == ports.PermissionModeAcceptEdits || tt.permission == ports.PermissionModeAuto {
+				workspace, gitDir, commonDir = linkedWorktree(t)
+			}
 			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
-				Permissions: tt.permission,
+				Permissions:   tt.permission,
+				WorkspacePath: workspace,
 			})
 			if tt.wantErr {
 				if err == nil {
@@ -263,7 +307,67 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 			if tt.notExpected != "" && contains(cmd, tt.notExpected) {
 				t.Fatalf("command %#v contains %q", cmd, tt.notExpected)
 			}
+			if gitDir != "" && !containsSubsequence(cmd, []string{"--add-dir", gitDir, "--add-dir", commonDir}) {
+				t.Fatalf("command %#v lacks exact linked-worktree metadata roots", cmd)
+			}
 		})
+	}
+}
+
+func TestGetLaunchCommandGitMetadataFailsClosed(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	for _, tc := range []struct {
+		name      string
+		workspace func(*testing.T) string
+	}{
+		{name: "blank", workspace: func(*testing.T) string { return "" }},
+		{name: "non-git", workspace: func(t *testing.T) string { return canonicalTempDir(t) }},
+		{name: "ordinary checkout", workspace: func(t *testing.T) string {
+			repo := canonicalTempDir(t)
+			runTestCommand(t, "git", "-C", repo, "init", "--quiet")
+			return repo
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+				Permissions:   ports.PermissionModeAcceptEdits,
+				WorkspacePath: tc.workspace(t),
+			})
+			if err == nil || cmd != nil {
+				t.Fatalf("GetLaunchCommand = (%#v, %v), want fail-closed metadata error", cmd, err)
+			}
+		})
+	}
+}
+
+func TestGetLaunchCommandRejectsMismatchedWorktreeBacklink(t *testing.T) {
+	workspace, gitDir, _ := linkedWorktree(t)
+	foreign := filepath.Join(canonicalTempDir(t), ".git")
+	if err := os.WriteFile(foreign, []byte("foreign\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(foreign+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := (&Plugin{resolvedBinary: "codex"}).GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Permissions:   ports.PermissionModeAuto,
+		WorkspacePath: workspace,
+	})
+	if err == nil || cmd != nil || !strings.Contains(err.Error(), "backlink") {
+		t.Fatalf("GetLaunchCommand = (%#v, %v), want backlink rejection", cmd, err)
+	}
+}
+
+func TestBypassDoesNotResolveOrGrantGitMetadata(t *testing.T) {
+	cmd, err := (&Plugin{resolvedBinary: "codex"}).GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Permissions:   ports.PermissionModeBypassPermissions,
+		WorkspacePath: filepath.Join(t.TempDir(), "missing"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(cmd, "--add-dir") {
+		t.Fatalf("bypass command unexpectedly contains Git metadata roots: %#v", cmd)
 	}
 }
 
@@ -524,7 +628,7 @@ func TestUninstallHooksRemovesLegacyCodexHooks(t *testing.T) {
 
 func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
-	workspace := canonicalTempDir(t)
+	workspace, gitDir, commonDir := linkedWorktree(t)
 
 	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
 		Permissions:      ports.PermissionModeAuto,
@@ -553,6 +657,8 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 		"-c", `approval_policy="on-request"`,
 		"-c", `approvals_reviewer="auto_review"`,
 		"--sandbox", "workspace-write",
+		"--add-dir", gitDir,
+		"--add-dir", commonDir,
 	}
 	want = append(want,
 		"-c", `projects={`+codexTOMLConfigString(workspace)+`={trust_level="trusted"}}`,
@@ -758,9 +864,10 @@ func TestInstalledCodexParsesGeneratedWorkerCommandWithoutModelRequest(t *testin
 		t.Skip("codex is not installed")
 	}
 	plugin := &Plugin{resolvedBinary: binary}
+	workspace, _, _ := linkedWorktree(t)
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Permissions:   ports.PermissionModeAcceptEdits,
-		WorkspacePath: canonicalTempDir(t),
+		WorkspacePath: workspace,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -776,5 +883,74 @@ func TestInstalledCodexParsesGeneratedWorkerCommandWithoutModelRequest(t *testin
 		if out, err := probe.CombinedOutput(); err != nil {
 			t.Fatalf("offline worker capability probe %#v failed: %v\n%s", args, err, out)
 		}
+	}
+}
+
+func TestGeneratedGitMetadataRootsPermitGitAddInInstalledCodexSandbox(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("installed Codex sandbox regression is macOS-specific")
+	}
+	binary, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	packageDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(packageDir, ".codex-git-metadata-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	workspace, gitDir, commonDir := linkedWorktreeAt(t, root)
+	marker := filepath.Join(workspace, "MARKER.md")
+	if err := os.WriteFile(marker, []byte("model-free sandbox proof\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := (&Plugin{resolvedBinary: binary}).GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Permissions:   ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"--add-dir", gitDir, "--add-dir", commonDir}) {
+		t.Fatalf("generated command lacks verified metadata roots: %#v", cmd)
+	}
+
+	t.Setenv("CODEX_HOME", t.TempDir())
+	baseline := exec.Command(binary,
+		"sandbox",
+		"-c", `permissions={}`,
+		"-c", `default_permissions=":workspace"`,
+		"-P", ":workspace",
+		"-C", workspace,
+		"--", "git", "add", "MARKER.md",
+	)
+	if out, err := baseline.CombinedOutput(); err == nil {
+		t.Fatalf("baseline workspace sandbox unexpectedly permitted linked-worktree git add\n%s", out)
+	}
+
+	profile := `permissions={dcp_test={extends=":workspace",workspace_roots={` +
+		codexTOMLConfigString(gitDir) + `=true,` + codexTOMLConfigString(commonDir) + `=true}}}`
+	probe := exec.Command(binary,
+		"sandbox",
+		"-c", profile,
+		"-c", `default_permissions="dcp_test"`,
+		"-P", "dcp_test",
+		"-C", workspace,
+		"--", "git", "add", "MARKER.md",
+	)
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("verified generated metadata roots did not permit model-free git add: %v\n%s", err, out)
+	}
+	staged := exec.Command("git", "-C", workspace, "diff", "--cached", "--name-only")
+	out, err := staged.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git diff --cached: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "MARKER.md" {
+		t.Fatalf("staged files = %q, want MARKER.md", out)
 	}
 }

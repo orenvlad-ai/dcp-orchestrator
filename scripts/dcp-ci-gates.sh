@@ -108,6 +108,7 @@ source_gates() {
 	! grep -Fq '"--ask-for-approval"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker emits unsupported exec-level approval argv'
 	grep -Fq 'approval_policy="on-request"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker approval policy override is absent'
 	grep -Fq '"--sandbox", "workspace-write"' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker sandbox policy is not explicit'
+	grep -Fq '"--add-dir", gitDir, "--add-dir", commonDir' backend/internal/adapters/agent/codex/codex.go || fail 'Codex worker lacks exact linked-worktree Git metadata roots'
 
 	i11_migration='backend/internal/storage/sqlite/migrations/0048_dcp_task_foundation.sql'
 	[[ -s "$i11_migration" ]] || fail 'I11 additive migration is absent'
@@ -136,6 +137,7 @@ source_gates() {
 	grep -Fq '"--output-schema"' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer schema output is absent'
 	grep -Fq '"--output-last-message"' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer result artifact is absent'
 	grep -Fq 'case "--ask-for-approval":' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer does not strip unsupported approval argv'
+	grep -Fq 'case "--add-dir":' backend/internal/adapters/reviewer/codex/codex.go || fail 'Codex reviewer does not strip worker Git metadata write roots'
 	grep -Fq '"review", "supervise"' backend/internal/review/launcher.go || fail 'reviewer process is not supervised'
 	grep -Fq 'reviewerSubmitBinaryName = "ao"' backend/internal/review/launcher.go || fail 'stock reviewer verdict callback alias is absent'
 	grep -Fq 'os.SameFile(aliasInfo, exeInfo)' backend/internal/review/launcher.go || fail 'reviewer verdict callback is not bound to the exact supervisor executable'
