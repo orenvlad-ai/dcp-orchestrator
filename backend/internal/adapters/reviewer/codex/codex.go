@@ -88,6 +88,9 @@ func reviewerArgv(argv []string) ([]string, error) {
 			i++
 			continue
 		case "-c", "--config":
+			if i+1 < len(argv) && strings.HasPrefix(argv[i+1], "sandbox_workspace_write.network_access=") {
+				return nil, fmt.Errorf("codex reviewer command attempted to enable worker network access")
+			}
 			if i+1 < len(argv) && (strings.HasPrefix(argv[i+1], "approval_policy=") || strings.HasPrefix(argv[i+1], "approvals_reviewer=")) {
 				i++
 				continue

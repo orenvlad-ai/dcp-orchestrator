@@ -1043,6 +1043,7 @@ export interface components {
             projectId?: null | string;
         };
         AgentConfig: {
+            dcpReviewLabNetwork?: boolean;
             mode?: string;
             model?: string;
             permissions?: string;

@@ -796,6 +796,9 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	if override.Permissions != "" {
 		merged.Permissions = override.Permissions
 	}
+	if override.DCPReviewLabNetwork {
+		merged.DCPReviewLabNetwork = true
+	}
 	return merged
 }
 
