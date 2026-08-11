@@ -109,6 +109,9 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	if len(TaskDisplayPrefix+taskID) > 20 {
 		t.Fatal("exact task identity must fit the stock spawn display-name limit")
 	}
+	if !strings.Contains(ProfileAgentRules, "additional pull requests") || !strings.Contains(ProfileAgentRules, "open one ready pull request") {
+		t.Fatal("exact profile must allow one ready PR while rejecting extras")
+	}
 	store := &fakeStore{
 		session: domain.SessionRecord{
 			ID: id, ProjectID: ProjectID, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
