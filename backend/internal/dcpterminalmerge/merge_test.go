@@ -141,7 +141,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, ResultChannel: structuredChannel,
 		},
 	}
-	scm := &fakeSCM{observation: ports.SCMObservation{
+	scm := &fakeSCM{review: ports.SCMReviewObservation{Decision: string(domain.ReviewNone)}, observation: ports.SCMObservation{
 		Fetched: true, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
 		PR: ports.SCMPRObservation{
 			URL: prURL, Number: 4, HeadRepo: RepositoryFullName, SourceBranch: branch, TargetBranch: TargetBranch,
@@ -196,6 +196,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 
 func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {
 	engine, store, scm := fixture(t)
+	scm.review.Decision = string(domain.ReviewApproved)
 	candidate, ok, err := engine.candidate(context.Background(), store.session.ID)
 	if err != nil || !ok {
 		t.Fatalf("candidate ok=%v err=%v", ok, err)
@@ -314,6 +315,19 @@ func TestTryRejectsAnyUnresolvedReviewThread(t *testing.T) {
 	}
 	if store.claims != 0 || scm.mergeCalls != 0 {
 		t.Fatal("unresolved review thread reached merge")
+	}
+}
+
+func TestTryRejectsUnknownOrBlockingProviderReviewDecision(t *testing.T) {
+	for _, decision := range []string{"", string(domain.ReviewRequired), string(domain.ReviewChangesRequest), "foreign"} {
+		engine, store, scm := fixture(t)
+		scm.review.Decision = decision
+		if err := engine.Try(context.Background(), store.session.ID); err != nil {
+			t.Fatal(err)
+		}
+		if store.claims != 0 || scm.mergeCalls != 0 {
+			t.Fatalf("decision %q reached merge", decision)
+		}
 	}
 }
 
