@@ -218,6 +218,18 @@ func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {
 	}
 }
 
+func TestTryMergesWithStockNativeMissingDiffBaseMetadata(t *testing.T) {
+	engine, store, scm := fixture(t)
+	store.session.Metadata.DiffBaseSHA = ""
+	store.session.Metadata.DiffBaseRef = ""
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.claims != 1 || scm.mergeCalls != 1 || store.run.TerminalMergeStatus != "succeeded" {
+		t.Fatalf("claims=%d merges=%d run=%+v", store.claims, scm.mergeCalls, store.run)
+	}
+}
+
 func TestTryRejectsOldSessionAndNonCleanProviderFacts(t *testing.T) {
 	engine, store, scm := fixture(t)
 	oldID := domain.SessionID("dcp-review-lab-6")
@@ -273,6 +285,8 @@ func TestTryRejectsForeignTaskBaseAndProfile(t *testing.T) {
 	for _, mutate := range []func(*fakeStore, *fakeSCM){
 		func(store *fakeStore, _ *fakeSCM) { store.session.DisplayName = TaskDisplayPrefix + "FOREIGN" },
 		func(store *fakeStore, _ *fakeSCM) { store.session.Metadata.Prompt = "unbound prompt" },
+		func(store *fakeStore, _ *fakeSCM) { store.session.Metadata.DiffBaseRef = "" },
+		func(store *fakeStore, _ *fakeSCM) { store.pr.BaseSHA = "" },
 		func(store *fakeStore, _ *fakeSCM) { store.project.Config.AgentRules += " malicious override" },
 		func(store *fakeStore, _ *fakeSCM) { store.project.Config.AgentRulesFile = "AGENTS.md" },
 		func(store *fakeStore, _ *fakeSCM) {
