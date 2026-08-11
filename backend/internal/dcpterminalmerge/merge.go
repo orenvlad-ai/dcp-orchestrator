@@ -58,6 +58,7 @@ type Store interface {
 	GetClaimedDCPReviewLabAdmission(context.Context) (domain.DCPReviewLabAdmission, bool, error)
 	ListDCPReviewLabAdmissions(context.Context) ([]domain.DCPReviewLabAdmission, error)
 	GetRefreshingDCPReviewLabAdmissionBySession(context.Context, domain.SessionID) (domain.DCPReviewLabAdmission, bool, error)
+	RecoverDCPReviewLabCanonicalBaseIncident(context.Context, domain.DCPReviewLabAdmission, time.Time) (bool, error)
 	ResumeDCPReviewLabAdmissionAfterRefresh(context.Context, domain.DCPReviewLabAdmission, domain.ReviewRun, string, time.Time) (bool, error)
 	ClaimDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission, string, string, time.Time) (bool, error)
 	CompleteDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission, string, time.Time) (bool, error)
@@ -111,6 +112,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 			return reconcileErr
 		}
 	}
+	if err := e.recoverCanonicalBaseIncidents(ctx); err != nil {
+		return err
+	}
 
 	sessions, err := e.store.ListAllSessions(ctx)
 	if err != nil {
@@ -130,6 +134,53 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		}
 	}
 	return e.drain(ctx)
+}
+
+// recoverCanonicalBaseIncidents is a one-shot startup repair for the exact
+// false-positive produced when the first cohort merge advanced origin/main
+// while the provider still reported the reviewed base SHA on the compatible
+// second PR. It preserves the original packet in SQLite, proves both advances
+// are fast-forwards plus a clean merge tree, and never wakes a model.
+func (e *Engine) recoverCanonicalBaseIncidents(ctx context.Context) error {
+	rows, err := e.store.ListDCPReviewLabAdmissions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, admission := range rows {
+		if admission.Status != domain.DCPAdmissionIncident || admission.ErrorCode != "canonical_main_diverged" ||
+			admission.RefreshWakeCount != 0 || admission.RecoveredIncidentPacket != "" {
+			continue
+		}
+		candidate, ok, candidateErr := e.candidateForAdmission(ctx, admission)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		if !ok {
+			continue
+		}
+		observation, review, freshErr := e.fresh(ctx, candidate.pr)
+		if freshErr != nil {
+			return freshErr
+		}
+		if !admissionFacts(candidate, observation, review) {
+			continue
+		}
+		canonicalBase, syncErr := e.syncCanonicalMain(ctx, candidate, strings.ToLower(observation.PR.BaseSHA))
+		if syncErr != nil || strings.EqualFold(canonicalBase, observation.PR.BaseSHA) {
+			continue
+		}
+		if compatibilityErr := e.validateMergeCompatibility(ctx, candidate, observation.PR.HeadSHA, canonicalBase); compatibilityErr != nil {
+			continue
+		}
+		recovered, recoverErr := e.store.RecoverDCPReviewLabCanonicalBaseIncident(ctx, admission, e.clock())
+		if recoverErr != nil {
+			return recoverErr
+		}
+		if !recovered {
+			return errors.New("dcp admission: exact canonical-base incident recovery was unavailable")
+		}
+	}
+	return nil
 }
 
 // Try is the single event entry. Lifecycle and stock SCM callbacks may race,
@@ -331,25 +382,26 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 		if admission.SessionID == HistoricalSession {
 			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_not_authorized")
 		}
-		if err := e.syncCanonicalMain(ctx, candidate, baseSHA); err != nil {
+		canonicalBase, err := e.syncCanonicalMain(ctx, candidate, baseSHA)
+		if err != nil {
 			if errors.Is(err, errCanonicalDiverged) || errors.Is(err, errCanonicalBaseDrift) {
 				return false, e.recordIncident(ctx, admission, candidate, observation, "canonical_main_diverged")
 			}
 			return false, err
 		}
-		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, baseSHA); err != nil {
+		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
 			return false, err
 		}
 		leaseID := "dcp-refresh-" + admission.ID
-		started, err := e.store.StartDCPReviewLabRefresh(ctx, admission, leaseID, baseSHA, e.clock())
+		started, err := e.store.StartDCPReviewLabRefresh(ctx, admission, leaseID, canonicalBase, e.clock())
 		if err != nil || !started {
 			return false, err
 		}
-		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA, admission.RefreshWakeCount = domain.DCPAdmissionRefreshing, leaseID, baseSHA, 1
+		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA, admission.RefreshWakeCount = domain.DCPAdmissionRefreshing, leaseID, canonicalBase, 1
 		if e.wake == nil {
 			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_waker_unavailable")
 		}
-		if err := e.wake(ctx, admission.SessionID, refreshPrompt(candidate, admission, baseSHA)); err != nil {
+		if err := e.wake(ctx, admission.SessionID, refreshPrompt(candidate, admission, canonicalBase)); err != nil {
 			if incidentErr := e.recordIncident(ctx, admission, candidate, observation, "refresh_launch_failed"); incidentErr != nil {
 				return false, errors.Join(err, incidentErr)
 			}
@@ -357,21 +409,27 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 		}
 		return false, nil
 	case dispositionMerge:
-		if err := e.syncCanonicalMain(ctx, candidate, baseSHA); err != nil {
+		canonicalBase, err := e.syncCanonicalMain(ctx, candidate, baseSHA)
+		if err != nil {
 			if errors.Is(err, errCanonicalDiverged) || errors.Is(err, errCanonicalBaseDrift) {
 				return false, e.recordIncident(ctx, admission, candidate, observation, "canonical_main_diverged")
 			}
 			return false, err
 		}
-		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, baseSHA); err != nil {
+		if !strings.EqualFold(canonicalBase, baseSHA) {
+			if err := e.validateMergeCompatibility(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
+				return false, e.recordIncident(ctx, admission, candidate, observation, "merge_conflict_or_ambiguity")
+			}
+		}
+		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
 			return false, err
 		}
 		leaseID := "dcp-merge-" + admission.ID
-		claimed, err := e.store.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, baseSHA, e.clock())
+		claimed, err := e.store.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, canonicalBase, e.clock())
 		if err != nil || !claimed {
 			return false, err
 		}
-		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, baseSHA
+		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, canonicalBase
 		result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
 			PR: ports.SCMPRRef{
 				Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
@@ -591,9 +649,9 @@ func knownNonBlockingReviewDecision(decision string) bool {
 	return decision == string(domain.ReviewNone) || decision == string(domain.ReviewApproved)
 }
 
-func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate, baseSHA string) error {
+func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate, baseSHA string) (string, error) {
 	if !validSHA(baseSHA) {
-		return errors.New("dcp admission: provider base SHA is invalid")
+		return "", errors.New("dcp admission: provider base SHA is invalid")
 	}
 	projectPath := candidate.project.Path
 	prechecks := []struct {
@@ -609,27 +667,44 @@ func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate
 	for _, check := range prechecks {
 		got, err := e.git(ctx, projectPath, check.args...)
 		if err != nil || got != check.want {
-			return errors.New("dcp admission: canonical repository identity is not exact and clean")
+			return "", errors.New("dcp admission: canonical repository identity is not exact and clean")
 		}
 	}
 	if _, err := e.git(ctx, projectPath, "fetch", "--no-tags", "origin", TargetBranch); err != nil {
-		return fmt.Errorf("dcp admission: fetch canonical main: %w", err)
+		return "", fmt.Errorf("dcp admission: fetch canonical main: %w", err)
 	}
 	originMain, err := e.git(ctx, projectPath, "rev-parse", "origin/main")
-	if err != nil || !strings.EqualFold(originMain, baseSHA) {
-		return errCanonicalBaseDrift
+	if err != nil || !validSHA(originMain) {
+		return "", errCanonicalBaseDrift
+	}
+	if !strings.EqualFold(originMain, baseSHA) {
+		if _, err := e.git(ctx, projectPath, "merge-base", "--is-ancestor", baseSHA, originMain); err != nil {
+			return "", errCanonicalBaseDrift
+		}
 	}
 	head, err := e.git(ctx, projectPath, "rev-parse", "HEAD")
 	if err != nil || !validSHA(head) {
-		return errors.New("dcp admission: canonical main HEAD is invalid")
+		return "", errors.New("dcp admission: canonical main HEAD is invalid")
 	}
-	if !strings.EqualFold(head, baseSHA) {
-		if _, err := e.git(ctx, projectPath, "merge-base", "--is-ancestor", head, baseSHA); err != nil {
-			return errCanonicalDiverged
+	if !strings.EqualFold(head, originMain) {
+		if _, err := e.git(ctx, projectPath, "merge-base", "--is-ancestor", head, originMain); err != nil {
+			return "", errCanonicalDiverged
 		}
 		if _, err := e.git(ctx, projectPath, "merge", "--ff-only", "origin/main"); err != nil {
-			return fmt.Errorf("%w: %v", errCanonicalDiverged, err)
+			return "", fmt.Errorf("%w: %v", errCanonicalDiverged, err)
 		}
+	}
+	return strings.ToLower(originMain), nil
+}
+
+func (e *Engine) validateMergeCompatibility(ctx context.Context, candidate mergeCandidate, head, base string) error {
+	if !validSHA(head) || !validSHA(base) {
+		return errors.New("dcp admission: compatibility identity is invalid")
+	}
+	tree, err := e.git(ctx, candidate.project.Path, "merge-tree", "--write-tree", strings.ToLower(base), strings.ToLower(head))
+	fields := strings.Fields(tree)
+	if err != nil || len(fields) != 1 || !validSHA(fields[0]) {
+		return errors.New("dcp admission: exact head is not proven compatible with current canonical main")
 	}
 	return nil
 }

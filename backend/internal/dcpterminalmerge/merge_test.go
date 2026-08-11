@@ -92,6 +92,16 @@ func (f *fakeStore) GetRefreshingDCPReviewLabAdmissionBySession(_ context.Contex
 	}
 	return *f.admission, true, nil
 }
+func (f *fakeStore) RecoverDCPReviewLabCanonicalBaseIncident(_ context.Context, admission domain.DCPReviewLabAdmission, now time.Time) (bool, error) {
+	if f.admission == nil || f.admission.ID != admission.ID || f.admission.Status != domain.DCPAdmissionIncident ||
+		f.admission.ErrorCode != "canonical_main_diverged" || f.admission.RefreshWakeCount != 0 || f.admission.RecoveredIncidentPacket != "" {
+		return false, nil
+	}
+	f.admission.Status, f.admission.LeaseID, f.admission.AdmittedBaseSHA = domain.DCPAdmissionWaiting, "", ""
+	f.admission.ErrorCode, f.admission.RecoveredIncidentPacket, f.admission.IncidentPacket = "", f.admission.IncidentPacket, ""
+	f.admission.UpdatedAt = now
+	return true, nil
+}
 func (f *fakeStore) ResumeDCPReviewLabAdmissionAfterRefresh(_ context.Context, admission domain.DCPReviewLabAdmission, run domain.ReviewRun, baseSHA string, now time.Time) (bool, error) {
 	if f.admission == nil || f.admission.ID != admission.ID || f.admission.Status != domain.DCPAdmissionRefreshing || f.admission.RefreshWakeCount != 1 || strings.EqualFold(f.admission.TargetSHA, run.TargetSHA) {
 		return false, nil
@@ -553,5 +563,81 @@ func TestCohortBarrierIsPassiveAndSurvivesStartupReconciliation(t *testing.T) {
 	}
 	if wakes != 0 || store.claims != 1 || scm.mergeCalls != 1 || store.admission.Status != domain.DCPAdmissionSucceeded {
 		t.Fatalf("after peer: wakes=%d claims=%d merges=%d admission=%+v", wakes, store.claims, scm.mergeCalls, store.admission)
+	}
+}
+
+func TestStartupRecoversAuditedCanonicalAdvanceAndMergesCompatibleHead(t *testing.T) {
+	engine, store, scm := fixture(t)
+	newBase := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	packet, err := json.Marshal(incidentPacket{
+		SchemaVersion: "dcp.review-lab.arbiter-needed/v1", Reason: "canonical_main_diverged",
+		AdmissionID: "dcp-admission-" + store.run.ID, SessionID: string(store.session.ID),
+		ReviewRunID: store.run.ID, TargetSHA: testHead,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.admission = &domain.DCPReviewLabAdmission{
+		Sequence: 1, ID: "dcp-admission-" + store.run.ID, ReviewRunID: store.run.ID, ReviewID: store.run.ReviewID,
+		SessionID: store.session.ID, PRURL: store.pr.URL, PRNumber: int64(store.pr.Number), TargetSHA: testHead,
+		ReviewBaseSHA: testBase, AdmittedBaseSHA: testBase, Status: domain.DCPAdmissionIncident,
+		LeaseID: "dcp-incident-dcp-admission-" + store.run.ID, ErrorCode: "canonical_main_diverged", IncidentPacket: string(packet),
+	}
+	canonicalHead := testBase
+	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
+		cmd := strings.Join(args, " ")
+		switch cmd {
+		case "status --porcelain":
+			return "", nil
+		case "remote":
+			return "origin", nil
+		case "remote get-url origin":
+			return RepositoryURL, nil
+		case "fetch --no-tags origin main":
+			return "", nil
+		}
+		if path == store.project.Path {
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return path, nil
+			case "branch --show-current":
+				return TargetBranch, nil
+			case "rev-parse origin/main":
+				return newBase, nil
+			case "rev-parse HEAD":
+				return canonicalHead, nil
+			case "merge-base --is-ancestor " + testBase + " " + newBase:
+				return "", nil
+			case "merge --ff-only origin/main":
+				canonicalHead = newBase
+				return "", nil
+			case "merge-tree --write-tree " + newBase + " " + testHead:
+				return testMerge, nil
+			}
+		}
+		if path == store.session.Metadata.WorkspacePath {
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return path, nil
+			case "branch --show-current":
+				return store.session.Metadata.Branch, nil
+			case "rev-parse HEAD":
+				return testHead, nil
+			case "rev-parse --path-format=absolute --git-common-dir":
+				return filepath.Join(store.project.Path, ".git"), nil
+			case "rev-parse --path-format=absolute --absolute-git-dir":
+				return filepath.Join(store.project.Path, ".git", "worktrees", string(store.session.ID)), nil
+			}
+		}
+		return "", errors.New("unexpected git command: " + cmd)
+	}
+
+	if err := engine.ReconcileStartup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.admission.Status != domain.DCPAdmissionSucceeded ||
+		store.admission.AdmittedBaseSHA != newBase || store.admission.RecoveredIncidentPacket != string(packet) ||
+		store.admission.IncidentPacket != "" || store.admission.ErrorCode != "" {
+		t.Fatalf("merges=%d admission=%+v", scm.mergeCalls, store.admission)
 	}
 }
