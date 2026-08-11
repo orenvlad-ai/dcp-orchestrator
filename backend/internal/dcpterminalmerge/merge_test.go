@@ -105,7 +105,10 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	}
 	branch := "ao/" + string(id) + "/root"
 	prURL := "https://github.com/orenvlad-ai/dcp-review-lab/pull/6"
-	taskID := "i7-terminal-merge"
+	taskID := "i7-terminal"
+	if len(TaskDisplayPrefix+taskID) > 20 {
+		t.Fatal("exact task identity must fit the stock spawn display-name limit")
+	}
 	store := &fakeStore{
 		session: domain.SessionRecord{
 			ID: id, ProjectID: ProjectID, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
