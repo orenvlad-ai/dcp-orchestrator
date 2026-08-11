@@ -20,7 +20,7 @@ UPDATE review_run SET status = ?, verdict = ?, body = ?, github_review_id = ? WH
 
 -- name: UpdateBoundReviewRunResult :execrows
 UPDATE review_run
-SET status = 'complete', verdict = sqlc.arg(verdict), body = sqlc.arg(body), github_review_id = ''
+SET status = 'complete', verdict = sqlc.arg(verdict), body = sqlc.arg(body), github_review_id = '', result_channel = 'structured_dcp_v1'
 WHERE review_run.id = sqlc.arg(run_id)
   AND review_run.session_id = sqlc.arg(session_id)
   AND review_run.batch_id = sqlc.arg(batch_id)
@@ -58,24 +58,67 @@ UPDATE review_run SET status = 'delivered', delivered_at = ? WHERE id = ? AND st
 
 -- name: GetReviewRun :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE id = ?;
 
 -- name: GetReviewRunBySessionPRAndSHA :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND pr_url = ? AND target_sha = ? ORDER BY created_at DESC LIMIT 1;
 
 -- name: GetReviewRunBySessionPRSHAAndHarness :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND pr_url = ? AND target_sha = ? AND harness = ? ORDER BY created_at DESC LIMIT 1;
 
 -- name: ListReviewRunsBySession :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? ORDER BY created_at DESC;
 
 -- name: ListRunningReviewRunsBySession :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND status = 'running' AND verdict = '' ORDER BY created_at DESC;
 
 -- name: ListReviewRunsByBatch :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND batch_id = ? ORDER BY created_at ASC, id ASC;
+
+-- name: ClaimDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'running', terminal_merge_error = ''
+WHERE review_run.id = sqlc.arg(run_id)
+  AND review_run.session_id = sqlc.arg(session_id)
+  AND review_run.pr_url = sqlc.arg(pr_url)
+  AND review_run.target_sha = sqlc.arg(target_sha)
+  AND review_run.status = 'complete'
+  AND review_run.verdict = 'approved'
+  AND review_run.result_channel = 'structured_dcp_v1'
+  AND review_run.terminal_merge_status = ''
+  AND EXISTS (
+    SELECT 1
+    FROM pr
+    WHERE pr.url = review_run.pr_url
+      AND pr.session_id = review_run.session_id
+      AND pr.head_sha = review_run.target_sha
+      AND pr.pr_state = 'open'
+      AND pr.is_draft = 0
+      AND pr.is_merged = 0
+      AND pr.is_closed = 0
+  );
+
+-- name: CompleteDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'succeeded',
+    terminal_merge_commit_sha = sqlc.arg(merge_commit_sha),
+    terminal_merge_error = ''
+WHERE id = sqlc.arg(run_id)
+  AND terminal_merge_status = 'running';
+
+-- name: FailDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'failed', terminal_merge_error = sqlc.arg(error_code)
+WHERE id = sqlc.arg(run_id)
+  AND terminal_merge_status = 'running';

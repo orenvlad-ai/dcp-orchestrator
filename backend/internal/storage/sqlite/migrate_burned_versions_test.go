@@ -64,6 +64,7 @@ var shippedMigrations = map[int64]string{
 	44: "0044_backfill_review_run_batch_id.sql",
 	47: "0047_agent_model_catalog.sql",
 	48: "0048_dcp_task_foundation.sql",
+	49: "0049_dcp_review_lab_terminal_merge.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

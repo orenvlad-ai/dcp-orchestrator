@@ -16,8 +16,11 @@ or editing this repository:
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
-described below; its exact merged pin and updated operating contract are applied
-sequentially in `dev-control-plane` after this source PR merges. The live
+described below. The later owner-delegated canonical synthetic-PR lab change
+adds one exact-profile terminal merge only after the same trusted reviewer,
+required check and provider readiness facts succeed. Its exact merged pin and
+updated operating contract are applied sequentially in `dev-control-plane`
+after this source PR merges. The live
 `dev-control-plane` repository remains the authority for later
 architecture, operating, integration, qualification, and exact-pin changes.
 Do not copy or reinterpret those contracts here as a competing source of
@@ -72,10 +75,16 @@ I11 by itself does not activate or imply task execution or reviewer execution.
 I12 activates only the existing stock Review/ReviewRun/Engine contour: an
 eligible exact PR head on a safely idle worker triggers one fresh read-only
 reviewer, manual Run Review uses the same trigger, process outcomes are durable,
-and restart reconciliation is model-free and fail-closed. It adds no reviewer
+and restart reconciliation is model-free and fail-closed. The later canonical
+synthetic-PR lab contour permits one event-driven terminal squash merge only
+for the exact `orenvlad-ai/dcp-review-lab` profile/session/worktree/branch/PR/head,
+after an approved structured verdict with no findings, its named green check,
+no unresolved threads and provider `MERGEABLE`/`CLEAN`; the outcome is stored
+on the same `ReviewRun` and reconciled model-free after restart. It adds no reviewer
 service, scheduler, queue, watcher, heartbeat, webhook, second registry/DB,
-arbiter, Admission Controller, Release Train, auto-merge, multi-pass repair
-loop, hosted projection, production target, or new DCP-task execution path.
+arbiter, Admission Controller, Release Train, general auto-merge, multi-pass
+repair loop, hosted projection, production target, deploy path, or new DCP-task
+execution entity.
 Never synthesize owner acceptance.
 
 The active Codex reviewer success path is deterministic after model exit. The

@@ -53,6 +53,15 @@ type ReviewRun struct {
 	GithubReviewID string     `json:"githubReviewId"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	// ResultChannel distinguishes the trusted schema-constrained DCP result
+	// from legacy/manual review submission. It is internal authorization data,
+	// not a second verdict or API surface.
+	ResultChannel string `json:"-"`
+	// TerminalMerge* are the durable one-shot outcome on the same exact-head
+	// ReviewRun. Ordinary AO reviews leave all three fields empty.
+	TerminalMergeStatus    string `json:"-"`
+	TerminalMergeCommitSHA string `json:"-"`
+	TerminalMergeError     string `json:"-"`
 }
 
 // ReviewRunStatus is the lifecycle state of a single review pass.

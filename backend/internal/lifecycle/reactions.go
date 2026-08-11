@@ -325,6 +325,7 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 		return err
 	} else if ok {
 		m.signalReviewEligibility(ctx, id)
+		m.signalTerminalMergeEligibility(ctx, id)
 	}
 	return nil
 }

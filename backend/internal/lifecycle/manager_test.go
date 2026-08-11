@@ -944,13 +944,14 @@ func TestSCMObservationProjectsToExistingPRReactions(t *testing.T) {
 func TestSCMObservationSignalsReviewEligibility(t *testing.T) {
 	m, st, _ := newManager()
 	st.sessions["mer-1"] = working("mer-1")
-	var got domain.SessionID
-	m.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) { got = id })
+	var reviewGot, mergeGot domain.SessionID
+	m.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) { reviewGot = id })
+	m.SetTerminalMergeEligibilityHandler(func(_ context.Context, id domain.SessionID) { mergeGot = id })
 	if err := m.ApplySCMObservation(ctx, "mer-1", ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "pr1", HeadSHA: "sha1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got != "mer-1" {
-		t.Fatalf("review eligibility signal = %q, want mer-1", got)
+	if reviewGot != "mer-1" || mergeGot != "mer-1" {
+		t.Fatalf("eligibility signals review=%q merge=%q, want mer-1", reviewGot, mergeGot)
 	}
 }
 

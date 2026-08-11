@@ -146,6 +146,51 @@ func (s *Store) MarkReviewRunDelivered(ctx context.Context, id string, delivered
 	return n > 0, nil
 }
 
+// ClaimDCPReviewLabTerminalMerge atomically consumes the one authorized merge
+// opportunity on an approved structured exact-head run.
+func (s *Store) ClaimDCPReviewLabTerminalMerge(ctx context.Context, run domain.ReviewRun) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.ClaimDCPReviewLabTerminalMerge(ctx, gen.ClaimDCPReviewLabTerminalMergeParams{
+		RunID:     run.ID,
+		SessionID: run.SessionID,
+		PRURL:     run.PRURL,
+		TargetSha: run.TargetSHA,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// CompleteDCPReviewLabTerminalMerge records the provider's returned merge SHA.
+func (s *Store) CompleteDCPReviewLabTerminalMerge(ctx context.Context, runID, mergeCommitSHA string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{
+		MergeCommitSha: mergeCommitSHA,
+		RunID:          runID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// FailDCPReviewLabTerminalMerge closes a claimed attempt without retry.
+func (s *Store) FailDCPReviewLabTerminalMerge(ctx context.Context, runID, errorCode string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.FailDCPReviewLabTerminalMerge(ctx, gen.FailDCPReviewLabTerminalMergeParams{
+		ErrorCode: errorCode,
+		RunID:     runID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // GetReviewRun returns one review pass by id.
 func (s *Store) GetReviewRun(ctx context.Context, id string) (domain.ReviewRun, bool, error) {
 	row, err := s.qr.GetReviewRun(ctx, id)
@@ -246,18 +291,22 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		deliveredAt = &t
 	}
 	return domain.ReviewRun{
-		ID:             r.ID,
-		ReviewID:       r.ReviewID,
-		SessionID:      r.SessionID,
-		BatchID:        r.BatchID,
-		Harness:        r.Harness,
-		PRURL:          r.PRURL,
-		TargetSHA:      r.TargetSha,
-		Status:         r.Status,
-		Verdict:        r.Verdict,
-		Body:           r.Body,
-		GithubReviewID: r.GithubReviewID,
-		CreatedAt:      r.CreatedAt,
-		DeliveredAt:    deliveredAt,
+		ID:                     r.ID,
+		ReviewID:               r.ReviewID,
+		SessionID:              r.SessionID,
+		BatchID:                r.BatchID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		TargetSHA:              r.TargetSha,
+		Status:                 r.Status,
+		Verdict:                r.Verdict,
+		Body:                   r.Body,
+		GithubReviewID:         r.GithubReviewID,
+		CreatedAt:              r.CreatedAt,
+		DeliveredAt:            deliveredAt,
+		ResultChannel:          r.ResultChannel,
+		TerminalMergeStatus:    r.TerminalMergeStatus,
+		TerminalMergeCommitSHA: r.TerminalMergeCommitSha,
+		TerminalMergeError:     r.TerminalMergeError,
 	}
 }

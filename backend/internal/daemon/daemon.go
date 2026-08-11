@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/dcpterminalmerge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
@@ -204,7 +205,31 @@ func Run() error {
 			}
 		}()
 	})
-	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, log)
+	scmProvider, scmProviderErr := newGitHubSCMProvider(log)
+	if scmProviderErr != nil {
+		logSCMProviderDisabled(log, scmProviderErr)
+		scmProvider = nil
+	}
+	var prActions prsvc.ActionManager
+	if scmProvider != nil {
+		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: scmProvider, Reader: scmProvider})
+		terminalMerger := dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
+		triggerTerminalMerge := func(_ context.Context, id domain.SessionID) {
+			go func() {
+				if mergeErr := terminalMerger.Try(ctx, id); mergeErr != nil && !errors.Is(mergeErr, context.Canceled) {
+					log.Warn("DCP synthetic terminal merge failed closed", "session", id, "err", mergeErr)
+				}
+			}()
+		}
+		reviewSvc.SetApprovedStructuredHandler(triggerTerminalMerge)
+		lcStack.LCM.SetTerminalMergeEligibilityHandler(triggerTerminalMerge)
+		go func() {
+			if mergeErr := terminalMerger.ReconcileStartup(ctx); mergeErr != nil && !errors.Is(mergeErr, context.Canceled) {
+				log.Warn("DCP synthetic terminal merge reconciliation failed closed", "err", mergeErr)
+			}
+		}()
+	}
+	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
 		stop()
@@ -245,12 +270,6 @@ func Run() error {
 	// worktree is torn down (shellTermSvc cannot exist before sessMgr does; see
 	// SetShellTerminalCloser).
 	sessMgr.SetShellTerminalCloser(shellTermSvc)
-	var prActions prsvc.ActionManager
-	if mergeProvider, mergeErr := newGitHubSCMProvider(log); mergeErr != nil {
-		logSCMProviderDisabled(log, mergeErr)
-	} else {
-		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: mergeProvider, Reader: mergeProvider})
-	}
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
 	// to start the daemon. pushRegistry (interface) is assigned only when load
