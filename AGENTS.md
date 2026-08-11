@@ -9,10 +9,10 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc`](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/AGENTS.md)
-2. [current operating contract revision `2026-08-11.12`](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/docs/TARGET_ARCHITECTURE_V1.md)
-4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3`](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/AGENTS.md)
+2. [current operating contract revision `2026-08-11.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/docs/TARGET_ARCHITECTURE_V1.md)
+4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -88,7 +88,8 @@ no unresolved threads and provider `MERGEABLE`/`CLEAN`; the outcome is stored
 on the same `ReviewRun` and reconciled model-free after restart.
 
 I13 Stage 1 adds one subordinate SQLite FIFO/lease record per admitted native
-task and permits cards 8 and 9 to run/review independently. Exactly one row may
+task and permits cards 9 and 10 to run/review independently. Card 8 is
+pre-stage immutable evidence and cannot be enrolled or resumed. Exactly one row may
 own terminal merge. The other is durably passive: no heartbeat, watcher,
 polling loop, or model activity. A merge completion drains the next row
 model-free; `BEHIND` permits exactly one same-worker native continuation and a

@@ -291,13 +291,19 @@ func (b *Broker) write(ctx context.Context, conn net.Conn, msg wireMessage) erro
 	}
 	stop()
 	_ = conn.SetWriteDeadline(time.Time{})
+	// A frame that was fully written owns a successful transport result even if
+	// its context was cancelled in the narrow interval before this function
+	// returned. The caller must then observe cancellation in its result select
+	// and send the matching cancel frame; reporting context.Canceled here would
+	// incorrectly take the pre-write failure path and strand the runtime action.
+	if err == nil {
+		return nil
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err != nil {
-		if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
-			return context.DeadlineExceeded
-		}
+	if requested, ok := ctx.Deadline(); ok && !time.Now().Before(requested) {
+		return context.DeadlineExceeded
 	}
 	return err
 }

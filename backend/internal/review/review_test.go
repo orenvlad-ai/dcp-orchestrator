@@ -412,9 +412,9 @@ func TestAutoTriggerIsExactHeadSingleFlightAndDoesNotRetryFailure(t *testing.T) 
 
 func TestDCPReviewLabAllowsTwoDistinctHeadsWithoutManualOrDuplicateReview(t *testing.T) {
 	worker := idleWorker()
-	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-8", "dcp-review-lab", domain.HarnessCodex
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-9", "dcp-review-lab", domain.HarnessCodex
 	store := &fakeStore{}
-	launcher := &fakeLauncher{handle: "review-dcp-review-lab-8"}
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-9"}
 	prs := &fakePRs{prs: prAt("sha1").prs}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher)
 
@@ -445,8 +445,8 @@ func TestDCPReviewLabAllowsTwoDistinctHeadsWithoutManualOrDuplicateReview(t *tes
 
 func TestDCPReviewLabRejectsFutureCardAutomatically(t *testing.T) {
 	worker := idleWorker()
-	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-10", "dcp-review-lab", domain.HarnessCodex
-	launcher := &fakeLauncher{handle: "review-dcp-review-lab-10"}
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-11", "dcp-review-lab", domain.HarnessCodex
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-11"}
 	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 	res, err := eng.AutoTrigger(context.Background(), worker.ID)
 	if err != nil || res.Created || launcher.spawnCount != 0 {

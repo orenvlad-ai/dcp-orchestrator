@@ -36,6 +36,9 @@ const (
 	RepositoryURL      = "https://github.com/orenvlad-ai/dcp-review-lab.git"
 	TargetBranch       = "main"
 	RequiredCheckName  = "dcp-review-lab"
+	HistoricalSession  = "dcp-review-lab-7"
+	AdmissionSessionA  = "dcp-review-lab-9"
+	AdmissionSessionB  = "dcp-review-lab-10"
 	structuredChannel  = "structured_dcp_v1"
 )
 
@@ -259,7 +262,7 @@ func (e *Engine) nextPending(ctx context.Context) (domain.DCPReviewLabAdmission,
 }
 
 func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
-	if admission.SessionID != "dcp-review-lab-8" && admission.SessionID != "dcp-review-lab-9" {
+	if admission.SessionID != AdmissionSessionA && admission.SessionID != AdmissionSessionB {
 		return true, nil
 	}
 	rows, err := e.store.ListDCPReviewLabAdmissions(ctx)
@@ -268,11 +271,11 @@ func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabA
 	}
 	present := map[domain.SessionID]bool{}
 	for _, row := range rows {
-		if row.SessionID == "dcp-review-lab-8" || row.SessionID == "dcp-review-lab-9" {
+		if row.SessionID == AdmissionSessionA || row.SessionID == AdmissionSessionB {
 			present[row.SessionID] = true
 		}
 	}
-	return present["dcp-review-lab-8"] && present["dcp-review-lab-9"], nil
+	return present[AdmissionSessionA] && present[AdmissionSessionB], nil
 }
 
 func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
@@ -325,7 +328,7 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 	case dispositionIncident:
 		return false, e.recordIncident(ctx, admission, candidate, observation, "merge_conflict_or_ambiguity")
 	case dispositionRefresh:
-		if admission.SessionID == "dcp-review-lab-7" {
+		if admission.SessionID == HistoricalSession {
 			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_not_authorized")
 		}
 		if err := e.syncCanonicalMain(ctx, candidate, baseSHA); err != nil {
@@ -740,12 +743,7 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 
 func eligibleSessionID(id domain.SessionID) bool {
 	value := string(id)
-	prefix := SessionPrefix + "-"
-	if !strings.HasPrefix(value, prefix) {
-		return false
-	}
-	n, err := strconv.Atoi(strings.TrimPrefix(value, prefix))
-	return err == nil && n >= 7 && n <= 9
+	return value == HistoricalSession || value == AdmissionSessionA || value == AdmissionSessionB
 }
 
 func validPRURL(raw string, number int) bool {

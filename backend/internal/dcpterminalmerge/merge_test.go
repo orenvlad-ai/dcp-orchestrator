@@ -76,7 +76,7 @@ func (f *fakeStore) ListDCPReviewLabAdmissions(context.Context) ([]domain.DCPRev
 	if f.includeCohortPeer {
 		rows = append(rows, domain.DCPReviewLabAdmission{
 			Sequence: 99, ID: "cohort-peer", ReviewRunID: "cohort-peer-run", ReviewID: "cohort-peer-review",
-			SessionID: "dcp-review-lab-9", PRURL: "https://github.com/orenvlad-ai/dcp-review-lab/pull/99",
+			SessionID: AdmissionSessionB, PRURL: "https://github.com/orenvlad-ai/dcp-review-lab/pull/99",
 			PRNumber: 99, TargetSHA: testHead, ReviewBaseSHA: testBase, AdmittedBaseSHA: testBase,
 			Status: domain.DCPAdmissionSucceeded, LeaseID: "peer-lease", MergeCommitSHA: testMerge,
 		})
@@ -175,7 +175,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	t.Helper()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
-	id := domain.SessionID(SessionPrefix + "-8")
+	id := domain.SessionID(AdmissionSessionA)
 	workspace := filepath.Join(dataDir, "worktrees", ProjectID, string(id))
 	projectPath := filepath.Join(root, "targets", ProjectID)
 	privateGitDir := filepath.Join(projectPath, ".git", "worktrees", string(id))
@@ -317,16 +317,17 @@ func TestTryMergesWithStockNativeMissingDiffBaseMetadata(t *testing.T) {
 }
 
 func TestTryRejectsOldSessionAndNonCleanProviderFacts(t *testing.T) {
+	for _, rejectedID := range []domain.SessionID{"dcp-review-lab-6", "dcp-review-lab-8", "dcp-review-lab-11"} {
+		engine, store, scm := fixture(t)
+		store.session.ID = rejectedID
+		if err := engine.Try(context.Background(), rejectedID); err != nil {
+			t.Fatal(err)
+		}
+		if scm.mergeCalls != 0 || store.admission != nil {
+			t.Fatalf("rejected session %s reached admission or merge", rejectedID)
+		}
+	}
 	engine, store, scm := fixture(t)
-	oldID := domain.SessionID("dcp-review-lab-6")
-	store.session.ID = oldID
-	if err := engine.Try(context.Background(), oldID); err != nil {
-		t.Fatal(err)
-	}
-	if scm.mergeCalls != 0 {
-		t.Fatal("old session reached merge")
-	}
-	engine, store, scm = fixture(t)
 	scm.observation.PR.ProviderMergeStateStatus = "BLOCKED"
 	if err := engine.Try(context.Background(), store.session.ID); err != nil {
 		t.Fatal(err)
