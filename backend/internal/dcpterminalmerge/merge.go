@@ -187,8 +187,8 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	}
 	if session.ProjectID != domain.ProjectID(ProjectID) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
 		session.ReviewerHarness != "" || session.IssueID != "" || session.Activity.State != domain.ActivityIdle || session.IsTerminated ||
-		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || session.Metadata.DiffBaseRef != "origin/main" ||
-		!validSHA(session.Metadata.DiffBaseSHA) || !validTaskIdentity(session) {
+		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
+		!validTaskIdentity(session) {
 		return mergeCandidate{}, false, nil
 	}
 	expectedWorkspace := filepath.Join(e.dataDir, "worktrees", ProjectID, string(id))
@@ -218,8 +218,8 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	pr := prs[0]
 	if pr.Provider != "github" || pr.Host != "github.com" || pr.Repo != RepositoryFullName || pr.TargetBranch != TargetBranch ||
 		pr.SourceBranch != expectedBranch || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
-		!validPRURL(pr.URL, pr.Number) || !validSHA(pr.HeadSHA) ||
-		!strings.EqualFold(pr.BaseSHA, session.Metadata.DiffBaseSHA) {
+		!validPRURL(pr.URL, pr.Number) || !validSHA(pr.HeadSHA) || !validSHA(pr.BaseSHA) ||
+		(session.Metadata.DiffBaseSHA != "" && !strings.EqualFold(pr.BaseSHA, session.Metadata.DiffBaseSHA)) {
 		return mergeCandidate{}, false, nil
 	}
 	runs, err := e.store.ListReviewRunsBySession(ctx, id)
@@ -281,7 +281,7 @@ func ready(candidate mergeCandidate, observation ports.SCMObservation, review po
 	if observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != RepositoryFullName ||
 		pr.Number != candidate.pr.Number || pr.URL != candidate.pr.URL || pr.HeadRepo != RepositoryFullName ||
 		pr.SourceBranch != candidate.pr.SourceBranch || pr.TargetBranch != TargetBranch ||
-		!strings.EqualFold(pr.HeadSHA, candidate.run.TargetSHA) || !strings.EqualFold(pr.BaseSHA, candidate.session.Metadata.DiffBaseSHA) ||
+		!strings.EqualFold(pr.HeadSHA, candidate.run.TargetSHA) || !strings.EqualFold(pr.BaseSHA, candidate.pr.BaseSHA) ||
 		pr.State != string(domain.PRStateOpen) || pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
 		pr.Draft || pr.Merged || pr.Closed ||
 		pr.ProviderMergeable != "MERGEABLE" || pr.ProviderMergeStateStatus != "CLEAN" ||
@@ -321,7 +321,7 @@ func hasBlockingReview(review ports.SCMReviewObservation) bool {
 func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head string) error {
 	projectPath := candidate.project.Path
 	workspacePath := candidate.session.Metadata.WorkspacePath
-	base := strings.ToLower(candidate.session.Metadata.DiffBaseSHA)
+	base := strings.ToLower(candidate.pr.BaseSHA)
 	checks := []struct {
 		path string
 		args []string
@@ -390,6 +390,10 @@ func validSHA(value string) bool {
 		}
 	}
 	return true
+}
+
+func validOptionalNativeBase(sha, ref string) bool {
+	return (sha == "" && ref == "") || (validSHA(sha) && ref == "origin/main")
 }
 
 func sameExactPath(a, b string) bool {
