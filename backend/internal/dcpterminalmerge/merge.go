@@ -23,7 +23,7 @@ import (
 
 const (
 	ProjectID          = "dcp-review-lab"
-	SessionPrefix      = "dcp-pr-lab"
+	SessionPrefix      = "dcp-review-lab"
 	ProfileAgentRules  = "DCP synthetic PR profile v1. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. Implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Do not merge; only the trusted DCP daemon may perform the terminal merge after exact-head review and checks."
 	TaskDisplayPrefix  = "DCP:"
 	TaskPromptPrefix   = "DCP synthetic task "
@@ -204,7 +204,7 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	if !sameExactPath(project.Path, expectedProjectPath) || project.Kind.WithDefault() != domain.ProjectKindSingleRepo || project.RepoOriginURL != RepositoryURL ||
 		project.Config.DefaultBranch != TargetBranch || project.Config.SessionPrefix != SessionPrefix ||
 		project.Config.AgentRules != ProfileAgentRules || project.Config.AgentRulesFile != "" || project.Config.OrchestratorRules != "" ||
-		!project.Config.AgentConfig.IsZero() || project.Config.Worker != (domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}}) ||
+		!project.Config.AgentConfig.IsZero() || project.Config.Worker != (domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}}) ||
 		project.Config.Orchestrator != (domain.RoleOverride{}) || project.Config.TrackerIntake != (domain.TrackerIntakeConfig{}) ||
 		project.Config.ContainerReap != (domain.ContainerReapConfig{}) ||
 		len(project.Config.Reviewers) != 1 || project.Config.Reviewers[0].Harness != domain.ReviewerCodex ||
@@ -371,7 +371,7 @@ func eligibleSessionID(id domain.SessionID) bool {
 		return false
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(value, prefix))
-	return err == nil && n > 0
+	return err == nil && n >= 7
 }
 
 func validPRURL(raw string, number int) bool {

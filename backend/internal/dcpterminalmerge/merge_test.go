@@ -94,7 +94,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	t.Helper()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
-	id := domain.SessionID(SessionPrefix + "-6")
+	id := domain.SessionID(SessionPrefix + "-7")
 	workspace := filepath.Join(dataDir, "worktrees", ProjectID, string(id))
 	projectPath := filepath.Join(root, "targets", ProjectID)
 	privateGitDir := filepath.Join(projectPath, ".git", "worktrees", string(id))
@@ -104,7 +104,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 		}
 	}
 	branch := "ao/" + string(id) + "/root"
-	prURL := "https://github.com/orenvlad-ai/dcp-review-lab/pull/6"
+	prURL := "https://github.com/orenvlad-ai/dcp-review-lab/pull/4"
 	taskID := "i7-terminal"
 	if len(TaskDisplayPrefix+taskID) > 20 {
 		t.Fatal("exact task identity must fit the stock spawn display-name limit")
@@ -126,17 +126,17 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 			ID: ProjectID, Path: projectPath, RepoOriginURL: RepositoryURL, Kind: domain.ProjectKindSingleRepo,
 			Config: domain.ProjectConfig{
 				DefaultBranch: TargetBranch, SessionPrefix: SessionPrefix, AgentRules: ProfileAgentRules,
-				Worker:    domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits}},
+				Worker:    domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}},
 				Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}},
 			},
 		},
 		pr: domain.PullRequest{
-			URL: prURL, SessionID: id, Number: 6, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
+			URL: prURL, SessionID: id, Number: 4, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
 			SourceBranch: branch, TargetBranch: TargetBranch, HeadSHA: testHead, BaseSHA: testBase,
 			Author: "orenvlad-ai", ProviderState: "OPEN", HTMLURL: prURL,
 		},
 		run: domain.ReviewRun{
-			ID: "run-6", ReviewID: "review-record-6", BatchID: "batch-6", SessionID: id, Harness: domain.ReviewerCodex,
+			ID: "run-7", ReviewID: "review-record-7", BatchID: "batch-7", SessionID: id, Harness: domain.ReviewerCodex,
 			PRURL: prURL, TargetSHA: testHead, Body: "No blocking findings.",
 			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, ResultChannel: structuredChannel,
 		},
@@ -144,7 +144,7 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	scm := &fakeSCM{observation: ports.SCMObservation{
 		Fetched: true, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
 		PR: ports.SCMPRObservation{
-			URL: prURL, Number: 6, HeadRepo: RepositoryFullName, SourceBranch: branch, TargetBranch: TargetBranch,
+			URL: prURL, Number: 4, HeadRepo: RepositoryFullName, SourceBranch: branch, TargetBranch: TargetBranch,
 			HeadSHA: testHead, BaseSHA: testBase, State: string(domain.PRStateOpen), ProviderState: "OPEN",
 			Author: "orenvlad-ai", HTMLURL: prURL, ProviderMergeable: "MERGEABLE", ProviderMergeStateStatus: "CLEAN",
 		},
@@ -220,7 +220,7 @@ func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {
 
 func TestTryRejectsOldSessionAndNonCleanProviderFacts(t *testing.T) {
 	engine, store, scm := fixture(t)
-	oldID := domain.SessionID("dcp-review-lab-5")
+	oldID := domain.SessionID("dcp-review-lab-6")
 	store.session.ID = oldID
 	if err := engine.Try(context.Background(), oldID); err != nil {
 		t.Fatal(err)
@@ -275,6 +275,9 @@ func TestTryRejectsForeignTaskBaseAndProfile(t *testing.T) {
 		func(store *fakeStore, _ *fakeSCM) { store.session.Metadata.Prompt = "unbound prompt" },
 		func(store *fakeStore, _ *fakeSCM) { store.project.Config.AgentRules += " malicious override" },
 		func(store *fakeStore, _ *fakeSCM) { store.project.Config.AgentRulesFile = "AGENTS.md" },
+		func(store *fakeStore, _ *fakeSCM) {
+			store.project.Config.Worker.AgentConfig.DCPReviewLabNetwork = false
+		},
 		func(store *fakeStore, _ *fakeSCM) { store.project.Config.TrackerIntake.Enabled = true },
 		func(_ *fakeStore, scm *fakeSCM) { scm.observation.PR.BaseSHA = testHead },
 	} {
