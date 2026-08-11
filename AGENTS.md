@@ -11,7 +11,7 @@ or editing this repository:
 
 1. [root repository rules at `0b12727a99ddc448b5d19c252615b7bf13bd7113`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/AGENTS.md)
 2. [current operating contract revision `2026-08-11.14`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+3. [I13 Stage 2 arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4d3e0736635579db053516813e2d5944f903f777/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
 4. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/TARGET_ARCHITECTURE_V1.md)
 5. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/upstream/dcp-orchestrator.lock)
 
@@ -108,8 +108,13 @@ reviewer service, Human Gate, Release Train, general retry/recovery or
 auto-merge policy, hosted projection, production target, deploy path, or broad
 runtime capability.
 
-I13 Stage 2 adds only migration 0052 and one subordinate incident/action row
-for a fresh exact `merge_conflict_or_ambiguity` packet on native card 11 or 12.
+I13 Stage 2 adds migration 0052 and one subordinate incident/action row for a
+fresh exact `merge_conflict_or_ambiguity` packet on native card 11 or 12.
+Migration 0053 is the sole model-free correction for the first package's
+strict-config rejection: it preserves that pre-provider failed launch in one
+bounded audit row and re-arms only the same incident/generation once. It is not
+a retry policy or a second model call. The corrected launcher pins Codex CLI
+0.145.0 and the structured `features.rollout_budget` configuration.
 The daemon freezes the complete Stage 2 cohort, hashes the bounded task, scope,
 candidate, checks, reviews, queue and exhausted mechanical recovery evidence,
 and permits exactly one stateless `gpt-5.6-sol`/`xhigh` call after atomically

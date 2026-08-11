@@ -169,16 +169,20 @@ func TestArbiterLauncherPreflightsHardBudgetAndCreatesOneStableSupervisor(t *tes
 		if name != "/opt/codex" {
 			t.Fatalf("probe binary = %s", name)
 		}
+		if reflect.DeepEqual(args, []string{"--version"}) {
+			return []byte(arbiterCodexVersion + "\n"), nil
+		}
 		probe = append([]string(nil), args...)
-		return nil, nil
+		missingSchema := filepath.Join(dataDir, "runtime", "dcp-arbiter", incident.IncidentID, "preflight-schema-must-not-exist.json")
+		return []byte("Failed to read output schema file " + missingSchema + ": No such file or directory"), errors.New("exit status 1")
 	}
 	if err := launcher.Preflight(context.Background(), incident); err != nil {
 		t.Fatal(err)
 	}
-	if !containsArgSequence(probe, []string{"--enable", "rollout_budget"}) ||
-		!containsArgSequence(probe, []string{"-c", "rollout_budget.limit_tokens=16384"}) ||
+	if !containsArgSequence(probe, []string{"-c", arbiterRolloutBudgetConfig}) ||
 		!containsArgSequence(probe, []string{"--sandbox", "read-only"}) ||
-		!containsArgSequence(probe, []string{"--model", ArbiterModel}) || probe[len(probe)-1] != "--help" {
+		!containsArgSequence(probe, []string{"--model", ArbiterModel}) ||
+		!containsArgSequence(probe, []string{"--output-schema", filepath.Join(dataDir, "runtime", "dcp-arbiter", incident.IncidentID, "preflight-schema-must-not-exist.json")}) {
 		t.Fatalf("preflight argv = %#v", probe)
 	}
 	if err := launcher.Launch(context.Background(), incident); err != nil {
@@ -188,7 +192,7 @@ func TestArbiterLauncherPreflightsHardBudgetAndCreatesOneStableSupervisor(t *tes
 		t.Fatalf("runtime destroyed=%d config=%+v", runtime.destroyed, runtime.config)
 	}
 	joined := strings.Join(runtime.config.Argv, "\x00")
-	for _, exact := range []string{"arbiter\x00supervise", "--incident\x00" + incident.IncidentID, "--identity-digest\x00" + incident.IdentityDigest, "rollout_budget.limit_tokens=16384", "--output-schema", "--output-last-message"} {
+	for _, exact := range []string{"arbiter\x00supervise", "--incident\x00" + incident.IncidentID, "--identity-digest\x00" + incident.IdentityDigest, arbiterRolloutBudgetConfig, "--output-schema", "--output-last-message"} {
 		if !strings.Contains(joined, exact) {
 			t.Fatalf("launch argv lacks %q: %#v", exact, runtime.config.Argv)
 		}
