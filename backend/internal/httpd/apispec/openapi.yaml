@@ -3155,6 +3155,8 @@ components:
       type: object
     AgentConfig:
       properties:
+        dcpReviewLabNetwork:
+          type: boolean
         mode:
           type: string
         model:

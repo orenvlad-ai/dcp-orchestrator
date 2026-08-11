@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -58,6 +59,31 @@ func linkedWorktreeAt(t *testing.T, root string) (workspace, gitDir, commonDir s
 		t.Fatalf("workspaceGitMetadataRoots: %v", err)
 	}
 	return workspace, gitDir, commonDir
+}
+
+func dcpReviewLabWorktree(t *testing.T, sessionID string) (dataDir, workspace string) {
+	t.Helper()
+	root := canonicalTempDir(t)
+	dataDir = filepath.Join(root, "data")
+	repo := filepath.Join(root, "targets", "dcp-review-lab")
+	workspace = filepath.Join(dataDir, "worktrees", "dcp-review-lab", sessionID)
+	if err := os.MkdirAll(filepath.Dir(repo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(workspace), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestCommand(t, "git", "init", "--quiet", "--initial-branch=main", repo)
+	runTestCommand(t, "git", "-C", repo, "config", "user.name", "DCP Test")
+	runTestCommand(t, "git", "-C", repo, "config", "user.email", "dcp-test@example.invalid")
+	runTestCommand(t, "git", "-C", repo, "remote", "add", "origin", dcpReviewLabOrigin)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("DCP review lab\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestCommand(t, "git", "-C", repo, "add", "README.md")
+	runTestCommand(t, "git", "-C", repo, "commit", "--quiet", "-m", "seed")
+	runTestCommand(t, "git", "-C", repo, "worktree", "add", "--quiet", "-b", "ao/"+sessionID+"/root", workspace)
+	return dataDir, workspace
 }
 
 func runTestCommand(t *testing.T, name string, args ...string) {
@@ -311,6 +337,100 @@ func TestGetLaunchCommandMapsApprovalModes(t *testing.T) {
 				t.Fatalf("command %#v lacks exact linked-worktree metadata roots", cmd)
 			}
 		})
+	}
+}
+
+func TestGetLaunchCommandEnablesNetworkOnlyForExactDCPReviewLabWorker(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	const sessionID = "dcp-review-lab-7"
+	dataDir, workspace := dcpReviewLabWorktree(t, sessionID)
+
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config:        ports.AgentConfig{DCPReviewLabNetwork: true},
+		DataDir:       dataDir,
+		SessionID:     sessionID,
+		Kind:          domain.KindWorker,
+		Permissions:   ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
+		t.Fatalf("exact DCP review-lab worker command lacks scoped network flag: %#v", cmd)
+	}
+	if cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		DataDir: dataDir, SessionID: sessionID, Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: workspace,
+	}); err == nil {
+		t.Fatalf("missing profile marker produced command %#v, want rejection", cmd)
+	}
+
+	oldDataDir, oldWorkspace := dcpReviewLabWorktree(t, "dcp-review-lab-6")
+	old, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config:  ports.AgentConfig{DCPReviewLabNetwork: true},
+		DataDir: oldDataDir, SessionID: "dcp-review-lab-6", Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: oldWorkspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(old, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("preserved card 6 unexpectedly received network: %#v", old)
+	}
+
+	ordinaryWorkspace, _, _ := linkedWorktree(t)
+	ordinary, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		SessionID:     "ordinary-1",
+		Kind:          domain.KindWorker,
+		Permissions:   ports.PermissionModeAcceptEdits,
+		WorkspacePath: ordinaryWorkspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(ordinary, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("ordinary worker unexpectedly received network: %#v", ordinary)
+	}
+}
+
+func TestGetLaunchCommandDCPReviewLabNetworkFailsClosed(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	const sessionID = "dcp-review-lab-8"
+	dataDir, workspace := dcpReviewLabWorktree(t, sessionID)
+	tests := []struct {
+		name       string
+		dataDir    string
+		sessionID  string
+		kind       domain.SessionKind
+		permission ports.PermissionMode
+		workspace  string
+	}{
+		{name: "wrong data", dataDir: filepath.Join(dataDir, "foreign"), sessionID: sessionID, kind: domain.KindWorker, permission: ports.PermissionModeAcceptEdits, workspace: workspace},
+		{name: "wrong session suffix", dataDir: dataDir, sessionID: "dcp-review-lab-08", kind: domain.KindWorker, permission: ports.PermissionModeAcceptEdits, workspace: workspace},
+		{name: "orchestrator kind", dataDir: dataDir, sessionID: sessionID, kind: domain.KindOrchestrator, permission: ports.PermissionModeAcceptEdits, workspace: workspace},
+		{name: "auto permission", dataDir: dataDir, sessionID: sessionID, kind: domain.KindWorker, permission: ports.PermissionModeAuto, workspace: workspace},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+				Config:  ports.AgentConfig{DCPReviewLabNetwork: true},
+				DataDir: test.dataDir, SessionID: test.sessionID, Kind: test.kind,
+				Permissions: test.permission, WorkspacePath: test.workspace,
+			})
+			if err == nil {
+				t.Fatalf("command = %#v, want exact profile rejection", cmd)
+			}
+		})
+	}
+	repo := filepath.Join(filepath.Dir(dataDir), "targets", "dcp-review-lab")
+	runTestCommand(t, "git", "-C", repo, "remote", "set-url", "--push", "origin", "https://github.com/orenvlad-ai/foreign.git")
+	if cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config:  ports.AgentConfig{DCPReviewLabNetwork: true},
+		DataDir: dataDir, SessionID: sessionID, Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: workspace,
+	}); err == nil {
+		t.Fatalf("foreign push remote produced command %#v, want rejection", cmd)
 	}
 }
 
@@ -883,6 +1003,32 @@ func TestInstalledCodexParsesGeneratedWorkerCommandWithoutModelRequest(t *testin
 		if out, err := probe.CombinedOutput(); err != nil {
 			t.Fatalf("offline worker capability probe %#v failed: %v\n%s", args, err, out)
 		}
+	}
+}
+
+func TestInstalledCodexParsesExactDCPReviewLabNetworkFlagWithoutModelRequest(t *testing.T) {
+	binary, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	const sessionID = "dcp-review-lab-9"
+	dataDir, workspace := dcpReviewLabWorktree(t, sessionID)
+	cmd, err := (&Plugin{resolvedBinary: binary}).GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config:  ports.AgentConfig{DCPReviewLabNetwork: true},
+		DataDir: dataDir, SessionID: sessionID, Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
+		t.Fatalf("generated command lacks exact network config: %#v", cmd)
+	}
+	cmd = append(cmd, "--help")
+	t.Setenv("CODEX_HOME", t.TempDir())
+	probe := exec.Command(cmd[0], cmd[1:]...)
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("exact DCP review-lab argv failed parser-only smoke: %v\n%s", err, out)
 	}
 }
 

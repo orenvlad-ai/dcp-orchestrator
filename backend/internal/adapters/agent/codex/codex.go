@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -115,6 +116,9 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.WorkspacePath); err != nil {
 		return nil, err
 	}
+	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DataDir, cfg.SessionID, cfg.Kind, cfg.Permissions, cfg.WorkspacePath); err != nil {
+		return nil, err
+	}
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 
@@ -158,6 +162,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
+		return nil, false, err
+	}
+	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DataDir, cfg.Session.ID, cfg.Kind, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
 		return nil, false, err
 	}
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
@@ -433,6 +440,93 @@ func appendWorkspaceGitMetadataFlags(ctx context.Context, cmd *[]string, permiss
 	return nil
 }
 
+const dcpReviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
+
+// appendDCPReviewLabNetworkFlag opens Codex's workspace-write network only for
+// the one PR-capable synthetic DCP contour. Every identity and path component
+// is derived from the daemon data directory and the native session id; an
+// exact-looking session with a foreign worktree, branch, Git common directory,
+// or fetch/push remote fails before a model process starts. All ordinary DCP
+// workers and every reviewer retain the stock network-disabled sandbox.
+func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEnabled bool, dataDir, sessionID string, kind domain.SessionKind, permissions ports.PermissionMode, workspacePath string) error {
+	if !strings.HasPrefix(sessionID, "dcp-review-lab-") {
+		return nil
+	}
+	if !isPositiveSessionSuffix(sessionID, "dcp-review-lab-") {
+		return fmt.Errorf("codex DCP review-lab network: invalid session profile")
+	}
+	// Cards 1-5 are immutable pre-profile evidence and card 6 is the preserved
+	// network-denied qualification attempt. Never retroactively grant any of
+	// them network on restore/resume.
+	if !dcpReviewLabNetworkSession(sessionID) {
+		return nil
+	}
+	if !profileEnabled || kind != domain.KindWorker || permissions != ports.PermissionModeAcceptEdits {
+		return fmt.Errorf("codex DCP review-lab network: invalid session profile")
+	}
+	data, err := canonicalExistingDir(strings.TrimSpace(dataDir))
+	if err != nil {
+		return fmt.Errorf("codex DCP review-lab network: data dir: %w", err)
+	}
+	workspace, err := canonicalExistingDir(strings.TrimSpace(workspacePath))
+	if err != nil {
+		return fmt.Errorf("codex DCP review-lab network: workspace: %w", err)
+	}
+	expectedWorkspace := filepath.Join(data, "worktrees", "dcp-review-lab", sessionID)
+	if workspace != expectedWorkspace {
+		return fmt.Errorf("codex DCP review-lab network: workspace %q does not match %q", workspace, expectedWorkspace)
+	}
+	gitDir, commonDir, err := workspaceGitMetadataRoots(ctx, workspace)
+	if err != nil {
+		return fmt.Errorf("codex DCP review-lab network: Git metadata: %w", err)
+	}
+	expectedCommon, err := canonicalExistingDir(filepath.Join(filepath.Dir(data), "targets", "dcp-review-lab", ".git"))
+	if err != nil {
+		return fmt.Errorf("codex DCP review-lab network: target Git dir: %w", err)
+	}
+	if commonDir != expectedCommon || gitDir != filepath.Join(expectedCommon, "worktrees", sessionID) {
+		return fmt.Errorf("codex DCP review-lab network: linked-worktree identity mismatch")
+	}
+	checks := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "fetch remote", args: []string{"remote", "get-url", "--all", "origin"}, want: dcpReviewLabOrigin},
+		{name: "push remote", args: []string{"remote", "get-url", "--push", "--all", "origin"}, want: dcpReviewLabOrigin},
+		{name: "branch", args: []string{"branch", "--show-current"}, want: "ao/" + sessionID + "/root"},
+	}
+	for _, check := range checks {
+		got, err := gitSingleLine(ctx, workspace, check.args...)
+		if err != nil {
+			return fmt.Errorf("codex DCP review-lab network: %s: %w", check.name, err)
+		}
+		if got != check.want {
+			return fmt.Errorf("codex DCP review-lab network: %s %q does not match %q", check.name, got, check.want)
+		}
+	}
+	*cmd = append(*cmd, "-c", "sandbox_workspace_write.network_access=true")
+	return nil
+}
+
+func isPositiveSessionSuffix(value, prefix string) bool {
+	suffix := strings.TrimPrefix(value, prefix)
+	if suffix == "" || suffix[0] == '0' {
+		return false
+	}
+	for _, char := range suffix {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func dcpReviewLabNetworkSession(value string) bool {
+	suffix := strings.TrimPrefix(value, "dcp-review-lab-")
+	return len(suffix) > 1 || (len(suffix) == 1 && suffix[0] >= '7')
+}
+
 func workspaceGitMetadataRoots(ctx context.Context, workspacePath string) (string, string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
@@ -591,6 +685,20 @@ func gitRevParsePath(ctx context.Context, workspace, arg string) (string, error)
 		return "", fmt.Errorf("git rev-parse %s returned an ambiguous path", arg)
 	}
 	return canonicalExistingDir(line)
+}
+
+func gitSingleLine(ctx context.Context, workspace string, args ...string) (string, error) {
+	commandArgs := append([]string{"-C", workspace}, args...)
+	command := aoprocess.CommandContext(ctx, "git", commandArgs...)
+	out, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	line := strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r")
+	if line == "" || strings.ContainsAny(line, "\r\n\x00") {
+		return "", fmt.Errorf("git %s returned an empty or ambiguous value", strings.Join(args, " "))
+	}
+	return line, nil
 }
 
 // fileExists is a package var so tests can stub it to scope candidate probing.

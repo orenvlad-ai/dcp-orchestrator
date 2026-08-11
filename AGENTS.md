@@ -59,9 +59,12 @@ is the exact immutable revision pinned by current `dev-control-plane`.
 - The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
   crash collection/upload, release, or external service path. Do not restore
   inherited upstream paths for any of them.
-- Existing standard Codex authentication is the only external credential
-  input. Never copy/expose credentials or load user Codex configuration into a
-  lab worker.
+- Existing standard Codex authentication remains the only model credential
+  input. The exact synthetic-PR worker may use the host's already configured
+  GitHub transport only after its typed profile marker, native session,
+  data/worktree/Git paths, branch and exact fetch/push remote all validate;
+  never copy/expose credentials or load user Codex configuration into a lab
+  worker. Every ordinary worker and every reviewer remains network-disabled.
 
 ## Current implemented scope
 

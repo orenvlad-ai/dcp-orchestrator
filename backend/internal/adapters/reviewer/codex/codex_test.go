@@ -97,6 +97,16 @@ func TestReviewCommandRejectsSandboxBypass(t *testing.T) {
 	}
 }
 
+func TestReviewCommandRejectsWorkerNetworkAccess(t *testing.T) {
+	agent := &captureAgent{argv: []string{
+		"agent", "exec", "-c", "sandbox_workspace_write.network_access=true", "--", "review",
+	}}
+	_, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{Prompt: "review"})
+	if err == nil || !strings.Contains(err.Error(), "network") {
+		t.Fatalf("ReviewCommand error = %v, want worker network rejection", err)
+	}
+}
+
 func TestReviewCommandReplacesWorkerConfigApprovalAndSandbox(t *testing.T) {
 	agent := &captureAgent{argv: []string{
 		"agent", "exec",

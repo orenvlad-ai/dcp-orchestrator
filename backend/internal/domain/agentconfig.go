@@ -31,6 +31,12 @@ type AgentConfig struct {
 	// Permissions sets the agent's starting permission mode. Empty is treated
 	// like the adapter's default mode.
 	Permissions PermissionMode `json:"permissions,omitempty"`
+	// DCPReviewLabNetwork is an internal capability marker consumed only by the
+	// exact synthetic dcp-review-lab Codex contour. The adapter still validates
+	// the native session, data/worktree/Git paths, branch, and fetch/push remote
+	// before it enables network; other projects cannot use this as a generic
+	// network switch.
+	DCPReviewLabNetwork bool `json:"dcpReviewLabNetwork,omitempty"`
 }
 
 // IsZero reports whether the config carries no settings, so storage can persist
