@@ -359,7 +359,7 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactDCPReviewLabWorker(t *testing
 	if !containsSubsequence(cmd, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
 		t.Fatalf("exact DCP review-lab worker command lacks scoped network flag: %#v", cmd)
 	}
-	for _, stageID := range []string{"dcp-review-lab-9", "dcp-review-lab-10"} {
+	for _, stageID := range []string{"dcp-review-lab-9", "dcp-review-lab-10", "dcp-review-lab-11", "dcp-review-lab-12"} {
 		stageDataDir, stageWorkspace := dcpReviewLabWorktree(t, stageID)
 		stage, stageErr := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 			Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: stageDataDir,
@@ -403,17 +403,17 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactDCPReviewLabWorker(t *testing
 		t.Fatalf("pre-stage card 8 unexpectedly received network: %#v", retired)
 	}
 
-	futureDataDir, futureWorkspace := dcpReviewLabWorktree(t, "dcp-review-lab-11")
+	futureDataDir, futureWorkspace := dcpReviewLabWorktree(t, "dcp-review-lab-13")
 	future, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: futureDataDir,
-		SessionID: "dcp-review-lab-11", Kind: domain.KindWorker,
+		SessionID: "dcp-review-lab-13", Kind: domain.KindWorker,
 		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: futureWorkspace,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if contains(future, "sandbox_workspace_write.network_access=true") {
-		t.Fatalf("future card 11 unexpectedly received network: %#v", future)
+		t.Fatalf("future card 13 unexpectedly received network: %#v", future)
 	}
 
 	ordinaryWorkspace, _, _ := linkedWorktree(t)

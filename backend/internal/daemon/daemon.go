@@ -215,6 +215,7 @@ func Run() error {
 	if scmProvider != nil {
 		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: scmProvider, Reader: scmProvider})
 		terminalMerger = dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
+		terminalMerger.SetArbiterLauncher(dcpterminalmerge.NewArbiterLauncher(runtimeAdapter, cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetRefreshWaker(func(wakeCtx context.Context, id domain.SessionID, prompt string) error {
 			_, wakeErr := sessMgr.ResumeDCPReviewLabIdleAgent(wakeCtx, id, prompt)
 			return wakeErr
@@ -323,6 +324,7 @@ func Run() error {
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
 		DCPTasks:            dcpTaskSvc,
+		DCPArbiter:          terminalMerger,
 	})
 	if err != nil {
 		stop()

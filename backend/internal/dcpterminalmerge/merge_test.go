@@ -327,7 +327,7 @@ func TestTryMergesWithStockNativeMissingDiffBaseMetadata(t *testing.T) {
 }
 
 func TestTryRejectsOldSessionAndNonCleanProviderFacts(t *testing.T) {
-	for _, rejectedID := range []domain.SessionID{"dcp-review-lab-6", "dcp-review-lab-8", "dcp-review-lab-11"} {
+	for _, rejectedID := range []domain.SessionID{"dcp-review-lab-6", "dcp-review-lab-8", "dcp-review-lab-13"} {
 		engine, store, scm := fixture(t)
 		store.session.ID = rejectedID
 		if err := engine.Try(context.Background(), rejectedID); err != nil {

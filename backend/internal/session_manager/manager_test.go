@@ -1221,7 +1221,7 @@ func TestResumeDCPReviewLabIdleAgentIsNativeBoundedAndSingleFlight(t *testing.T)
 
 func TestResumeDCPReviewLabIdleAgentRejectsForeignIdentityBeforeRuntime(t *testing.T) {
 	m, _, runtime, _ := newManager()
-	for _, id := range []domain.SessionID{"mer-1", "dcp-review-lab-7", "dcp-review-lab-8", "dcp-review-lab-11"} {
+	for _, id := range []domain.SessionID{"mer-1", "dcp-review-lab-7", "dcp-review-lab-8", "dcp-review-lab-13"} {
 		if _, err := m.ResumeDCPReviewLabIdleAgent(ctx, id, "bounded prompt"); !errors.Is(err, ErrNotRestorable) {
 			t.Fatalf("id %s err=%v, want ErrNotRestorable", id, err)
 		}

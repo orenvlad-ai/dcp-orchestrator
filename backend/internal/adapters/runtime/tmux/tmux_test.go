@@ -768,6 +768,23 @@ func TestSupervisorCommandRecognizesExactReviewGeneration(t *testing.T) {
 	}
 }
 
+func TestSupervisorCommandRecognizesExactArbiterGeneration(t *testing.T) {
+	incident := "dcp-global-release-" + strings.Repeat("a", 64)
+	command := "/opt/ao arbiter supervise --handle dcp-global-release-arbiter-v1 --incident " + incident +
+		" --identity-digest " + strings.Repeat("b", 64) + " --input-digest " + strings.Repeat("c", 64) +
+		" --supervisor-data-dir /tmp/data --supervisor-run-file /tmp/run.json -- codex exec"
+	if !isSupervisorCommand(command, "dcp-global-release-arbiter-v1", incident) {
+		t.Fatal("exact arbiter supervisor was not recognized")
+	}
+	if isSupervisorCommand(command, "other-handle", incident) ||
+		isSupervisorCommand(command, "dcp-global-release-arbiter-v1", "dcp-global-release-"+strings.Repeat("d", 64)) {
+		t.Fatal("foreign arbiter handle or incident generation was accepted")
+	}
+	if !isAnySupervisorCommand(command) {
+		t.Fatal("arbiter supervisor was not classified as an AO supervisor")
+	}
+}
+
 func TestIsSupervisedProcessAliveRejectsStaleAndUnrelatedProcesses(t *testing.T) {
 	entries, err := parseProcessTable("100 1 /bin/sh\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-old -- codex\n200 1 /opt/ao agent-process supervise --session sess-1 --launch launch-new -- codex\n")
 	if err != nil {

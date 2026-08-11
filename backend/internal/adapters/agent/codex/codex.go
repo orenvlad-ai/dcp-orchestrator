@@ -526,7 +526,7 @@ func isPositiveSessionSuffix(value, prefix string) bool {
 }
 
 func dcpReviewLabNetworkSession(value string) bool {
-	return value == "dcp-review-lab-7" || value == "dcp-review-lab-9" || value == "dcp-review-lab-10"
+	return value == "dcp-review-lab-7" || value == "dcp-review-lab-9" || value == "dcp-review-lab-10" || value == "dcp-review-lab-11" || value == "dcp-review-lab-12"
 }
 
 func workspaceGitMetadataRoots(ctx context.Context, workspacePath string) (string, string, error) {

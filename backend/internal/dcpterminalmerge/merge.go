@@ -29,7 +29,7 @@ import (
 const (
 	ProjectID          = "dcp-review-lab"
 	SessionPrefix      = "dcp-review-lab"
-	ProfileAgentRules  = "DCP synthetic PR profile v2. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. On the initial call implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Only if the trusted DCP daemon issues the single bounded admission-refresh continuation may the same worker rebase that branch onto the exact named origin/main, keep the same pull request, push with exact force-with-lease, and stop; abort without push on any conflict or ambiguity. Do not merge; only the trusted DCP daemon may perform terminal merge after exact-head review, checks, and admission."
+	ProfileAgentRules  = "DCP synthetic PR profile v3. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. On the initial call implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. If the trusted DCP daemon issues the single bounded admission-refresh continuation, rebase only onto the exact named origin/main and abort without push on any conflict or ambiguity. Only for native cards 11/12, if the trusted daemon supplies the exact I13 arbiter recovery identity, approved scope digest, old head, current main and conflict path, resolve only that one conflict within the original task, keep the same branch and pull request, run the check, push with exact force-with-lease, and stop. Do not merge; only the trusted DCP daemon may perform terminal merge after fresh exact-head review, checks, and admission."
 	TaskDisplayPrefix  = "DCP:"
 	TaskPromptPrefix   = "DCP synthetic task "
 	RepositoryFullName = "orenvlad-ai/dcp-review-lab"
@@ -82,6 +82,7 @@ type Engine struct {
 	mu      sync.Mutex
 	git     func(context.Context, string, ...string) (string, error)
 	wake    RefreshWaker
+	arbiter ArbiterLauncher
 	clock   func() time.Time
 }
 
@@ -113,6 +114,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		}
 	}
 	if err := e.recoverCanonicalBaseIncidents(ctx); err != nil {
+		return err
+	}
+	if err := e.reconcileStage2Arbiter(ctx); err != nil {
 		return err
 	}
 
@@ -253,6 +257,41 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		}
 		return nil
 	}
+	if candidate.session.ID == ArbiterSessionA || candidate.session.ID == ArbiterSessionB {
+		arbiterStore, storeErr := e.arbiterStore()
+		if storeErr != nil {
+			return storeErr
+		}
+		arbiter, ok, err := arbiterStore.GetDCPReleaseArbiterIncidentBySession(ctx, candidate.session.ID)
+		if err != nil {
+			return err
+		}
+		if ok && arbiter.Status == domain.DCPArbiterRepairing {
+			original, found, getErr := arbiterStore.GetDCPReviewLabAdmissionByID(ctx, arbiter.AdmissionID)
+			if getErr != nil || !found {
+				return errors.New("dcp arbiter: repairing admission is unavailable")
+			}
+			if original.Status != domain.DCPAdmissionIncident || original.SessionID != candidate.session.ID ||
+				original.PRURL != candidate.pr.URL || original.TargetSHA != arbiter.TargetSHA ||
+				strings.EqualFold(candidate.run.TargetSHA, arbiter.TargetSHA) ||
+				!strings.EqualFold(observation.PR.BaseSHA, arbiter.CurrentBaseSHA) ||
+				arbiter.RecoveryOwnerSessionID != candidate.session.ID || arbiter.RecoveryPath != "same_worker_conflict_repair" ||
+				arbiter.RecoveryWakeCount != 1 {
+				_, _ = arbiterStore.FailDCPReleaseArbiterAfterDecision(ctx, arbiter.IncidentID, "repair_identity_drift", now)
+				return errors.New("dcp arbiter: repaired exact-head identity drifted")
+			}
+			if validateErr := e.validateArbiterRecoveryCandidate(ctx, candidate, arbiter); validateErr != nil {
+				_, _ = arbiterStore.FailDCPReleaseArbiterAfterDecision(ctx, arbiter.IncidentID, "repair_scope_drift", now)
+				return validateErr
+			}
+			rebound, updateErr := arbiterStore.RebindDCPAdmissionAfterArbiterRepair(ctx, original, arbiter, candidate.run, strings.ToLower(observation.PR.BaseSHA), now)
+			if updateErr != nil || !rebound {
+				_, _ = arbiterStore.FailDCPReleaseArbiterAfterDecision(ctx, arbiter.IncidentID, "repair_rebind_rejected", now)
+				return errors.Join(updateErr, errors.New("dcp arbiter: repaired exact-head rebind was rejected"))
+			}
+			return nil
+		}
+	}
 	_, _, err = e.store.EnqueueDCPReviewLabAdmission(ctx, domain.DCPReviewLabAdmission{
 		ID: "dcp-admission-" + candidate.run.ID, ReviewRunID: candidate.run.ID, ReviewID: candidate.run.ReviewID,
 		SessionID: candidate.session.ID, PRURL: candidate.pr.URL, PRNumber: int64(candidate.pr.Number),
@@ -313,7 +352,10 @@ func (e *Engine) nextPending(ctx context.Context) (domain.DCPReviewLabAdmission,
 }
 
 func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
-	if admission.SessionID != AdmissionSessionA && admission.SessionID != AdmissionSessionB {
+	cohortA, cohortB := domain.SessionID(AdmissionSessionA), domain.SessionID(AdmissionSessionB)
+	if admission.SessionID == ArbiterSessionA || admission.SessionID == ArbiterSessionB {
+		cohortA, cohortB = ArbiterSessionA, ArbiterSessionB
+	} else if admission.SessionID != AdmissionSessionA && admission.SessionID != AdmissionSessionB {
 		return true, nil
 	}
 	rows, err := e.store.ListDCPReviewLabAdmissions(ctx)
@@ -322,11 +364,11 @@ func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabA
 	}
 	present := map[domain.SessionID]bool{}
 	for _, row := range rows {
-		if row.SessionID == AdmissionSessionA || row.SessionID == AdmissionSessionB {
+		if row.SessionID == cohortA || row.SessionID == cohortB {
 			present[row.SessionID] = true
 		}
 	}
-	return present[AdmissionSessionA] && present[AdmissionSessionB], nil
+	return present[cohortA] && present[cohortB], nil
 }
 
 func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
@@ -490,6 +532,11 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
 		!validTaskIdentity(session) {
 		return mergeCandidate{}, false, nil
+	}
+	if session.ID == ArbiterSessionA || session.ID == ArbiterSessionB {
+		if _, _, exact := arbiterTask(session); !exact {
+			return mergeCandidate{}, false, nil
+		}
 	}
 	expectedWorkspace := filepath.Join(e.dataDir, "worktrees", ProjectID, string(id))
 	expectedBranch := "ao/" + string(id) + "/root"
@@ -806,8 +853,17 @@ func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewL
 	if err != nil {
 		return err
 	}
-	_, err = e.store.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, reason, string(packet), now)
-	return err
+	recorded, err := e.store.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, reason, string(packet), now)
+	if err != nil {
+		return err
+	}
+	if !recorded {
+		return errors.New("dcp admission: exact incident transition was rejected")
+	}
+	if reason == "merge_conflict_or_ambiguity" && (admission.SessionID == ArbiterSessionA || admission.SessionID == ArbiterSessionB) {
+		return e.reconcileStage2Arbiter(ctx)
+	}
+	return nil
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
@@ -818,7 +874,7 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 
 func eligibleSessionID(id domain.SessionID) bool {
 	value := string(id)
-	return value == HistoricalSession || value == AdmissionSessionA || value == AdmissionSessionB
+	return value == HistoricalSession || value == AdmissionSessionA || value == AdmissionSessionB || value == ArbiterSessionA || value == ArbiterSessionB
 }
 
 func validPRURL(raw string, number int) bool {

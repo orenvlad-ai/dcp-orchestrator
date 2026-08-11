@@ -39,6 +39,7 @@ type APIDeps struct {
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
 	DCPTasks            controllers.DCPTaskService
+	DCPArbiter          DCPArbiterService
 }
 
 // API owns one controller per resource and is the single Register call the
