@@ -193,6 +193,7 @@ func basePRFixture() *prFixture {
 						"mergeStateStatus": "CLEAN",
 						"reviewDecision":   "APPROVED",
 						"headRefOid":       "deadbeef",
+						"headRepository":   map[string]any{"nameWithOwner": "octocat/hello"},
 						"commits": map[string]any{"nodes": []any{
 							map[string]any{"commit": map[string]any{
 								"oid": "deadbeef",
@@ -1258,6 +1259,23 @@ func TestSCMObservationUsesRollupStateWhenContextsPaginated(t *testing.T) {
 	}
 }
 
+func TestSCMObservationCarriesGraphQLHeadRepository(t *testing.T) {
+	fx := basePRFixture()
+	var pr map[string]any
+	fx.prData(func(m map[string]any) {
+		pr = m
+		m["headRepository"] = map[string]any{"nameWithOwner": "forker/hello"}
+	})
+	obs := scmObservationFromGraphQL(ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}, pr)
+	if obs.PR.HeadRepo != "forker/hello" {
+		t.Fatalf("HeadRepo = %q, want forker/hello", obs.PR.HeadRepo)
+	}
+	delete(pr, "headRepository")
+	if got := scmObservationFromGraphQL(ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}, pr).PR.HeadRepo; got != "" {
+		t.Fatalf("missing head repository = %q, want fail-closed empty", got)
+	}
+}
+
 func TestSCMMergeabilityBlocksReviewRequiredAndDraft(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1294,6 +1312,9 @@ func TestFetchPullRequestsDoesNotFallbackWhenContextPageComplete(t *testing.T) {
 		if !strings.Contains(string(body), "pageInfo{ hasNextPage endCursor }") {
 			t.Fatalf("batch query should request endCursor for fallback, body=%s", body)
 		}
+		if !strings.Contains(string(body), "headRepository{ nameWithOwner }") {
+			t.Fatalf("batch query should request exact head repository, body=%s", body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{"pr0": map[string]any{"pullRequest": pr}},
@@ -1309,6 +1330,9 @@ func TestFetchPullRequestsDoesNotFallbackWhenContextPageComplete(t *testing.T) {
 	}
 	if len(obs) != 1 || len(obs[0].CI.Checks) != 1 || obs[0].CI.Summary != string(domain.CIPassing) {
 		t.Fatalf("observation = %#v", obs)
+	}
+	if obs[0].PR.HeadRepo != "octocat/hello" {
+		t.Fatalf("HeadRepo = %q, want octocat/hello", obs[0].PR.HeadRepo)
 	}
 }
 
