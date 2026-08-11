@@ -1181,16 +1181,16 @@ func TestResumeDCPReviewLabIdleAgentIsNativeBoundedAndSingleFlight(t *testing.T)
 			AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true},
 		}},
 	}
-	id := domain.SessionID("dcp-review-lab-8")
+	id := domain.SessionID("dcp-review-lab-9")
 	st.sessions[id] = domain.SessionRecord{
 		ID: id, ProjectID: "dcp-review-lab", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
 		Activity: domain.Activity{State: domain.ActivityIdle},
 		Metadata: domain.SessionMetadata{
-			WorkspacePath: "/ws/dcp-review-lab-8", Branch: "ao/dcp-review-lab-8/root",
-			RuntimeHandleID: "tmux-dcp-review-lab-8", AgentSessionID: "native-thread-8", Prompt: "original task",
+			WorkspacePath: "/ws/dcp-review-lab-9", Branch: "ao/dcp-review-lab-9/root",
+			RuntimeHandleID: "tmux-dcp-review-lab-9", AgentSessionID: "native-thread-9", Prompt: "original task",
 		},
 	}
-	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-dcp-review-lab-8": true}}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-dcp-review-lab-9": true}}
 	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
 	agent := &recordingAgent{}
 	dataDir := t.TempDir()
@@ -1221,7 +1221,7 @@ func TestResumeDCPReviewLabIdleAgentIsNativeBoundedAndSingleFlight(t *testing.T)
 
 func TestResumeDCPReviewLabIdleAgentRejectsForeignIdentityBeforeRuntime(t *testing.T) {
 	m, _, runtime, _ := newManager()
-	for _, id := range []domain.SessionID{"mer-1", "dcp-review-lab-7", "dcp-review-lab-10"} {
+	for _, id := range []domain.SessionID{"mer-1", "dcp-review-lab-7", "dcp-review-lab-8", "dcp-review-lab-11"} {
 		if _, err := m.ResumeDCPReviewLabIdleAgent(ctx, id, "bounded prompt"); !errors.Is(err, ErrNotRestorable) {
 			t.Fatalf("id %s err=%v, want ErrNotRestorable", id, err)
 		}

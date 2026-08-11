@@ -10,8 +10,8 @@ i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
-control_plane_commit='bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc'
-operating_contract_revision='2026-08-11.12'
+control_plane_commit='5551d5a4bd4cb172a1f9e17639c6e8eb012f6ca3'
+operating_contract_revision='2026-08-11.13'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -173,6 +173,8 @@ source_gates() {
 	grep -Fq 'idx_dcp_review_lab_admission_one_active_per_session' "$admission_migration" || fail 'I13 per-task active admission guard is absent'
 	grep -Fq 'dcp.review-lab.arbiter-needed/v1' "$admission_migration" || fail 'I13 structured incident schema is absent'
 	grep -Fq 'func (e *Engine) drain' backend/internal/dcpterminalmerge/merge.go || fail 'I13 admission drain is absent'
+	grep -Fq 'AdmissionSessionA  = "dcp-review-lab-9"' backend/internal/dcpterminalmerge/merge.go || fail 'I13 first fresh card identity is not exact'
+	grep -Fq 'AdmissionSessionB  = "dcp-review-lab-10"' backend/internal/dcpterminalmerge/merge.go || fail 'I13 second fresh card identity is not exact'
 	grep -Fq 'ResumeDCPReviewLabIdleAgent' backend/internal/session_manager/manager.go || fail 'I13 bounded same-worker wake is absent'
 	! grep -Eq 'time\.(NewTicker|Tick)|for[[:space:]]*\{[[:space:]]*time\.Sleep' backend/internal/dcpterminalmerge/merge.go || fail 'I13 admission introduced a poll or heartbeat loop'
 

@@ -1250,7 +1250,7 @@ func (m *Manager) ResumeDCPReviewLabIdleAgent(ctx context.Context, id domain.Ses
 		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrResumeInProgress)
 	}
 	defer m.endAgentResume(id)
-	if id != "dcp-review-lab-8" && id != "dcp-review-lab-9" {
+	if id != "dcp-review-lab-9" && id != "dcp-review-lab-10" {
 		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrNotRestorable)
 	}
 	prompt = strings.TrimSpace(prompt)
