@@ -410,6 +410,50 @@ func TestAutoTriggerIsExactHeadSingleFlightAndDoesNotRetryFailure(t *testing.T) 
 	}
 }
 
+func TestDCPReviewLabAllowsTwoDistinctHeadsWithoutManualOrDuplicateReview(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-8", "dcp-review-lab", domain.HarnessCodex
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-8"}
+	prs := &fakePRs{prs: prAt("sha1").prs}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prs, fakeProjects{}, launcher)
+
+	if res, err := eng.Trigger(context.Background(), worker.ID, ""); err == nil || res.Created || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("manual trigger = %+v err=%v", res, err)
+	}
+	first, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !first.Created {
+		t.Fatalf("first trigger = %+v err=%v", first, err)
+	}
+	if _, err := store.UpdateReviewRunResult(context.Background(), first.Run.ID, domain.ReviewRunComplete, domain.VerdictApproved, "approved", ""); err != nil {
+		t.Fatal(err)
+	}
+	prs.prs = prAt("sha2").prs
+	second, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !second.Created || launcher.spawnCount != 2 {
+		t.Fatalf("second exact head = %+v err=%v spawns=%d", second, err, launcher.spawnCount)
+	}
+	if _, err := store.UpdateReviewRunResult(context.Background(), second.Run.ID, domain.ReviewRunFailed, domain.VerdictNone, "failed", ""); err != nil {
+		t.Fatal(err)
+	}
+	prs.prs = prAt("sha3").prs
+	third, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || third.Created || launcher.spawnCount != 2 {
+		t.Fatalf("third head exceeded budget: %+v err=%v spawns=%d", third, err, launcher.spawnCount)
+	}
+}
+
+func TestDCPReviewLabRejectsFutureCardAutomatically(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-10", "dcp-review-lab", domain.HarnessCodex
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-10"}
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	res, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || res.Created || launcher.spawnCount != 0 {
+		t.Fatalf("future card trigger = %+v err=%v spawns=%d", res, err, launcher.spawnCount)
+	}
+}
+
 func TestAutoTriggerRequiresIdleWorkerAndEligiblePR(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

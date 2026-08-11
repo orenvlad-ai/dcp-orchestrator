@@ -175,6 +175,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		cmd = append(cmd, "-c", "model_instructions_file="+cfg.SystemPromptFile)
 	}
 	cmd = append(cmd, "resume", agentSessionID)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, cfg.Prompt)
+	}
 	return cmd, true, nil
 }
 
@@ -524,7 +527,7 @@ func isPositiveSessionSuffix(value, prefix string) bool {
 
 func dcpReviewLabNetworkSession(value string) bool {
 	suffix := strings.TrimPrefix(value, "dcp-review-lab-")
-	return len(suffix) > 1 || (len(suffix) == 1 && suffix[0] >= '7')
+	return len(suffix) == 1 && suffix[0] >= '7' && suffix[0] <= '9'
 }
 
 func workspaceGitMetadataRoots(ctx context.Context, workspacePath string) (string, string, error) {

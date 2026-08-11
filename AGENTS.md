@@ -9,18 +9,20 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `32cde47a24508cb2d135830f5ca06e57aeba78d6`](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/AGENTS.md)
-2. [current operating contract revision `2026-08-10.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/docs/TARGET_ARCHITECTURE_V1.md)
-4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/32cde47a24508cb2d135830f5ca06e57aeba78d6/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc`](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/AGENTS.md)
+2. [current operating contract revision `2026-08-11.12`](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/docs/TARGET_ARCHITECTURE_V1.md)
+4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/bd68c27d6cf38e1af2a9c5b91ed68779c4dc9dcc/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
 described below. The later owner-delegated canonical synthetic-PR lab change
 adds one exact-profile terminal merge only after the same trusted reviewer,
-required check and provider readiness facts succeed. Its exact merged pin and
-updated operating contract are applied sequentially in `dev-control-plane`
-after this source PR merges. The live
+required check and provider readiness facts succeed. I13 Stage 1 now authorizes
+exactly two new native synthetic tasks and a durable mechanical Admission
+Controller around that same terminal merge. Its exact merged pin and updated
+integration contract are applied sequentially in `dev-control-plane` after
+this source PR merges. The live
 `dev-control-plane` repository remains the authority for later
 architecture, operating, integration, qualification, and exact-pin changes.
 Do not copy or reinterpret those contracts here as a competing source of
@@ -83,11 +85,20 @@ synthetic-PR lab contour permits one event-driven terminal squash merge only
 for the exact `orenvlad-ai/dcp-review-lab` profile/session/worktree/branch/PR/head,
 after an approved structured verdict with no findings, its named green check,
 no unresolved threads and provider `MERGEABLE`/`CLEAN`; the outcome is stored
-on the same `ReviewRun` and reconciled model-free after restart. It adds no reviewer
-service, scheduler, queue, watcher, heartbeat, webhook, second registry/DB,
-arbiter, Admission Controller, Release Train, general auto-merge, multi-pass
-repair loop, hosted projection, production target, deploy path, or new DCP-task
-execution entity.
+on the same `ReviewRun` and reconciled model-free after restart.
+
+I13 Stage 1 adds one subordinate SQLite FIFO/lease record per admitted native
+task and permits cards 8 and 9 to run/review independently. Exactly one row may
+own terminal merge. The other is durably passive: no heartbeat, watcher,
+polling loop, or model activity. A merge completion drains the next row
+model-free; `BEHIND` permits exactly one same-worker native continuation and a
+fresh exact-head review, while proven conflict/ambiguity records one structured
+`dcp.review-lab.arbiter-needed/v1` packet and stops. This does not add a second
+task/card identity, registry, database, daemon, scheduler, queue service,
+reviewer service, arbiter, Human Gate, Release Train, general retry/recovery or
+auto-merge policy, hosted projection, production target, deploy path, or broad
+runtime capability. Arbiter v1 remains a separately dispatched second stage
+and must not be implemented or invoked by this change.
 Never synthesize owner acceptance.
 
 The active Codex reviewer success path is deterministic after model exit. The

@@ -335,6 +335,12 @@ type recordingAgent struct {
 	restoreCalls int
 }
 
+type recordingOneShotAgent struct{ *recordingAgent }
+
+func (recordingOneShotAgent) ExitDetectionMode() ports.AgentExitDetectionMode {
+	return ports.AgentExitDetectionSupervisorIdleOnSuccess
+}
+
 func (a *recordingAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	a.launchCalls++
 	a.lastConfig = cfg.Config
@@ -1163,6 +1169,65 @@ func TestResumeAgent_RejectsConcurrentRequest(t *testing.T) {
 	close(runtime.release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first resume: %v", err)
+	}
+}
+
+func TestResumeDCPReviewLabIdleAgentIsNativeBoundedAndSingleFlight(t *testing.T) {
+	st := newFakeStore()
+	st.projects["dcp-review-lab"] = domain.ProjectRecord{
+		ID: "dcp-review-lab",
+		Config: domain.ProjectConfig{Worker: domain.RoleOverride{
+			Harness:     domain.HarnessCodex,
+			AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true},
+		}},
+	}
+	id := domain.SessionID("dcp-review-lab-8")
+	st.sessions[id] = domain.SessionRecord{
+		ID: id, ProjectID: "dcp-review-lab", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/dcp-review-lab-8", Branch: "ao/dcp-review-lab-8/root",
+			RuntimeHandleID: "tmux-dcp-review-lab-8", AgentSessionID: "native-thread-8", Prompt: "original task",
+		},
+	}
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-dcp-review-lab-8": true}}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := &recordingAgent{}
+	dataDir := t.TempDir()
+	m := New(Deps{
+		Runtime: runtime, Agents: singleAgent{agent: recordingOneShotAgent{agent}}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, DataDir: dataDir,
+		RunFilePath: filepath.Join(dataDir, "state", "running.json"), LookPath: func(string) (string, error) { return "/bin/true", nil },
+		Executable: func() (string, error) { return "/opt/ao", nil }, NewLaunchID: func() string { return "refresh-launch" },
+	})
+	prompt := "DCP bounded admission refresh for exact head"
+	result, err := m.ResumeDCPReviewLabIdleAgent(ctx, id, prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != RestoreModeNative || runtime.restarted != 1 || agent.restoreCalls != 1 || agent.lastRestore.Prompt != prompt {
+		t.Fatalf("result=%+v restarts=%d restores=%d config=%+v", result, runtime.restarted, agent.restoreCalls, agent.lastRestore)
+	}
+	if got := st.sessions[id].Metadata.Prompt; got != "original task" {
+		t.Fatalf("stored original prompt changed to %q", got)
+	}
+	if _, err := m.ResumeDCPReviewLabIdleAgent(ctx, id, prompt); !errors.Is(err, ErrNotRestorable) {
+		t.Fatalf("duplicate wake err=%v, want ErrNotRestorable", err)
+	}
+	if runtime.restarted != 1 || agent.restoreCalls != 1 {
+		t.Fatalf("duplicate touched runtime: restarts=%d restores=%d", runtime.restarted, agent.restoreCalls)
+	}
+}
+
+func TestResumeDCPReviewLabIdleAgentRejectsForeignIdentityBeforeRuntime(t *testing.T) {
+	m, _, runtime, _ := newManager()
+	for _, id := range []domain.SessionID{"mer-1", "dcp-review-lab-7", "dcp-review-lab-10"} {
+		if _, err := m.ResumeDCPReviewLabIdleAgent(ctx, id, "bounded prompt"); !errors.Is(err, ErrNotRestorable) {
+			t.Fatalf("id %s err=%v, want ErrNotRestorable", id, err)
+		}
+	}
+	if runtime.created != 0 || runtime.destroyed != 0 {
+		t.Fatalf("foreign identity touched runtime: created=%d destroyed=%d", runtime.created, runtime.destroyed)
 	}
 }
 

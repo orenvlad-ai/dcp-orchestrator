@@ -317,6 +317,15 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if !ok {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 	}
+	reviewLab := worker.ProjectID == "dcp-review-lab"
+	if reviewLab {
+		if mode == triggerManual {
+			return TriggerResult{}, fmt.Errorf("%w: DCP review-lab reviews are automatic only", ErrInvalid)
+		}
+		if !eligibleDCPReviewLabWorker(workerID) {
+			return TriggerResult{}, nil
+		}
+	}
 	if mode == triggerManual && worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)
 	}
@@ -352,6 +361,9 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	runs, err := e.store.ListReviewRunsBySession(ctx, workerID)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	if reviewLab && !dcpReviewLabRunBudget(workerID, mode, runs) {
+		return TriggerResult{}, nil
 	}
 	reviews := Plan(prs, runs)
 
@@ -486,6 +498,24 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 		created[i].ReviewID = reviewRow.ID
 	}
 	return TriggerResult{Run: created[0], ReviewerHandleID: handleID, Created: true, Reviews: reviews, CreatedRuns: created}, nil
+}
+
+func eligibleDCPReviewLabWorker(id domain.SessionID) bool {
+	return id == "dcp-review-lab-7" || id == "dcp-review-lab-8" || id == "dcp-review-lab-9"
+}
+
+func dcpReviewLabRunBudget(id domain.SessionID, mode triggerMode, runs []domain.ReviewRun) bool {
+	// I13 never replaces a reviewer on the same head after restart: ambiguity is
+	// persisted as failure and consumes that head. A branch-refresh continuation
+	// may create one fresh reviewer only because it produces a distinct head.
+	if mode == triggerRecovery || mode == triggerPreserved {
+		return false
+	}
+	limit := 1
+	if id == "dcp-review-lab-8" || id == "dcp-review-lab-9" {
+		limit = 2
+	}
+	return len(runs) < limit
 }
 
 func reviewKey(prURL, targetSHA string) string { return prURL + "\x00" + targetSHA }

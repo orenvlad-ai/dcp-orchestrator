@@ -65,6 +65,7 @@ var shippedMigrations = map[int64]string{
 	47: "0047_agent_model_catalog.sql",
 	48: "0048_dcp_task_foundation.sql",
 	49: "0049_dcp_review_lab_terminal_merge.sql",
+	50: "0050_dcp_review_lab_admission.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

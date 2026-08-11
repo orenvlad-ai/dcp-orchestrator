@@ -379,6 +379,19 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactDCPReviewLabWorker(t *testing
 		t.Fatalf("preserved card 6 unexpectedly received network: %#v", old)
 	}
 
+	futureDataDir, futureWorkspace := dcpReviewLabWorktree(t, "dcp-review-lab-10")
+	future, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: futureDataDir,
+		SessionID: "dcp-review-lab-10", Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: futureWorkspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(future, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("future card 10 unexpectedly received network: %#v", future)
+	}
+
 	ordinaryWorkspace, _, _ := linkedWorktree(t)
 	ordinary, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		SessionID:     "ordinary-1",
@@ -807,6 +820,21 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	}
 	if !containsSubsequence(cmd, []string{"--model", "gpt-5.4-mini"}) {
 		t.Fatalf("restore command %#v missing trimmed --model flag", cmd)
+	}
+}
+
+func TestGetRestoreCommandAppendsNativeContinuationPrompt(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	prompt := "bounded refresh"
+	cmd, ok, err := plugin.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+		Prompt:  prompt,
+		Session: ports.SessionRef{Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "thread-123"}},
+	})
+	if err != nil || !ok {
+		t.Fatalf("GetRestoreCommand = (%#v, %v, %v)", cmd, ok, err)
+	}
+	if got := cmd[len(cmd)-3:]; !reflect.DeepEqual(got, []string{"resume", "thread-123", prompt}) {
+		t.Fatalf("restore suffix = %#v", got)
 	}
 }
 
