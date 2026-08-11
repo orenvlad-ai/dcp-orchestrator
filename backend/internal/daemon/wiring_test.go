@@ -635,6 +635,10 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 
 func (f *fakeSessionLifecycle) SetShellTerminalCloser(sessionmanager.ShellTerminalCloser) {}
 
+func (f *fakeSessionLifecycle) ResumeDCPReviewLabIdleAgent(context.Context, domain.SessionID, string) (sessionmanager.RestoreResult, error) {
+	return sessionmanager.RestoreResult{}, nil
+}
+
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile
 // check) and that Reconcile and RestoreAll dispatch correctly through the

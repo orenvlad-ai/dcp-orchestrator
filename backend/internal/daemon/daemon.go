@@ -211,9 +211,14 @@ func Run() error {
 		scmProvider = nil
 	}
 	var prActions prsvc.ActionManager
+	var terminalMerger *dcpterminalmerge.Engine
 	if scmProvider != nil {
 		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: scmProvider, Reader: scmProvider})
-		terminalMerger := dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
+		terminalMerger = dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
+		terminalMerger.SetRefreshWaker(func(wakeCtx context.Context, id domain.SessionID, prompt string) error {
+			_, wakeErr := sessMgr.ResumeDCPReviewLabIdleAgent(wakeCtx, id, prompt)
+			return wakeErr
+		})
 		triggerTerminalMerge := func(_ context.Context, id domain.SessionID) {
 			go func() {
 				if mergeErr := terminalMerger.Try(ctx, id); mergeErr != nil && !errors.Is(mergeErr, context.Canceled) {
@@ -223,11 +228,6 @@ func Run() error {
 		}
 		reviewSvc.SetApprovedStructuredHandler(triggerTerminalMerge)
 		lcStack.LCM.SetTerminalMergeEligibilityHandler(triggerTerminalMerge)
-		go func() {
-			if mergeErr := terminalMerger.ReconcileStartup(ctx); mergeErr != nil && !errors.Is(mergeErr, context.Canceled) {
-				log.Warn("DCP synthetic terminal merge reconciliation failed closed", "err", mergeErr)
-			}
-		}()
 	}
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
@@ -374,6 +374,11 @@ func Run() error {
 	}
 	if reconcileErr := reviewSvc.ReconcileStartup(ctx); reconcileErr != nil {
 		log.Error("reconcile reviews on boot failed", "err", reconcileErr)
+	}
+	if terminalMerger != nil {
+		if reconcileErr := terminalMerger.ReconcileStartup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			log.Warn("DCP admission reconciliation failed closed", "err", reconcileErr)
+		}
 	}
 
 	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.

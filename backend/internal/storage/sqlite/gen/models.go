@@ -30,6 +30,27 @@ type ChangeLog struct {
 	CreatedAt time.Time
 }
 
+type DcpReviewLabAdmission struct {
+	Sequence         int64
+	ID               string
+	ReviewRunID      string
+	ReviewID         string
+	SessionID        string
+	PRURL            string
+	PRNumber         int64
+	TargetSha        string
+	ReviewBaseSha    string
+	AdmittedBaseSha  string
+	Status           string
+	LeaseID          string
+	MergeCommitSha   string
+	ErrorCode        string
+	IncidentPacket   string
+	RefreshWakeCount int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string

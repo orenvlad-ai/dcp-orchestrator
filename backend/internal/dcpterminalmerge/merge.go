@@ -1,19 +1,24 @@
-// Package dcpterminalmerge owns the one bounded terminal merge authorized for
-// the synthetic DCP review lab. It is deliberately not a general auto-merge
-// policy: every project, repository, session, worktree, branch, PR, head,
-// structured verdict and provider readiness fact is exact and fail-closed.
+// Package dcpterminalmerge owns the bounded I13 mechanical Admission
+// Controller for the synthetic DCP review lab. It extends the historical
+// exact-head terminal merge without becoming a general auto-merge policy:
+// native cards and ReviewRuns keep their identity, SQLite owns one FIFO lease,
+// and every repository/PR/head/review/check/provider fact is fail-closed.
 package dcpterminalmerge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -24,7 +29,7 @@ import (
 const (
 	ProjectID          = "dcp-review-lab"
 	SessionPrefix      = "dcp-review-lab"
-	ProfileAgentRules  = "DCP synthetic PR profile v1. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. Implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Do not merge; only the trusted DCP daemon may perform the terminal merge after exact-head review and checks."
+	ProfileAgentRules  = "DCP synthetic PR profile v2. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. On the initial call implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Only if the trusted DCP daemon issues the single bounded admission-refresh continuation may the same worker rebase that branch onto the exact named origin/main, keep the same pull request, push with exact force-with-lease, and stop; abort without push on any conflict or ambiguity. Do not merge; only the trusted DCP daemon may perform terminal merge after exact-head review, checks, and admission."
 	TaskDisplayPrefix  = "DCP:"
 	TaskPromptPrefix   = "DCP synthetic task "
 	RepositoryFullName = "orenvlad-ai/dcp-review-lab"
@@ -34,15 +39,28 @@ const (
 	structuredChannel  = "structured_dcp_v1"
 )
 
+var (
+	errCanonicalDiverged  = errors.New("dcp admission: canonical main cannot fast-forward to provider base")
+	errCanonicalBaseDrift = errors.New("dcp admission: provider and fetched main differ")
+)
+
 type Store interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListAllSessions(context.Context) ([]domain.SessionRecord, error)
 	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
 	ListPRsBySession(context.Context, domain.SessionID) ([]domain.PullRequest, error)
 	ListReviewRunsBySession(context.Context, domain.SessionID) ([]domain.ReviewRun, error)
-	ClaimDCPReviewLabTerminalMerge(context.Context, domain.ReviewRun) (bool, error)
-	CompleteDCPReviewLabTerminalMerge(context.Context, string, string) (bool, error)
-	FailDCPReviewLabTerminalMerge(context.Context, string, string) (bool, error)
+	EnqueueDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission) (domain.DCPReviewLabAdmission, bool, error)
+	GetDCPReviewLabAdmissionByRun(context.Context, string) (domain.DCPReviewLabAdmission, bool, error)
+	GetClaimedDCPReviewLabAdmission(context.Context) (domain.DCPReviewLabAdmission, bool, error)
+	ListDCPReviewLabAdmissions(context.Context) ([]domain.DCPReviewLabAdmission, error)
+	GetRefreshingDCPReviewLabAdmissionBySession(context.Context, domain.SessionID) (domain.DCPReviewLabAdmission, bool, error)
+	ResumeDCPReviewLabAdmissionAfterRefresh(context.Context, domain.DCPReviewLabAdmission, domain.ReviewRun, string, time.Time) (bool, error)
+	ClaimDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission, string, string, time.Time) (bool, error)
+	CompleteDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission, string, time.Time) (bool, error)
+	FailDCPReviewLabAdmission(context.Context, domain.DCPReviewLabAdmission, string, time.Time) (bool, error)
+	StartDCPReviewLabRefresh(context.Context, domain.DCPReviewLabAdmission, string, string, time.Time) (bool, error)
+	RecordDCPReviewLabIncident(context.Context, domain.DCPReviewLabAdmission, string, string, string, string, time.Time) (bool, error)
 }
 
 type SCM interface {
@@ -51,126 +69,334 @@ type SCM interface {
 	MergePullRequest(context.Context, ports.SCMMergeRequest) (ports.SCMMergeResult, error)
 }
 
+type RefreshWaker func(context.Context, domain.SessionID, string) error
+
 type Engine struct {
 	store   Store
 	scm     SCM
 	dataDir string
 	mu      sync.Mutex
-	locks   map[domain.SessionID]*sync.Mutex
 	git     func(context.Context, string, ...string) (string, error)
+	wake    RefreshWaker
+	clock   func() time.Time
 }
 
 func New(store Store, scm SCM, dataDir string) *Engine {
 	return &Engine{
-		store:   store,
-		scm:     scm,
-		dataDir: filepath.Clean(dataDir),
-		locks:   map[domain.SessionID]*sync.Mutex{},
-		git:     gitOutput,
+		store: store, scm: scm, dataDir: filepath.Clean(dataDir),
+		git: gitOutput, clock: func() time.Time { return time.Now().UTC() },
 	}
 }
 
-// ReconcileStartup closes an uncertain already-claimed action from fresh SCM
-// facts and considers each still-unclaimed exact-profile session once. It never
-// retries a failed or uncertain provider mutation.
+func (e *Engine) SetRefreshWaker(wake RefreshWaker) { e.wake = wake }
+
+// ReconcileStartup first fences or completes the one persisted merge owner,
+// then deterministically enrols exact approved sessions and drains at most the
+// bounded FIFO. It starts no model merely to discover state.
 func (e *Engine) ReconcileStartup(ctx context.Context) error {
-	if e == nil || e.store == nil {
-		return errors.New("dcp terminal merge: store is not configured")
+	if err := e.configured(); err != nil {
+		return err
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if claimed, ok, err := e.store.GetClaimedDCPReviewLabAdmission(ctx); err != nil {
+		return err
+	} else if ok {
+		continued, reconcileErr := e.reconcileClaimed(ctx, claimed)
+		if reconcileErr != nil || !continued {
+			return reconcileErr
+		}
+	}
+
 	sessions, err := e.store.ListAllSessions(ctx)
 	if err != nil {
 		return err
 	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+	})
 	for _, session := range sessions {
 		if eligibleSessionID(session.ID) {
-			if err := e.Try(ctx, session.ID); err != nil {
+			if err := e.enrol(ctx, session.ID); err != nil {
 				return err
 			}
 		}
 	}
-	return nil
+	return e.drain(ctx)
 }
 
-// Try performs at most one provider mutation for the exact approved head. A
-// not-yet-ready session is a successful no-op and will be reconsidered only on
-// a later lifecycle/SCM event or one startup reconciliation.
+// Try is the single event entry. Lifecycle and stock SCM callbacks may race,
+// but the process mutex and SQLite's partial unique index admit one owner.
 func (e *Engine) Try(ctx context.Context, sessionID domain.SessionID) error {
-	if e == nil || e.store == nil || e.scm == nil || strings.TrimSpace(e.dataDir) == "" {
-		return errors.New("dcp terminal merge: dependencies are not configured")
+	if err := e.configured(); err != nil {
+		return err
 	}
 	if !eligibleSessionID(sessionID) {
 		return nil
 	}
-	unlock := e.lock(sessionID)
-	defer unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.enrol(ctx, sessionID); err != nil {
+		return err
+	}
+	return e.drain(ctx)
+}
 
+func (e *Engine) configured() error {
+	if e == nil || e.store == nil || e.scm == nil || strings.TrimSpace(e.dataDir) == "" || e.clock == nil {
+		return errors.New("dcp admission: dependencies are not configured")
+	}
+	return nil
+}
+
+func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 	candidate, ok, err := e.candidate(ctx, sessionID)
 	if err != nil || !ok {
 		return err
 	}
-	if candidate.run.TerminalMergeStatus == "succeeded" || candidate.run.TerminalMergeStatus == "failed" {
+	if candidate.run.TerminalMergeStatus != "" {
 		return nil
 	}
-
+	if existing, ok, err := e.store.GetDCPReviewLabAdmissionByRun(ctx, candidate.run.ID); err != nil {
+		return err
+	} else if ok {
+		if existing.Status == domain.DCPAdmissionRefreshing && candidate.session.Metadata.RuntimeLaunchID == "" {
+			observation, _, freshErr := e.fresh(ctx, candidate.pr)
+			if freshErr != nil {
+				return freshErr
+			}
+			if strings.EqualFold(observation.PR.HeadSHA, existing.TargetSHA) {
+				return e.recordIncident(ctx, existing, candidate, observation, "refresh_did_not_produce_new_head")
+			}
+		}
+		return nil
+	}
 	observation, review, err := e.fresh(ctx, candidate.pr)
 	if err != nil {
 		return err
 	}
-	if candidate.run.TerminalMergeStatus == "running" {
-		if observation.PR.Merged && strings.EqualFold(observation.PR.HeadSHA, candidate.run.TargetSHA) && validSHA(observation.PR.MergeCommitSHA) {
-			updated, updateErr := e.store.CompleteDCPReviewLabTerminalMerge(ctx, candidate.run.ID, strings.ToLower(observation.PR.MergeCommitSHA))
-			if updateErr != nil {
-				return updateErr
-			}
-			if !updated {
-				return errors.New("dcp terminal merge: running action could not be reconciled")
-			}
-			return nil
-		}
-		_, failErr := e.store.FailDCPReviewLabTerminalMerge(ctx, candidate.run.ID, "uncertain_restart")
-		return failErr
-	}
-	if !ready(candidate, observation, review) {
+	if !admissionFacts(candidate, observation, review) {
 		return nil
 	}
-	if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA); err != nil {
+	now := e.clock()
+	if refreshing, ok, err := e.store.GetRefreshingDCPReviewLabAdmissionBySession(ctx, candidate.session.ID); err != nil {
 		return err
+	} else if ok {
+		if refreshing.PRURL != candidate.pr.URL || refreshing.PRNumber != int64(candidate.pr.Number) ||
+			strings.EqualFold(refreshing.TargetSHA, candidate.run.TargetSHA) || refreshing.RefreshWakeCount != 1 {
+			return e.recordIncident(ctx, refreshing, candidate, observation, "refresh_identity_drift")
+		}
+		updated, updateErr := e.store.ResumeDCPReviewLabAdmissionAfterRefresh(ctx, refreshing, candidate.run, strings.ToLower(observation.PR.BaseSHA), now)
+		if updateErr != nil {
+			return updateErr
+		}
+		if !updated {
+			return e.recordIncident(ctx, refreshing, candidate, observation, "refresh_transition_rejected")
+		}
+		return nil
 	}
-	claimed, err := e.store.ClaimDCPReviewLabTerminalMerge(ctx, candidate.run)
-	if err != nil || !claimed {
-		return err
-	}
-	result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
-		PR: ports.SCMPRRef{
-			Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
-			Number: candidate.pr.Number,
-			URL:    candidate.pr.URL,
-		},
-		ExpectedHeadSHA: candidate.run.TargetSHA,
-		Method:          ports.SCMMergeSquash,
+	_, _, err = e.store.EnqueueDCPReviewLabAdmission(ctx, domain.DCPReviewLabAdmission{
+		ID: "dcp-admission-" + candidate.run.ID, ReviewRunID: candidate.run.ID, ReviewID: candidate.run.ReviewID,
+		SessionID: candidate.session.ID, PRURL: candidate.pr.URL, PRNumber: int64(candidate.pr.Number),
+		TargetSHA: strings.ToLower(candidate.run.TargetSHA), ReviewBaseSHA: strings.ToLower(observation.PR.BaseSHA),
+		Status: domain.DCPAdmissionWaiting, CreatedAt: now, UpdatedAt: now,
 	})
-	if mergeErr != nil {
-		_, failErr := e.store.FailDCPReviewLabTerminalMerge(ctx, candidate.run.ID, mergeErrorCode(mergeErr))
-		if failErr != nil {
-			return errors.Join(mergeErr, failErr)
+	return err
+}
+
+// drain processes only the durable queue head. A successful merge immediately
+// re-reads the next row in this same model-free event; pending provider facts,
+// refresh, failure, or incident stop without a timer or poll loop.
+func (e *Engine) drain(ctx context.Context) error {
+	for {
+		if claimed, ok, err := e.store.GetClaimedDCPReviewLabAdmission(ctx); err != nil {
+			return err
+		} else if ok {
+			continued, reconcileErr := e.reconcileClaimed(ctx, claimed)
+			if reconcileErr != nil || !continued {
+				return reconcileErr
+			}
+			continue
 		}
-		return mergeErr
-	}
-	if !validSHA(result.MergeCommitSHA) {
-		_, failErr := e.store.FailDCPReviewLabTerminalMerge(ctx, candidate.run.ID, "invalid_merge_result")
-		if failErr != nil {
-			return failErr
+		admission, ok, err := e.nextPending(ctx)
+		if err != nil || !ok {
+			return err
 		}
-		return errors.New("dcp terminal merge: provider returned an invalid merge commit")
+		if admission.Status == domain.DCPAdmissionRefreshing || admission.Status == domain.DCPAdmissionIncident {
+			return nil
+		}
+		if admission.Status != domain.DCPAdmissionWaiting {
+			return errors.New("dcp admission: invalid pending queue state")
+		}
+		if ready, cohortErr := e.cohortReady(ctx, admission); cohortErr != nil || !ready {
+			return cohortErr
+		}
+		continued, err := e.processWaiting(ctx, admission)
+		if err != nil || !continued {
+			return err
+		}
 	}
-	updated, err := e.store.CompleteDCPReviewLabTerminalMerge(ctx, candidate.run.ID, strings.ToLower(result.MergeCommitSHA))
+}
+
+func (e *Engine) nextPending(ctx context.Context) (domain.DCPReviewLabAdmission, bool, error) {
+	rows, err := e.store.ListDCPReviewLabAdmissions(ctx)
 	if err != nil {
-		return err
+		return domain.DCPReviewLabAdmission{}, false, err
 	}
-	if !updated {
-		return errors.New("dcp terminal merge: completed provider mutation could not be recorded")
+	for _, row := range rows {
+		switch row.Status {
+		case domain.DCPAdmissionWaiting, domain.DCPAdmissionRefreshing, domain.DCPAdmissionIncident:
+			return row, true, nil
+		case domain.DCPAdmissionClaimed:
+			return domain.DCPReviewLabAdmission{}, false, errors.New("dcp admission: claimed row escaped owner reconciliation")
+		}
 	}
-	return nil
+	return domain.DCPReviewLabAdmission{}, false, nil
+}
+
+func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	if admission.SessionID != "dcp-review-lab-8" && admission.SessionID != "dcp-review-lab-9" {
+		return true, nil
+	}
+	rows, err := e.store.ListDCPReviewLabAdmissions(ctx)
+	if err != nil {
+		return false, err
+	}
+	present := map[domain.SessionID]bool{}
+	for _, row := range rows {
+		if row.SessionID == "dcp-review-lab-8" || row.SessionID == "dcp-review-lab-9" {
+			present[row.SessionID] = true
+		}
+	}
+	return present["dcp-review-lab-8"] && present["dcp-review-lab-9"], nil
+}
+
+func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	candidate, ok, err := e.candidateForAdmission(ctx, admission)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, e.recordIncident(ctx, admission, mergeCandidate{}, ports.SCMObservation{}, "claimed_identity_drift")
+	}
+	observation, _, err := e.fresh(ctx, candidate.pr)
+	if err != nil {
+		return false, err
+	}
+	if observation.PR.Merged && strings.EqualFold(observation.PR.HeadSHA, admission.TargetSHA) && validSHA(observation.PR.MergeCommitSHA) {
+		updated, updateErr := e.store.CompleteDCPReviewLabAdmission(ctx, admission, strings.ToLower(observation.PR.MergeCommitSHA), e.clock())
+		if updateErr != nil {
+			return false, updateErr
+		}
+		if !updated {
+			return false, errors.New("dcp admission: claimed action could not be reconciled")
+		}
+		return true, nil
+	}
+	return false, e.recordIncident(ctx, admission, candidate, observation, "uncertain_restart")
+}
+
+func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	candidate, ok, err := e.candidateForAdmission(ctx, admission)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, e.recordIncident(ctx, admission, mergeCandidate{}, ports.SCMObservation{}, "waiting_identity_drift")
+	}
+	observation, review, err := e.fresh(ctx, candidate.pr)
+	if err != nil {
+		return false, err
+	}
+	if !admissionFacts(candidate, observation, review) {
+		if providerIdentityDrift(candidate, observation) {
+			return false, e.recordIncident(ctx, admission, candidate, observation, "provider_identity_drift")
+		}
+		return false, nil
+	}
+	baseSHA := strings.ToLower(observation.PR.BaseSHA)
+	switch mergeDisposition(observation) {
+	case dispositionWait:
+		return false, nil
+	case dispositionIncident:
+		return false, e.recordIncident(ctx, admission, candidate, observation, "merge_conflict_or_ambiguity")
+	case dispositionRefresh:
+		if admission.SessionID == "dcp-review-lab-7" {
+			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_not_authorized")
+		}
+		if err := e.syncCanonicalMain(ctx, candidate, baseSHA); err != nil {
+			if errors.Is(err, errCanonicalDiverged) || errors.Is(err, errCanonicalBaseDrift) {
+				return false, e.recordIncident(ctx, admission, candidate, observation, "canonical_main_diverged")
+			}
+			return false, err
+		}
+		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, baseSHA); err != nil {
+			return false, err
+		}
+		leaseID := "dcp-refresh-" + admission.ID
+		started, err := e.store.StartDCPReviewLabRefresh(ctx, admission, leaseID, baseSHA, e.clock())
+		if err != nil || !started {
+			return false, err
+		}
+		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA, admission.RefreshWakeCount = domain.DCPAdmissionRefreshing, leaseID, baseSHA, 1
+		if e.wake == nil {
+			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_waker_unavailable")
+		}
+		if err := e.wake(ctx, admission.SessionID, refreshPrompt(candidate, admission, baseSHA)); err != nil {
+			if incidentErr := e.recordIncident(ctx, admission, candidate, observation, "refresh_launch_failed"); incidentErr != nil {
+				return false, errors.Join(err, incidentErr)
+			}
+			return false, err
+		}
+		return false, nil
+	case dispositionMerge:
+		if err := e.syncCanonicalMain(ctx, candidate, baseSHA); err != nil {
+			if errors.Is(err, errCanonicalDiverged) || errors.Is(err, errCanonicalBaseDrift) {
+				return false, e.recordIncident(ctx, admission, candidate, observation, "canonical_main_diverged")
+			}
+			return false, err
+		}
+		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, baseSHA); err != nil {
+			return false, err
+		}
+		leaseID := "dcp-merge-" + admission.ID
+		claimed, err := e.store.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, baseSHA, e.clock())
+		if err != nil || !claimed {
+			return false, err
+		}
+		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, baseSHA
+		result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
+			PR: ports.SCMPRRef{
+				Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
+				Number: candidate.pr.Number, URL: candidate.pr.URL,
+			},
+			ExpectedHeadSHA: candidate.run.TargetSHA,
+			Method:          ports.SCMMergeSquash,
+		})
+		if mergeErr != nil {
+			if incidentErr := e.recordIncident(ctx, admission, candidate, observation, mergeErrorCode(mergeErr)); incidentErr != nil {
+				return false, errors.Join(mergeErr, incidentErr)
+			}
+			return false, mergeErr
+		}
+		if !validSHA(result.MergeCommitSHA) {
+			return false, e.recordIncident(ctx, admission, candidate, observation, "invalid_merge_result")
+		}
+		updated, err := e.store.CompleteDCPReviewLabAdmission(ctx, admission, strings.ToLower(result.MergeCommitSHA), e.clock())
+		if err != nil {
+			return false, err
+		}
+		if !updated {
+			return false, errors.New("dcp admission: completed provider mutation could not be recorded")
+		}
+		return true, nil
+	default:
+		return false, errors.New("dcp admission: unknown disposition")
+	}
 }
 
 type mergeCandidate struct {
@@ -178,6 +404,19 @@ type mergeCandidate struct {
 	project domain.ProjectRecord
 	pr      domain.PullRequest
 	run     domain.ReviewRun
+}
+
+func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
+	candidate, ok, err := e.candidate(ctx, admission.SessionID)
+	if err != nil || !ok {
+		return mergeCandidate{}, false, err
+	}
+	if candidate.run.ID != admission.ReviewRunID || candidate.run.ReviewID != admission.ReviewID ||
+		candidate.pr.URL != admission.PRURL || int64(candidate.pr.Number) != admission.PRNumber ||
+		!strings.EqualFold(candidate.run.TargetSHA, admission.TargetSHA) {
+		return mergeCandidate{}, false, nil
+	}
+	return candidate, true, nil
 }
 
 func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandidate, bool, error) {
@@ -259,15 +498,14 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObservation, ports.SCMReviewObservation, error) {
 	ref := ports.SCMPRRef{
 		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
-		Number: pr.Number,
-		URL:    pr.URL,
+		Number: pr.Number, URL: pr.URL,
 	}
 	observations, err := e.scm.FetchPullRequests(ctx, []ports.SCMPRRef{ref})
 	if err != nil {
 		return ports.SCMObservation{}, ports.SCMReviewObservation{}, err
 	}
 	if len(observations) != 1 || !observations[0].Fetched {
-		return ports.SCMObservation{}, ports.SCMReviewObservation{}, errors.New("dcp terminal merge: exact PR could not be refreshed")
+		return ports.SCMObservation{}, ports.SCMReviewObservation{}, errors.New("dcp admission: exact PR could not be refreshed")
 	}
 	review, err := e.scm.FetchReviewThreads(ctx, ref)
 	if err != nil {
@@ -276,19 +514,8 @@ func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObs
 	return observations[0], review, nil
 }
 
-func ready(candidate mergeCandidate, observation ports.SCMObservation, review ports.SCMReviewObservation) bool {
-	pr := observation.PR
-	if observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != RepositoryFullName ||
-		pr.Number != candidate.pr.Number || pr.URL != candidate.pr.URL || pr.HeadRepo != RepositoryFullName ||
-		pr.SourceBranch != candidate.pr.SourceBranch || pr.TargetBranch != TargetBranch ||
-		!strings.EqualFold(pr.HeadSHA, candidate.run.TargetSHA) || !strings.EqualFold(pr.BaseSHA, candidate.pr.BaseSHA) ||
-		pr.State != string(domain.PRStateOpen) || pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
-		pr.Draft || pr.Merged || pr.Closed ||
-		pr.ProviderMergeable != "MERGEABLE" || pr.ProviderMergeStateStatus != "CLEAN" ||
-		observation.Mergeability.State != string(domain.MergeMergeable) || !observation.Mergeability.Mergeable || len(observation.Mergeability.Blockers) != 0 || review.Partial {
-		return false
-	}
-	if !knownNonBlockingReviewDecision(review.Decision) || hasBlockingReview(review) {
+func admissionFacts(candidate mergeCandidate, observation ports.SCMObservation, review ports.SCMReviewObservation) bool {
+	if providerIdentityDrift(candidate, observation) || review.Partial || !knownNonBlockingReviewDecision(review.Decision) || hasBlockingReview(review) {
 		return false
 	}
 	if len(observation.CI.Checks) == 0 || observation.CI.Summary != string(domain.CIPassing) || !strings.EqualFold(observation.CI.HeadSHA, candidate.run.TargetSHA) {
@@ -309,6 +536,45 @@ func ready(candidate mergeCandidate, observation ports.SCMObservation, review po
 	return required == 1
 }
 
+func providerIdentityDrift(candidate mergeCandidate, observation ports.SCMObservation) bool {
+	pr := observation.PR
+	return observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != RepositoryFullName ||
+		pr.Number != candidate.pr.Number || pr.URL != candidate.pr.URL || pr.HeadRepo != RepositoryFullName ||
+		pr.SourceBranch != candidate.pr.SourceBranch || pr.TargetBranch != TargetBranch ||
+		!strings.EqualFold(pr.HeadSHA, candidate.run.TargetSHA) || !validSHA(pr.BaseSHA) ||
+		pr.State != string(domain.PRStateOpen) || pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
+		pr.Draft || pr.Merged || pr.Closed
+}
+
+type disposition int
+
+const (
+	dispositionWait disposition = iota
+	dispositionMerge
+	dispositionRefresh
+	dispositionIncident
+)
+
+func mergeDisposition(observation ports.SCMObservation) disposition {
+	pr := observation.PR
+	if pr.ProviderMergeable == "MERGEABLE" && pr.ProviderMergeStateStatus == "CLEAN" &&
+		observation.Mergeability.State == string(domain.MergeMergeable) && observation.Mergeability.Mergeable && len(observation.Mergeability.Blockers) == 0 {
+		return dispositionMerge
+	}
+	if pr.ProviderMergeable == "MERGEABLE" && pr.ProviderMergeStateStatus == "BEHIND" &&
+		observation.Mergeability.State == string(domain.MergeMergeable) && observation.Mergeability.Mergeable {
+		return dispositionRefresh
+	}
+	if pr.ProviderMergeable == "CONFLICTING" || pr.ProviderMergeStateStatus == "DIRTY" || observation.Mergeability.State == string(domain.MergeConflicting) {
+		return dispositionIncident
+	}
+	return dispositionWait
+}
+
+func ready(candidate mergeCandidate, observation ports.SCMObservation, review ports.SCMReviewObservation) bool {
+	return admissionFacts(candidate, observation, review) && mergeDisposition(observation) == dispositionMerge
+}
+
 func hasBlockingReview(review ports.SCMReviewObservation) bool {
 	for _, thread := range review.Threads {
 		if !thread.Resolved {
@@ -322,10 +588,53 @@ func knownNonBlockingReviewDecision(decision string) bool {
 	return decision == string(domain.ReviewNone) || decision == string(domain.ReviewApproved)
 }
 
-func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head string) error {
+func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate, baseSHA string) error {
+	if !validSHA(baseSHA) {
+		return errors.New("dcp admission: provider base SHA is invalid")
+	}
+	projectPath := candidate.project.Path
+	prechecks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"rev-parse", "--show-toplevel"}, projectPath},
+		{[]string{"branch", "--show-current"}, TargetBranch},
+		{[]string{"remote"}, "origin"},
+		{[]string{"remote", "get-url", "origin"}, RepositoryURL},
+		{[]string{"status", "--porcelain"}, ""},
+	}
+	for _, check := range prechecks {
+		got, err := e.git(ctx, projectPath, check.args...)
+		if err != nil || got != check.want {
+			return errors.New("dcp admission: canonical repository identity is not exact and clean")
+		}
+	}
+	if _, err := e.git(ctx, projectPath, "fetch", "--no-tags", "origin", TargetBranch); err != nil {
+		return fmt.Errorf("dcp admission: fetch canonical main: %w", err)
+	}
+	originMain, err := e.git(ctx, projectPath, "rev-parse", "origin/main")
+	if err != nil || !strings.EqualFold(originMain, baseSHA) {
+		return errCanonicalBaseDrift
+	}
+	head, err := e.git(ctx, projectPath, "rev-parse", "HEAD")
+	if err != nil || !validSHA(head) {
+		return errors.New("dcp admission: canonical main HEAD is invalid")
+	}
+	if !strings.EqualFold(head, baseSHA) {
+		if _, err := e.git(ctx, projectPath, "merge-base", "--is-ancestor", head, baseSHA); err != nil {
+			return errCanonicalDiverged
+		}
+		if _, err := e.git(ctx, projectPath, "merge", "--ff-only", "origin/main"); err != nil {
+			return fmt.Errorf("%w: %v", errCanonicalDiverged, err)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head, base string) error {
 	projectPath := candidate.project.Path
 	workspacePath := candidate.session.Metadata.WorkspacePath
-	base := strings.ToLower(candidate.pr.BaseSHA)
+	base = strings.ToLower(base)
 	checks := []struct {
 		path string
 		args []string
@@ -348,18 +657,79 @@ func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head
 	for _, check := range checks {
 		got, err := e.git(ctx, check.path, check.args...)
 		if err != nil || got != check.want {
-			return errors.New("dcp terminal merge: local repository identity is not exact and clean")
+			return errors.New("dcp admission: local repository identity is not exact and clean")
 		}
 	}
 	common, err := e.git(ctx, workspacePath, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil || !sameExactPath(common, filepath.Join(projectPath, ".git")) {
-		return errors.New("dcp terminal merge: linked worktree common git directory is foreign")
+		return errors.New("dcp admission: linked worktree common git directory is foreign")
 	}
 	private, err := e.git(ctx, workspacePath, "rev-parse", "--path-format=absolute", "--absolute-git-dir")
 	if err != nil || !sameExactPath(private, filepath.Join(projectPath, ".git", "worktrees", string(candidate.session.ID))) {
-		return errors.New("dcp terminal merge: linked worktree private git directory is foreign")
+		return errors.New("dcp admission: linked worktree private git directory is foreign")
 	}
 	return nil
+}
+
+func refreshPrompt(candidate mergeCandidate, admission domain.DCPReviewLabAdmission, baseSHA string) string {
+	return fmt.Sprintf("DCP bounded admission refresh for %s: the approved head %s is behind exact origin/main %s. Fetch origin/main, rebase only the current branch %s onto that exact SHA, and abort the rebase without commit or push if any conflict or ambiguity appears. If clean, run the repository check, push the same branch to the existing PR with --force-with-lease bound to %s, create no new PR/branch/worktree, change no task scope, then stop.",
+		candidate.session.DisplayName, admission.TargetSHA, baseSHA, candidate.session.Metadata.Branch, admission.TargetSHA)
+}
+
+type incidentPacket struct {
+	SchemaVersion            string `json:"schemaVersion"`
+	Reason                   string `json:"reason"`
+	Repository               string `json:"repository"`
+	AdmissionID              string `json:"admissionId"`
+	LeaseID                  string `json:"leaseId"`
+	Sequence                 int64  `json:"sequence"`
+	SessionID                string `json:"sessionId"`
+	TaskDisplayName          string `json:"taskDisplayName"`
+	SourceBranch             string `json:"sourceBranch"`
+	ReviewID                 string `json:"reviewId"`
+	ReviewRunID              string `json:"reviewRunId"`
+	PRURL                    string `json:"prUrl"`
+	PRNumber                 int64  `json:"prNumber"`
+	TargetSHA                string `json:"targetSha"`
+	ReviewBaseSHA            string `json:"reviewBaseSha"`
+	CurrentBaseSHA           string `json:"currentBaseSha"`
+	ProviderMergeable        string `json:"providerMergeable"`
+	ProviderMergeStateStatus string `json:"providerMergeStateStatus"`
+	EvidenceDigest           string `json:"evidenceDigest"`
+	RecordedAt               string `json:"recordedAt"`
+}
+
+func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate, observation ports.SCMObservation, reason string) error {
+	now := e.clock()
+	leaseID := admission.LeaseID
+	if leaseID == "" {
+		leaseID = "dcp-incident-" + admission.ID
+	}
+	baseSHA := strings.ToLower(observation.PR.BaseSHA)
+	if !validSHA(baseSHA) {
+		baseSHA = admission.AdmittedBaseSHA
+	}
+	if !validSHA(baseSHA) {
+		baseSHA = admission.ReviewBaseSHA
+	}
+	evidence := strings.Join([]string{RepositoryFullName, admission.ID, leaseID, string(admission.SessionID), candidate.session.DisplayName, candidate.pr.SourceBranch, admission.ReviewRunID,
+		admission.PRURL, strconv.FormatInt(admission.PRNumber, 10), strings.ToLower(admission.TargetSHA), strings.ToLower(baseSHA),
+		observation.PR.ProviderMergeable, observation.PR.ProviderMergeStateStatus, reason}, "\x00")
+	digest := sha256.Sum256([]byte(evidence))
+	packet, err := json.Marshal(incidentPacket{
+		SchemaVersion: "dcp.review-lab.arbiter-needed/v1", Reason: reason, Repository: RepositoryFullName,
+		AdmissionID: admission.ID, LeaseID: leaseID, Sequence: admission.Sequence, SessionID: string(admission.SessionID),
+		TaskDisplayName: candidate.session.DisplayName, SourceBranch: candidate.pr.SourceBranch,
+		ReviewID: admission.ReviewID, ReviewRunID: admission.ReviewRunID, PRURL: admission.PRURL, PRNumber: admission.PRNumber,
+		TargetSHA: strings.ToLower(admission.TargetSHA), ReviewBaseSHA: strings.ToLower(admission.ReviewBaseSHA), CurrentBaseSHA: strings.ToLower(baseSHA),
+		ProviderMergeable: observation.PR.ProviderMergeable, ProviderMergeStateStatus: observation.PR.ProviderMergeStateStatus,
+		EvidenceDigest: fmt.Sprintf("%x", digest), RecordedAt: now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = e.store.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, reason, string(packet), now)
+	return err
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
@@ -375,7 +745,7 @@ func eligibleSessionID(id domain.SessionID) bool {
 		return false
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(value, prefix))
-	return err == nil && n >= 7
+	return err == nil && n >= 7 && n <= 9
 }
 
 func validPRURL(raw string, number int) bool {
@@ -434,7 +804,7 @@ func validTaskIdentity(session domain.SessionRecord) bool {
 }
 
 func validTaskID(value string) bool {
-	if len(value) == 0 || len(value) > 64 || value[0] == '-' || value[len(value)-1] == '-' {
+	if len(value) == 0 || len(value) > 16 || value[0] == '-' || value[len(value)-1] == '-' {
 		return false
 	}
 	for _, r := range value {
@@ -456,20 +826,4 @@ func mergeErrorCode(err error) string {
 	default:
 		return "provider_failed"
 	}
-}
-
-func (e *Engine) lock(id domain.SessionID) func() {
-	e.mu.Lock()
-	mu := e.locks[id]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		e.locks[id] = mu
-	}
-	e.mu.Unlock()
-	mu.Lock()
-	return mu.Unlock
-}
-
-func (e *Engine) String() string {
-	return fmt.Sprintf("%s/%s", ProjectID, SessionPrefix)
 }

@@ -327,7 +327,10 @@ type RestoreConfig struct {
 	DataDir     string
 	Kind        domain.SessionKind
 	Permissions PermissionMode
-	Session     SessionRef
+	// Prompt is an optional new turn appended only to a native resume command.
+	// Callers must never replay it through a fresh-launch fallback.
+	Prompt  string
+	Session SessionRef
 	// SystemPrompt carries the session's standing instructions (e.g. the
 	// orchestrator role). Agent CLIs rebuild their system prompt from flags on
 	// resume — it is not part of the transcript — so adapters whose CLI has a

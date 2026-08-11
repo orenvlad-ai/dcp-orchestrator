@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -1196,7 +1197,7 @@ func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (Res
 }
 
 func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo) (RestoreResult, error) {
-	return m.relaunchSession(ctx, "restore", rec, project, ws, nil)
+	return m.relaunchSession(ctx, "restore", rec, project, ws, nil, "")
 }
 
 // ResumeAgentWithMode replaces an exited agent inside its still-live session.
@@ -1238,7 +1239,47 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		ProjectID: rec.ProjectID,
 	}
 	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
-	return m.relaunchSession(ctx, "resume agent", rec, project, ws, &handle)
+	return m.relaunchSession(ctx, "resume agent", rec, project, ws, &handle, "")
+}
+
+// ResumeDCPReviewLabIdleAgent starts exactly one new native Codex turn inside
+// an idle I13 synthetic worker. It is intentionally narrower than the normal
+// exited-agent resume API and is not exposed by the HTTP service.
+func (m *Manager) ResumeDCPReviewLabIdleAgent(ctx context.Context, id domain.SessionID, prompt string) (RestoreResult, error) {
+	if !m.beginAgentResume(id) {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrResumeInProgress)
+	}
+	defer m.endAgentResume(id)
+	if id != "dcp-review-lab-8" && id != "dcp-review-lab-9" {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrNotRestorable)
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" || len(prompt) > 2048 || !utf8.ValidString(prompt) || strings.ContainsAny(prompt, "\x00\r\n") {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: invalid bounded prompt", id)
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, err)
+	}
+	if !ok {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrNotFound)
+	}
+	meta := rec.Metadata
+	if rec.ProjectID != "dcp-review-lab" || rec.Kind != domain.KindWorker || rec.Harness != domain.HarnessCodex || rec.IsTerminated ||
+		rec.Activity.State != domain.ActivityIdle || meta.RuntimeLaunchID != "" || meta.WorkspacePath == "" || meta.Branch == "" ||
+		meta.RuntimeHandleID == "" || meta.AgentSessionID == "" {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrNotRestorable)
+	}
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, err)
+	}
+	if !project.Config.Worker.AgentConfig.DCPReviewLabNetwork {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: network profile unavailable", id)
+	}
+	ws := ports.WorkspaceInfo{Path: meta.WorkspacePath, Branch: meta.Branch, SessionID: rec.ID, ProjectID: rec.ProjectID}
+	handle := ports.RuntimeHandle{ID: meta.RuntimeHandleID}
+	return m.relaunchSession(ctx, "resume DCP review-lab agent", rec, project, ws, &handle, prompt)
 }
 
 func (m *Manager) beginAgentResume(id domain.SessionID) bool {
@@ -1257,7 +1298,7 @@ func (m *Manager) endAgentResume(id domain.SessionID) {
 	m.resumeMu.Unlock()
 }
 
-func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle) (RestoreResult, error) {
+func (m *Manager) relaunchSession(ctx context.Context, operation string, rec domain.SessionRecord, project domain.ProjectRecord, ws ports.WorkspaceInfo, restartHandle *ports.RuntimeHandle, continuationPrompt string) (RestoreResult, error) {
 	agent, ok := m.agents.Agent(rec.Harness)
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("%s %s: no agent adapter for harness %q", operation, rec.ID, rec.Harness)
@@ -1282,7 +1323,7 @@ func (m *Manager) relaunchSession(ctx context.Context, operation string, rec dom
 	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}
-	argv, delivery, mode, err := restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata, systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir)
+	argv, delivery, mode, err := restoreArgvWithPrompt(ctx, agent, rec.ID, ws.Path, rec.Metadata, systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, continuationPrompt)
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
@@ -3079,18 +3120,25 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // signals via ok=false (e.g. no native session id captured yet). Returns
 // ErrNotResumable when transcript-preserving restore is required but unavailable,
 // or when a promptless, unresumable worker has nothing to restore from.
-func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, harness domain.AgentHarness, dataDir string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+	return restoreArgvWithPrompt(ctx, agent, id, workspacePath, meta, systemPrompt, systemPromptFile, agentConfig, kind, harness, dataDir, "")
+}
+
+func restoreArgvWithPrompt(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir, continuationPrompt string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
 	ref := ports.SessionRef{
 		ID:            string(id),
 		WorkspacePath: workspacePath,
 		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: meta.AgentSessionID},
 	}
-	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
+	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions, Prompt: continuationPrompt})
 	if err != nil {
 		return nil, "", "", fmt.Errorf("restore command: %w", err)
 	}
 	if ok {
 		return cmd, ports.PromptDeliveryInCommand, RestoreModeNative, nil
+	}
+	if continuationPrompt != "" {
+		return nil, "", "", ErrNotResumable
 	}
 	// A saved prompt is replayed fresh. An orchestrator is promptless by design
 	// and relaunches with the system prompt only. A promptless WORKER has no task
