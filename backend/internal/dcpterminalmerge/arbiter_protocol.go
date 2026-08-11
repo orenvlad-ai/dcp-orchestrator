@@ -152,36 +152,27 @@ type arbiterInput struct {
 // ArbiterDecision is the only model-produced artifact. Validation below binds
 // every identity field to one already-persisted immutable input.
 type ArbiterDecision struct {
-	SchemaVersion   string                `json:"schemaVersion"`
-	IncidentID      string                `json:"incidentId"`
-	Generation      int64                 `json:"generation"`
-	IdentityDigest  string                `json:"identityDigest"`
-	InputDigest     string                `json:"inputDigest"`
-	AdmissionID     string                `json:"admissionId"`
-	TaskID          string                `json:"taskId"`
-	SessionID       string                `json:"sessionId"`
-	Repository      string                `json:"repository"`
-	PRURL           string                `json:"prUrl"`
-	PRNumber        int64                 `json:"prNumber"`
-	TargetSHA       string                `json:"targetSha"`
-	CurrentBaseSHA  string                `json:"currentBaseSha"`
-	Verdict         string                `json:"verdict"`
-	RecoveryOwner   *ArbiterRecoveryOwner `json:"recoveryOwner,omitempty"`
-	RecoveryPath    *ArbiterRecoveryPath  `json:"recoveryPath,omitempty"`
-	SafeStopCode    string                `json:"safeStopCode,omitempty"`
-	Summary         string                `json:"summary"`
-	EvidenceDigests []string              `json:"evidenceDigests"`
-}
-
-type ArbiterRecoveryOwner struct {
-	Kind      string `json:"kind"`
-	SessionID string `json:"sessionId"`
-}
-
-type ArbiterRecoveryPath struct {
-	Kind            string `json:"kind"`
-	MaxWorkerCalls  int64  `json:"maxWorkerCalls"`
-	MaxFreshReviews int64  `json:"maxFreshReviews"`
+	SchemaVersion          string   `json:"schemaVersion"`
+	IncidentID             string   `json:"incidentId"`
+	Generation             int64    `json:"generation"`
+	IdentityDigest         string   `json:"identityDigest"`
+	InputDigest            string   `json:"inputDigest"`
+	AdmissionID            string   `json:"admissionId"`
+	TaskID                 string   `json:"taskId"`
+	SessionID              string   `json:"sessionId"`
+	Repository             string   `json:"repository"`
+	PRURL                  string   `json:"prUrl"`
+	PRNumber               int64    `json:"prNumber"`
+	TargetSHA              string   `json:"targetSha"`
+	CurrentBaseSHA         string   `json:"currentBaseSha"`
+	Verdict                string   `json:"verdict"`
+	RecoveryOwnerSessionID string   `json:"recoveryOwnerSessionId"`
+	RecoveryPath           string   `json:"recoveryPath"`
+	MaxWorkerCalls         int64    `json:"maxWorkerCalls"`
+	MaxFreshReviews        int64    `json:"maxFreshReviews"`
+	SafeStopCode           string   `json:"safeStopCode"`
+	Summary                string   `json:"summary"`
+	EvidenceDigests        []string `json:"evidenceDigests"`
 }
 
 func arbiterTask(session domain.SessionRecord) (string, string, bool) {
@@ -528,28 +519,26 @@ func ArbiterDecisionJSONSchema(incident domain.DCPReleaseArbiterIncident) ([]byt
 	if incident.IncidentID == "" || !validDigest(incident.IdentityDigest) || !validDigest(incident.InputDigest) || !validSHA(incident.TargetSHA) || !validSHA(incident.CurrentBaseSHA) {
 		return nil, errors.New("dcp arbiter: decision schema identity is invalid")
 	}
-	constValue := func(value any) map[string]any { return map[string]any{"const": value} }
+	constValue := func(value any) map[string]any { return map[string]any{"enum": []any{value}} }
 	properties := map[string]any{
 		"schemaVersion": constValue(ArbiterDecisionSchema), "incidentId": constValue(incident.IncidentID),
 		"generation": constValue(int64(1)), "identityDigest": constValue(incident.IdentityDigest), "inputDigest": constValue(incident.InputDigest),
 		"admissionId": constValue(incident.AdmissionID), "taskId": constValue(incident.TaskID), "sessionId": constValue(string(incident.SessionID)),
 		"repository": constValue(RepositoryFullName), "prUrl": constValue(incident.PRURL), "prNumber": constValue(incident.PRNumber),
 		"targetSha": constValue(incident.TargetSHA), "currentBaseSha": constValue(incident.CurrentBaseSHA),
-		"verdict":         map[string]any{"enum": []string{"assign_recovery", "safe_stop"}},
-		"recoveryOwner":   map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "sessionId"}, "properties": map[string]any{"kind": constValue("same_worker"), "sessionId": constValue(string(incident.SessionID))}},
-		"recoveryPath":    map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "maxWorkerCalls", "maxFreshReviews"}, "properties": map[string]any{"kind": constValue("same_worker_conflict_repair"), "maxWorkerCalls": constValue(int64(1)), "maxFreshReviews": constValue(int64(1))}},
-		"safeStopCode":    map[string]any{"enum": []string{"scope_not_proven", "identity_ambiguous", "evidence_incomplete", "no_safe_bounded_path"}},
-		"summary":         map[string]any{"type": "string", "minLength": 1, "maxLength": 512},
-		"evidenceDigests": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+		"verdict":                map[string]any{"enum": []string{"assign_recovery", "safe_stop"}},
+		"recoveryOwnerSessionId": map[string]any{"enum": []string{"", string(incident.SessionID)}},
+		"recoveryPath":           map[string]any{"enum": []string{"", "same_worker_conflict_repair"}},
+		"maxWorkerCalls":         map[string]any{"enum": []int64{0, 1}},
+		"maxFreshReviews":        map[string]any{"enum": []int64{0, 1}},
+		"safeStopCode":           map[string]any{"enum": []string{"", "scope_not_proven", "identity_ambiguous", "evidence_incomplete", "no_safe_bounded_path"}},
+		"summary":                map[string]any{"type": "string"},
+		"evidenceDigests":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 	}
 	schema := map[string]any{
-		"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
-		"required":   []string{"schemaVersion", "incidentId", "generation", "identityDigest", "inputDigest", "admissionId", "taskId", "sessionId", "repository", "prUrl", "prNumber", "targetSha", "currentBaseSha", "verdict", "summary", "evidenceDigests"},
+		"type": "object", "additionalProperties": false,
+		"required":   []string{"schemaVersion", "incidentId", "generation", "identityDigest", "inputDigest", "admissionId", "taskId", "sessionId", "repository", "prUrl", "prNumber", "targetSha", "currentBaseSha", "verdict", "recoveryOwnerSessionId", "recoveryPath", "maxWorkerCalls", "maxFreshReviews", "safeStopCode", "summary", "evidenceDigests"},
 		"properties": properties,
-		"oneOf": []any{
-			map[string]any{"properties": map[string]any{"verdict": constValue("assign_recovery")}, "required": []string{"recoveryOwner", "recoveryPath"}, "not": map[string]any{"required": []string{"safeStopCode"}}},
-			map[string]any{"properties": map[string]any{"verdict": constValue("safe_stop")}, "required": []string{"safeStopCode"}, "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"recoveryOwner"}}, map[string]any{"required": []string{"recoveryPath"}}}}},
-		},
 	}
 	return json.Marshal(schema)
 }
@@ -589,12 +578,13 @@ func ParseArbiterDecision(data []byte, incident domain.DCPReleaseArbiterIncident
 	if err := validateArbiterDecision(decision, incident); err != nil {
 		return ArbiterDecision{}, nil, err
 	}
-	_, hasOwner := raw["recoveryOwner"]
+	_, hasOwner := raw["recoveryOwnerSessionId"]
 	_, hasPath := raw["recoveryPath"]
 	_, hasSafeStop := raw["safeStopCode"]
-	if (decision.Verdict == "assign_recovery" && (!hasOwner || !hasPath || hasSafeStop)) ||
-		(decision.Verdict == "safe_stop" && (hasOwner || hasPath || !hasSafeStop)) {
-		return ArbiterDecision{}, nil, errors.New("dcp arbiter: optional decision fields do not match the selected verdict")
+	_, hasMaxWorker := raw["maxWorkerCalls"]
+	_, hasMaxReview := raw["maxFreshReviews"]
+	if !hasOwner || !hasPath || !hasSafeStop || !hasMaxWorker || !hasMaxReview {
+		return ArbiterDecision{}, nil, errors.New("dcp arbiter: required decision fields are missing")
 	}
 	canonical, err := json.Marshal(decision)
 	if err != nil {
@@ -626,13 +616,12 @@ func validateArbiterDecision(d ArbiterDecision, incident domain.DCPReleaseArbite
 	}
 	switch d.Verdict {
 	case "assign_recovery":
-		if d.RecoveryOwner == nil || d.RecoveryPath == nil || d.SafeStopCode != "" ||
-			d.RecoveryOwner.Kind != "same_worker" || d.RecoveryOwner.SessionID != string(incident.SessionID) ||
-			d.RecoveryPath.Kind != "same_worker_conflict_repair" || d.RecoveryPath.MaxWorkerCalls != 1 || d.RecoveryPath.MaxFreshReviews != 1 {
+		if d.RecoveryOwnerSessionID != string(incident.SessionID) || d.RecoveryPath != "same_worker_conflict_repair" ||
+			d.MaxWorkerCalls != 1 || d.MaxFreshReviews != 1 || d.SafeStopCode != "" {
 			return errors.New("dcp arbiter: recovery owner or path is outside the allowlist")
 		}
 	case "safe_stop":
-		if d.RecoveryOwner != nil || d.RecoveryPath != nil || !allowedSafeStop(d.SafeStopCode) {
+		if d.RecoveryOwnerSessionID != "" || d.RecoveryPath != "" || d.MaxWorkerCalls != 0 || d.MaxFreshReviews != 0 || !allowedSafeStop(d.SafeStopCode) {
 			return errors.New("dcp arbiter: safe-stop decision is malformed")
 		}
 	default:

@@ -39,9 +39,9 @@ func validAssignDecision(incident domain.DCPReleaseArbiterIncident) ArbiterDecis
 		IdentityDigest: incident.IdentityDigest, InputDigest: incident.InputDigest, AdmissionID: incident.AdmissionID,
 		TaskID: incident.TaskID, SessionID: string(incident.SessionID), Repository: RepositoryFullName,
 		PRURL: incident.PRURL, PRNumber: incident.PRNumber, TargetSHA: incident.TargetSHA, CurrentBaseSHA: incident.CurrentBaseSHA,
-		Verdict: "assign_recovery", RecoveryOwner: &ArbiterRecoveryOwner{Kind: "same_worker", SessionID: string(incident.SessionID)},
-		RecoveryPath: &ArbiterRecoveryPath{Kind: "same_worker_conflict_repair", MaxWorkerCalls: 1, MaxFreshReviews: 1},
-		Summary:      "The one exact same-worker conflict repair remains bounded.", EvidenceDigests: []string{incident.ScopeDigest, incident.MechanicalDigest},
+		Verdict: "assign_recovery", RecoveryOwnerSessionID: string(incident.SessionID), RecoveryPath: "same_worker_conflict_repair",
+		MaxWorkerCalls: 1, MaxFreshReviews: 1,
+		Summary: "The one exact same-worker conflict repair remains bounded.", EvidenceDigests: []string{incident.ScopeDigest, incident.MechanicalDigest},
 	}
 }
 
@@ -57,8 +57,8 @@ func TestArbiterDecisionAcceptsOnlyExactOwnerPathAndReferencedEvidence(t *testin
 		t.Fatalf("valid decision = %+v canonical=%s err=%v", got, canonical, err)
 	}
 	for name, mutate := range map[string]func(*ArbiterDecision){
-		"foreign owner":      func(d *ArbiterDecision) { d.RecoveryOwner.SessionID = ArbiterSessionB },
-		"second worker call": func(d *ArbiterDecision) { d.RecoveryPath.MaxWorkerCalls = 2 },
+		"foreign owner":      func(d *ArbiterDecision) { d.RecoveryOwnerSessionID = ArbiterSessionB },
+		"second worker call": func(d *ArbiterDecision) { d.MaxWorkerCalls = 2 },
 		"foreign evidence":   func(d *ArbiterDecision) { d.EvidenceDigests = []string{strings.Repeat("9", 64)} },
 		"stale head":         func(d *ArbiterDecision) { d.TargetSHA = strings.Repeat("0", 40) },
 	} {
@@ -71,9 +71,9 @@ func TestArbiterDecisionAcceptsOnlyExactOwnerPathAndReferencedEvidence(t *testin
 			}
 		})
 	}
-	nullOwner := strings.Replace(string(data), `"recoveryOwner":{"kind":"same_worker","sessionId":"dcp-review-lab-11"}`, `"recoveryOwner":null`, 1)
-	if _, _, err := ParseArbiterDecision([]byte(nullOwner), incident); err == nil {
-		t.Fatal("explicit null recovery owner was accepted")
+	missingOwner := strings.Replace(string(data), `"recoveryOwnerSessionId":"dcp-review-lab-11",`, "", 1)
+	if _, _, err := ParseArbiterDecision([]byte(missingOwner), incident); err == nil {
+		t.Fatal("missing recovery owner was accepted")
 	}
 }
 
@@ -87,6 +87,31 @@ func TestArbiterDecisionSchemaPinsEveryMutationIdentity(t *testing.T) {
 		if !strings.Contains(string(schema), exact) {
 			t.Fatalf("schema lacks exact constant %q", exact)
 		}
+	}
+	for _, forbidden := range []string{`"oneOf"`, `"anyOf"`, `"not"`, `"const"`, `"uniqueItems"`, `"$schema"`} {
+		if strings.Contains(string(schema), forbidden) {
+			t.Fatalf("schema retains unsupported composition %s", forbidden)
+		}
+	}
+}
+
+func TestArbiterDecisionSafeStopRequiresEmptyRecoverySentinels(t *testing.T) {
+	incident := exactTestArbiterIncident(t)
+	decision := validAssignDecision(incident)
+	decision.Verdict = "safe_stop"
+	decision.RecoveryOwnerSessionID = ""
+	decision.RecoveryPath = ""
+	decision.MaxWorkerCalls = 0
+	decision.MaxFreshReviews = 0
+	decision.SafeStopCode = "no_safe_bounded_path"
+	data, _ := json.Marshal(decision)
+	if _, _, err := ParseArbiterDecision(data, incident); err != nil {
+		t.Fatalf("valid safe stop rejected: %v", err)
+	}
+	decision.RecoveryOwnerSessionID = string(incident.SessionID)
+	data, _ = json.Marshal(decision)
+	if _, _, err := ParseArbiterDecision(data, incident); err == nil {
+		t.Fatal("safe stop with a recovery owner was accepted")
 	}
 }
 
