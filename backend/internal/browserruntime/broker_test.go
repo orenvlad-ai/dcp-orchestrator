@@ -183,6 +183,9 @@ func TestBrokerCancellationSendsCancelFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	enc, dec := json.NewEncoder(conn), json.NewDecoder(conn)
 	_ = enc.Encode(wireMessage{Type: "hello", Version: ProtocolVersion})
 	waitConnected(t, broker)
