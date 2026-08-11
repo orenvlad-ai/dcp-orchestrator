@@ -24,7 +24,7 @@ import (
 const (
 	ProjectID          = "dcp-review-lab"
 	SessionPrefix      = "dcp-pr-lab"
-	ProfileAgentRules  = "DCP synthetic PR profile v1. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, pull requests, or network services. Implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Do not merge; only the trusted DCP daemon may perform the terminal merge after exact-head review and checks."
+	ProfileAgentRules  = "DCP synthetic PR profile v1. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. Implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. Do not merge; only the trusted DCP daemon may perform the terminal merge after exact-head review and checks."
 	TaskDisplayPrefix  = "DCP:"
 	TaskPromptPrefix   = "DCP synthetic task "
 	RepositoryFullName = "orenvlad-ai/dcp-review-lab"
