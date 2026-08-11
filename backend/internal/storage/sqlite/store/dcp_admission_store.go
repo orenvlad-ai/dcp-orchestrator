@@ -133,6 +133,9 @@ func (s *Store) CompleteDCPReviewLabAdmission(ctx context.Context, a domain.DCPR
 	defer s.writeMu.Unlock()
 	completed := false
 	err := s.inTx(ctx, "complete DCP review-lab admission", func(q *gen.Queries) error {
+		if err := requireDCPArbiterCompletion(q, ctx, a, now); err != nil {
+			return err
+		}
 		n, err := q.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{MergeCommitSha: mergeSHA, RunID: a.ReviewRunID})
 		if err != nil {
 			return err

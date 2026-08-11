@@ -501,7 +501,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 }
 
 func eligibleDCPReviewLabWorker(id domain.SessionID) bool {
-	return id == "dcp-review-lab-7" || id == "dcp-review-lab-9" || id == "dcp-review-lab-10"
+	return id == "dcp-review-lab-7" || id == "dcp-review-lab-9" || id == "dcp-review-lab-10" || id == "dcp-review-lab-11" || id == "dcp-review-lab-12"
 }
 
 func dcpReviewLabRunBudget(id domain.SessionID, mode triggerMode, runs []domain.ReviewRun) bool {
@@ -512,7 +512,7 @@ func dcpReviewLabRunBudget(id domain.SessionID, mode triggerMode, runs []domain.
 		return false
 	}
 	limit := 1
-	if id == "dcp-review-lab-9" || id == "dcp-review-lab-10" {
+	if id == "dcp-review-lab-9" || id == "dcp-review-lab-10" || id == "dcp-review-lab-11" || id == "dcp-review-lab-12" {
 		limit = 2
 	}
 	return len(runs) < limit

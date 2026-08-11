@@ -9,20 +9,23 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `90f258a3943b824a31481bfaf132b06b442891f7`](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/AGENTS.md)
-2. [current operating contract revision `2026-08-11.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/docs/TARGET_ARCHITECTURE_V1.md)
-4. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/90f258a3943b824a31481bfaf132b06b442891f7/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `0b12727a99ddc448b5d19c252615b7bf13bd7113`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/AGENTS.md)
+2. [current operating contract revision `2026-08-11.14`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+4. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/TARGET_ARCHITECTURE_V1.md)
+5. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
 described below. The later owner-delegated canonical synthetic-PR lab change
 adds one exact-profile terminal merge only after the same trusted reviewer,
-required check and provider readiness facts succeed. I13 Stage 1 now authorizes
-exactly two new native synthetic tasks and a durable mechanical Admission
-Controller around that same terminal merge. Its exact merged pin and updated
-integration contract are applied sequentially in `dev-control-plane` after
-this source PR merges. The live
+required check and provider readiness facts succeed. I13 Stage 1 authorized
+exactly two native synthetic tasks and a durable mechanical Admission
+Controller around that same terminal merge. Its independently checked result
+and the owner-approved Stage 2 contract authorize this fresh source change to
+add exactly one bounded global release arbiter v1 for cards 11/12. Its exact
+merged pin and updated integration contract are applied sequentially in
+`dev-control-plane` after this source PR merges. The live
 `dev-control-plane` repository remains the authority for later
 architecture, operating, integration, qualification, and exact-pin changes.
 Do not copy or reinterpret those contracts here as a competing source of
@@ -101,10 +104,23 @@ exact `origin/main` while the provider retains the reviewed base SHA on a still
 ancestry and a clean merge tree; the original packet remains durably retained
 and recovery performs no model call. This does not add a second task/card
 identity, registry, database, daemon, scheduler, queue service,
-reviewer service, arbiter, Human Gate, Release Train, general retry/recovery or
+reviewer service, Human Gate, Release Train, general retry/recovery or
 auto-merge policy, hosted projection, production target, deploy path, or broad
-runtime capability. Arbiter v1 remains a separately dispatched second stage
-and must not be implemented or invoked by this change.
+runtime capability.
+
+I13 Stage 2 adds only migration 0052 and one subordinate incident/action row
+for a fresh exact `merge_conflict_or_ambiguity` packet on native card 11 or 12.
+The daemon freezes the complete Stage 2 cohort, hashes the bounded task, scope,
+candidate, checks, reviews, queue and exhausted mechanical recovery evidence,
+and permits exactly one stateless `gpt-5.6-sol`/`xhigh` call after atomically
+recording its 16,384-token ceiling and `model_call_count=1`. The model has no
+mutation or credential channel and may return only one identity-bound
+`assign_recovery` for the same worker/conflict path or a truthful `safe_stop`.
+Only the trusted daemon may consume one recovery wake, accept one fresh
+exact-head review and rebind the original FIFO row; the arbiter never merges.
+Duplicate, late, stale, foreign or malformed results and restart replay are
+inert. Cards outside 11/12, failed CI, waiting, ordinary staleness and the
+historical false `canonical_main_diverged` packet cannot open an arbiter.
 Never synthesize owner acceptance.
 
 The active Codex reviewer success path is deterministic after model exit. The

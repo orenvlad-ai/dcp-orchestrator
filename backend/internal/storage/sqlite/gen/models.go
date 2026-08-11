@@ -52,6 +52,56 @@ type DcpReviewLabAdmission struct {
 	RecoveredIncidentPacket string
 }
 
+type DcpReviewLabArbiterV1 struct {
+	IncidentID             string
+	Generation             int64
+	IdentityDigest         string
+	AdmissionID            string
+	IncidentLeaseID        string
+	SourcePacketJson       string
+	SourcePacketDigest     string
+	InputJson              string
+	InputDigest            string
+	TaskID                 string
+	SessionID              string
+	WorktreePath           string
+	SourceBranch           string
+	PRURL                  string
+	PRNumber               int64
+	TargetSha              string
+	ReviewedBaseSha        string
+	CurrentBaseSha         string
+	ReviewID               string
+	ReviewRunID            string
+	BatchID                string
+	ScopeDigest            string
+	HistoryDigest          string
+	DiffDigest             string
+	CheckSetDigest         string
+	ReviewSetDigest        string
+	FrozenQueueDigest      string
+	MechanicalDigest       string
+	Model                  string
+	Reasoning              string
+	TokenBudget            int64
+	RuntimeHandleID        string
+	LaunchID               string
+	Status                 string
+	ModelCallCount         int64
+	DecisionJson           string
+	DecisionDigest         string
+	RecoveryOwnerSessionID string
+	RecoveryPath           string
+	RecoveryWakeCount      int64
+	RecoveryReviewRunID    string
+	RecoveryTargetSha      string
+	ErrorCode              string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	DecisionAt             sql.NullTime
+	FinishedAt             sql.NullTime
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string

@@ -3,6 +3,7 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
+	"github.com/aoagents/agent-orchestrator/backend/internal/dcpterminalmerge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -65,10 +67,79 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	mountTerminalMux(r, termMgr, log)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
+	mountDCPArbiter(r, deps.DCPArbiter)
 	mountMobile(r, deps.Mobile)
 	api.Register(r)
 
 	return r
+}
+
+// DCPArbiterService is the loopback-only callback surface used by the exact
+// one-shot arbiter supervisor. It is deliberately absent from the public API
+// and OpenAPI document.
+type DCPArbiterService interface {
+	SubmitArbiterDecision(context.Context, string, []byte) error
+	ReportArbiterProcessExit(context.Context, string, dcpterminalmerge.ArbiterProcessExitReport) error
+}
+
+type dcpArbiterDecisionRequest struct {
+	IncidentID string          `json:"incidentId"`
+	Decision   json.RawMessage `json:"decision"`
+}
+
+type dcpArbiterExitRequest struct {
+	IncidentID    string `json:"incidentId"`
+	Started       bool   `json:"started"`
+	ExitCode      int    `json:"exitCode"`
+	ResultFailure string `json:"resultFailure,omitempty"`
+}
+
+func mountDCPArbiter(r chi.Router, service DCPArbiterService) {
+	if service == nil {
+		return
+	}
+	local := func(w http.ResponseWriter, req *http.Request) bool {
+		if localControlRequest(req) {
+			return true
+		}
+		envelope.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "forbidden", "service": daemonmeta.ServiceName})
+		return false
+	}
+	r.Post("/internal/dcp/review-lab/arbiter/decision", func(w http.ResponseWriter, req *http.Request) {
+		if !local(w, req) {
+			return
+		}
+		var body dcpArbiterDecisionRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 20*1024))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || body.IncidentID == "" || len(body.Decision) == 0 {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_ARBITER_RESULT", "invalid bounded arbiter result", nil)
+			return
+		}
+		if err := service.SubmitArbiterDecision(req.Context(), body.IncidentID, body.Decision); err != nil {
+			envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "ARBITER_RESULT_REJECTED", "arbiter result rejected fail-closed", nil)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	r.Post("/internal/dcp/review-lab/arbiter/process-exit", func(w http.ResponseWriter, req *http.Request) {
+		if !local(w, req) {
+			return
+		}
+		var body dcpArbiterExitRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || body.IncidentID == "" {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_ARBITER_EXIT", "invalid bounded arbiter exit", nil)
+			return
+		}
+		report := dcpterminalmerge.ArbiterProcessExitReport{Started: body.Started, ExitCode: body.ExitCode, ResultFailure: body.ResultFailure}
+		if err := service.ReportArbiterProcessExit(req.Context(), body.IncidentID, report); err != nil {
+			envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "ARBITER_EXIT_REJECTED", "arbiter exit rejected fail-closed", nil)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
 }
 
 func previewOriginMiddleware(sessions *controllers.SessionsController) func(http.Handler) http.Handler {

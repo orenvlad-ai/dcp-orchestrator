@@ -445,8 +445,8 @@ func TestDCPReviewLabAllowsTwoDistinctHeadsWithoutManualOrDuplicateReview(t *tes
 
 func TestDCPReviewLabRejectsFutureCardAutomatically(t *testing.T) {
 	worker := idleWorker()
-	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-11", "dcp-review-lab", domain.HarnessCodex
-	launcher := &fakeLauncher{handle: "review-dcp-review-lab-11"}
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-13", "dcp-review-lab", domain.HarnessCodex
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-13"}
 	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 	res, err := eng.AutoTrigger(context.Background(), worker.ID)
 	if err != nil || res.Created || launcher.spawnCount != 0 {
