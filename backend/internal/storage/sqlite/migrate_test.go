@@ -141,6 +141,80 @@ FROM dcp_review_lab_arbiter_v1_prelaunch_recovery
 	}
 }
 
+func TestArbiterResponseSchemaRecoveryPreservesExactPreInferenceAudit(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE dcp_review_lab_arbiter_v1 (
+    incident_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+    identity_digest TEXT NOT NULL, input_digest TEXT NOT NULL,
+    source_packet_digest TEXT NOT NULL, task_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, pr_number INTEGER NOT NULL, target_sha TEXT NOT NULL,
+    status TEXT NOT NULL, model_call_count INTEGER NOT NULL, error_code TEXT NOT NULL,
+    finished_at TIMESTAMP, model TEXT NOT NULL, reasoning TEXT NOT NULL,
+    token_budget INTEGER NOT NULL, runtime_handle_id TEXT NOT NULL,
+    decision_json TEXT NOT NULL, decision_digest TEXT NOT NULL,
+    recovery_wake_count INTEGER NOT NULL, updated_at TIMESTAMP NOT NULL
+);
+CREATE TABLE dcp_review_lab_arbiter_v1_prelaunch_recovery (
+    incident_id TEXT PRIMARY KEY, identity_digest TEXT NOT NULL, input_digest TEXT NOT NULL
+);
+INSERT INTO dcp_review_lab_arbiter_v1 VALUES (
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    1,
+    '2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    'f618fa8a46715acce0958b592384f0d42c071562e36988163e2b96f2c157fc49',
+    'fab52d627d14a21ea7ab2a7fdadb4d6f53478d5cdc496858ca74c37e1dfda057',
+    'i13-arbiter-b', 'dcp-review-lab-12', 9,
+    'd4fcb68051ae113ed497d02151a759800ee85633',
+    'failed', 1, 'child_failed', '2026-08-11 18:37:16',
+    'gpt-5.6-sol', 'xhigh', 16384, 'dcp-global-release-arbiter-v1',
+    '', '', 0, '2026-08-11 18:37:16'
+);
+INSERT INTO dcp_review_lab_arbiter_v1_prelaunch_recovery VALUES (
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    '2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    'f618fa8a46715acce0958b592384f0d42c071562e36988163e2b96f2c157fc49'
+);`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationsFS.ReadFile("migrations/0054_dcp_arbiter_response_schema_recovery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(migration), "-- +goose Down")
+	if len(parts) != 2 {
+		t.Fatal("migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(parts[0]); err != nil {
+		t.Fatalf("apply up: %v", err)
+	}
+	var status, errorCode string
+	var callCount int
+	if err := db.QueryRow(`SELECT status, model_call_count, error_code FROM dcp_review_lab_arbiter_v1`).Scan(&status, &callCount, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if status != "requested" || callCount != 0 || errorCode != "" {
+		t.Fatalf("rearmed row = status:%s calls:%d error:%s", status, callCount, errorCode)
+	}
+	var sessionID, providerCode, reason string
+	var resultPresent, tokenPresent int
+	if err := db.QueryRow(`
+SELECT codex_session_id, provider_error_code, result_artifact_present,
+       token_record_present, recovery_reason
+FROM dcp_review_lab_arbiter_v1_schema_recovery
+`).Scan(&sessionID, &providerCode, &resultPresent, &tokenPresent, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "019ff21d-4cde-72d1-b70d-49efd3cd1c17" || providerCode != "invalid_json_schema" ||
+		resultPresent != 0 || tokenPresent != 0 || reason != "unsupported_root_oneof_rejected_before_inference" {
+		t.Fatalf("schema recovery audit = session:%s provider:%s result:%d tokens:%d reason:%s", sessionID, providerCode, resultPresent, tokenPresent, reason)
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "missing")
 	if _, err := OpenReadOnly(context.Background(), dataDir); err == nil {

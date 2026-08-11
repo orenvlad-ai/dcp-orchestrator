@@ -9,11 +9,11 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `0b12727a99ddc448b5d19c252615b7bf13bd7113`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/AGENTS.md)
-2. [current operating contract revision `2026-08-11.14`](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4d3e0736635579db053516813e2d5944f903f777/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-4. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/docs/TARGET_ARCHITECTURE_V1.md)
-5. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/0b12727a99ddc448b5d19c252615b7bf13bd7113/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001`](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/AGENTS.md)
+2. [current operating contract revision `2026-08-11.19`](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+4. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/TARGET_ARCHITECTURE_V1.md)
+5. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -110,11 +110,17 @@ runtime capability.
 
 I13 Stage 2 adds migration 0052 and one subordinate incident/action row for a
 fresh exact `merge_conflict_or_ambiguity` packet on native card 11 or 12.
-Migration 0053 is the sole model-free correction for the first package's
+Migration 0053 is the model-free correction for the first package's
 strict-config rejection: it preserves that pre-provider failed launch in one
 bounded audit row and re-arms only the same incident/generation once. It is not
 a retry policy or a second model call. The corrected launcher pins Codex CLI
-0.145.0 and the structured `features.rollout_budget` configuration.
+0.145.0 and the structured `features.rollout_budget` configuration. Migration
+0054 separately preserves the corrected package's exact
+`invalid_json_schema` rejection before inference, result output or tokens and
+performs the contract's final same-identity re-arm. The decision schema uses
+only required constants/enums; trusted validation enforces the owner/path or
+safe-stop relationship without provider-unsupported root composition. No
+further re-arm exists.
 The daemon freezes the complete Stage 2 cohort, hashes the bounded task, scope,
 candidate, checks, reviews, queue and exhausted mechanical recovery evidence,
 and permits exactly one stateless `gpt-5.6-sol`/`xhigh` call after atomically
