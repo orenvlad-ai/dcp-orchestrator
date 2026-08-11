@@ -179,13 +179,20 @@ func structuredServiceStore() *fakeStore {
 func TestSubmitStructuredPersistsOnceAndRejectsDuplicateOrLate(t *testing.T) {
 	st := structuredServiceStore()
 	svc := New(nil, st)
+	approvedCalls := 0
+	svc.SetApprovedStructuredHandler(func(_ context.Context, id domain.SessionID) {
+		if id != "mer-1" {
+			t.Fatalf("approved handler id = %q", id)
+		}
+		approvedCalls++
+	})
 	result := structuredServiceResult()
 
 	run, err := svc.SubmitStructured(context.Background(), "mer-1", result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != result.Summary || st.updateCalls != 1 {
+	if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != result.Summary || st.updateCalls != 1 || approvedCalls != 1 {
 		t.Fatalf("run=%+v updates=%d", run, st.updateCalls)
 	}
 	if _, err := svc.SubmitStructured(context.Background(), "mer-1", result); !errors.Is(err, ErrInvalid) {
@@ -193,6 +200,9 @@ func TestSubmitStructuredPersistsOnceAndRejectsDuplicateOrLate(t *testing.T) {
 	}
 	if st.updateCalls != 1 {
 		t.Fatalf("duplicate result updated twice: %d", st.updateCalls)
+	}
+	if approvedCalls != 1 {
+		t.Fatalf("duplicate result signalled approval twice: %d", approvedCalls)
 	}
 
 	lateStore := structuredServiceStore()

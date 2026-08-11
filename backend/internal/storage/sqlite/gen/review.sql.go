@@ -30,6 +30,92 @@ func (q *Queries) CancelRunningReviewRunsBySession(ctx context.Context, arg Canc
 	return result.RowsAffected()
 }
 
+const claimDCPReviewLabTerminalMerge = `-- name: ClaimDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'running', terminal_merge_error = ''
+WHERE review_run.id = ?1
+  AND review_run.session_id = ?2
+  AND review_run.pr_url = ?3
+  AND review_run.target_sha = ?4
+  AND review_run.status = 'complete'
+  AND review_run.verdict = 'approved'
+  AND review_run.result_channel = 'structured_dcp_v1'
+  AND review_run.terminal_merge_status = ''
+  AND EXISTS (
+    SELECT 1
+    FROM pr
+    WHERE pr.url = review_run.pr_url
+      AND pr.session_id = review_run.session_id
+      AND pr.head_sha = review_run.target_sha
+      AND pr.pr_state = 'open'
+      AND pr.is_draft = 0
+      AND pr.is_merged = 0
+      AND pr.is_closed = 0
+  )
+`
+
+type ClaimDCPReviewLabTerminalMergeParams struct {
+	RunID     string
+	SessionID domain.SessionID
+	PRURL     string
+	TargetSha string
+}
+
+func (q *Queries) ClaimDCPReviewLabTerminalMerge(ctx context.Context, arg ClaimDCPReviewLabTerminalMergeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimDCPReviewLabTerminalMerge,
+		arg.RunID,
+		arg.SessionID,
+		arg.PRURL,
+		arg.TargetSha,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const completeDCPReviewLabTerminalMerge = `-- name: CompleteDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'succeeded',
+    terminal_merge_commit_sha = ?1,
+    terminal_merge_error = ''
+WHERE id = ?2
+  AND terminal_merge_status = 'running'
+`
+
+type CompleteDCPReviewLabTerminalMergeParams struct {
+	MergeCommitSha string
+	RunID          string
+}
+
+func (q *Queries) CompleteDCPReviewLabTerminalMerge(ctx context.Context, arg CompleteDCPReviewLabTerminalMergeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeDCPReviewLabTerminalMerge, arg.MergeCommitSha, arg.RunID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failDCPReviewLabTerminalMerge = `-- name: FailDCPReviewLabTerminalMerge :execrows
+UPDATE review_run
+SET terminal_merge_status = 'failed', terminal_merge_error = ?1
+WHERE id = ?2
+  AND terminal_merge_status = 'running'
+`
+
+type FailDCPReviewLabTerminalMergeParams struct {
+	ErrorCode string
+	RunID     string
+}
+
+func (q *Queries) FailDCPReviewLabTerminalMerge(ctx context.Context, arg FailDCPReviewLabTerminalMergeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPReviewLabTerminalMerge, arg.ErrorCode, arg.RunID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getReviewBySession = `-- name: GetReviewBySession :one
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, created_at, updated_at
 FROM review WHERE session_id = ?
@@ -53,6 +139,7 @@ func (q *Queries) GetReviewBySession(ctx context.Context, sessionID domain.Sessi
 
 const getReviewRun = `-- name: GetReviewRun :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE id = ?
 `
 
@@ -73,12 +160,17 @@ func (q *Queries) GetReviewRun(ctx context.Context, id string) (ReviewRun, error
 		&i.GithubReviewID,
 		&i.DeliveredAt,
 		&i.BatchID,
+		&i.ResultChannel,
+		&i.TerminalMergeStatus,
+		&i.TerminalMergeCommitSha,
+		&i.TerminalMergeError,
 	)
 	return i, err
 }
 
 const getReviewRunBySessionPRAndSHA = `-- name: GetReviewRunBySessionPRAndSHA :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND pr_url = ? AND target_sha = ? ORDER BY created_at DESC LIMIT 1
 `
 
@@ -105,12 +197,17 @@ func (q *Queries) GetReviewRunBySessionPRAndSHA(ctx context.Context, arg GetRevi
 		&i.GithubReviewID,
 		&i.DeliveredAt,
 		&i.BatchID,
+		&i.ResultChannel,
+		&i.TerminalMergeStatus,
+		&i.TerminalMergeCommitSha,
+		&i.TerminalMergeError,
 	)
 	return i, err
 }
 
 const getReviewRunBySessionPRSHAAndHarness = `-- name: GetReviewRunBySessionPRSHAAndHarness :one
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND pr_url = ? AND target_sha = ? AND harness = ? ORDER BY created_at DESC LIMIT 1
 `
 
@@ -143,6 +240,10 @@ func (q *Queries) GetReviewRunBySessionPRSHAAndHarness(ctx context.Context, arg 
 		&i.GithubReviewID,
 		&i.DeliveredAt,
 		&i.BatchID,
+		&i.ResultChannel,
+		&i.TerminalMergeStatus,
+		&i.TerminalMergeCommitSha,
+		&i.TerminalMergeError,
 	)
 	return i, err
 }
@@ -187,6 +288,7 @@ func (q *Queries) InsertReviewRun(ctx context.Context, arg InsertReviewRunParams
 
 const listReviewRunsByBatch = `-- name: ListReviewRunsByBatch :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND batch_id = ? ORDER BY created_at ASC, id ASC
 `
 
@@ -218,6 +320,10 @@ func (q *Queries) ListReviewRunsByBatch(ctx context.Context, arg ListReviewRunsB
 			&i.GithubReviewID,
 			&i.DeliveredAt,
 			&i.BatchID,
+			&i.ResultChannel,
+			&i.TerminalMergeStatus,
+			&i.TerminalMergeCommitSha,
+			&i.TerminalMergeError,
 		); err != nil {
 			return nil, err
 		}
@@ -234,6 +340,7 @@ func (q *Queries) ListReviewRunsByBatch(ctx context.Context, arg ListReviewRunsB
 
 const listReviewRunsBySession = `-- name: ListReviewRunsBySession :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? ORDER BY created_at DESC
 `
 
@@ -260,6 +367,10 @@ func (q *Queries) ListReviewRunsBySession(ctx context.Context, sessionID domain.
 			&i.GithubReviewID,
 			&i.DeliveredAt,
 			&i.BatchID,
+			&i.ResultChannel,
+			&i.TerminalMergeStatus,
+			&i.TerminalMergeCommitSha,
+			&i.TerminalMergeError,
 		); err != nil {
 			return nil, err
 		}
@@ -276,6 +387,7 @@ func (q *Queries) ListReviewRunsBySession(ctx context.Context, sessionID domain.
 
 const listRunningReviewRunsBySession = `-- name: ListRunningReviewRunsBySession :many
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id
+     , result_channel, terminal_merge_status, terminal_merge_commit_sha, terminal_merge_error
 FROM review_run WHERE session_id = ? AND status = 'running' AND verdict = '' ORDER BY created_at DESC
 `
 
@@ -302,6 +414,10 @@ func (q *Queries) ListRunningReviewRunsBySession(ctx context.Context, sessionID 
 			&i.GithubReviewID,
 			&i.DeliveredAt,
 			&i.BatchID,
+			&i.ResultChannel,
+			&i.TerminalMergeStatus,
+			&i.TerminalMergeCommitSha,
+			&i.TerminalMergeError,
 		); err != nil {
 			return nil, err
 		}
@@ -359,7 +475,7 @@ func (q *Queries) SupersedeStaleRunningReviewRuns(ctx context.Context, arg Super
 
 const updateBoundReviewRunResult = `-- name: UpdateBoundReviewRunResult :execrows
 UPDATE review_run
-SET status = 'complete', verdict = ?1, body = ?2, github_review_id = ''
+SET status = 'complete', verdict = ?1, body = ?2, github_review_id = '', result_channel = 'structured_dcp_v1'
 WHERE review_run.id = ?3
   AND review_run.session_id = ?4
   AND review_run.batch_id = ?5

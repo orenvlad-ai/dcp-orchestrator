@@ -126,9 +126,11 @@ type Manager struct {
 	// active turn (input steers the run) rather than only while idle. Supplied by
 	// the agent adapter via WithActiveSteering; the default answers false, so an
 	// unknown harness is only written to while idle.
-	steerActive         func(domain.AgentHarness) bool
-	reviewEligibilityMu sync.RWMutex
-	reviewEligibility   func(context.Context, domain.SessionID)
+	steerActive                func(domain.AgentHarness) bool
+	reviewEligibilityMu        sync.RWMutex
+	reviewEligibility          func(context.Context, domain.SessionID)
+	terminalMergeEligibilityMu sync.RWMutex
+	terminalMergeEligibility   func(context.Context, domain.SessionID)
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -169,6 +171,24 @@ func (m *Manager) signalReviewEligibility(ctx context.Context, id domain.Session
 	m.reviewEligibilityMu.RLock()
 	handler := m.reviewEligibility
 	m.reviewEligibilityMu.RUnlock()
+	if handler != nil {
+		handler(ctx, id)
+	}
+}
+
+// SetTerminalMergeEligibilityHandler late-binds the exact synthetic terminal
+// merge check. The daemon installs it only when the GitHub action provider is
+// available; every other project remains an inexpensive no-op in that handler.
+func (m *Manager) SetTerminalMergeEligibilityHandler(handler func(context.Context, domain.SessionID)) {
+	m.terminalMergeEligibilityMu.Lock()
+	m.terminalMergeEligibility = handler
+	m.terminalMergeEligibilityMu.Unlock()
+}
+
+func (m *Manager) signalTerminalMergeEligibility(ctx context.Context, id domain.SessionID) {
+	m.terminalMergeEligibilityMu.RLock()
+	handler := m.terminalMergeEligibility
+	m.terminalMergeEligibilityMu.RUnlock()
 	if handler != nil {
 		handler(ctx, id)
 	}

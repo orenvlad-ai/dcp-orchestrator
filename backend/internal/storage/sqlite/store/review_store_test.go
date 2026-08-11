@@ -347,8 +347,23 @@ func TestUpdateBoundReviewRunResultIsAtomicAndExactHeadBound(t *testing.T) {
 			t.Fatalf("successful updates = %d, want exactly one", got)
 		}
 		run, _, _ := s.GetReviewRun(context.Background(), expected.RunID)
-		if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != "approved" {
+		if run.Status != domain.ReviewRunComplete || run.Verdict != domain.VerdictApproved || run.Body != "approved" || run.ResultChannel != "structured_dcp_v1" {
 			t.Fatalf("run = %+v", run)
+		}
+		claimed, err := s.ClaimDCPReviewLabTerminalMerge(context.Background(), run)
+		if err != nil || !claimed {
+			t.Fatalf("claim=%v err=%v", claimed, err)
+		}
+		if claimed, err := s.ClaimDCPReviewLabTerminalMerge(context.Background(), run); err != nil || claimed {
+			t.Fatalf("duplicate claim=%v err=%v", claimed, err)
+		}
+		mergeSHA := "3333333333333333333333333333333333333333"
+		if completed, err := s.CompleteDCPReviewLabTerminalMerge(context.Background(), run.ID, mergeSHA); err != nil || !completed {
+			t.Fatalf("complete=%v err=%v", completed, err)
+		}
+		run, _, _ = s.GetReviewRun(context.Background(), expected.RunID)
+		if run.TerminalMergeStatus != "succeeded" || run.TerminalMergeCommitSHA != mergeSHA || run.TerminalMergeError != "" {
+			t.Fatalf("terminal merge state = %+v", run)
 		}
 	})
 

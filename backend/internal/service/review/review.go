@@ -46,10 +46,17 @@ type ProcessExitReport struct {
 
 // Service is the API-facing review service. It delegates to the core engine.
 type Service struct {
-	engine    *reviewcore.Engine
-	store     Store
-	lifecycle Reducer
-	clock     func() time.Time
+	engine             *reviewcore.Engine
+	store              Store
+	lifecycle          Reducer
+	clock              func() time.Time
+	approvedStructured func(context.Context, domain.SessionID)
+}
+
+// SetApprovedStructuredHandler late-binds the bounded DCP terminal action.
+// Ordinary/manual review results never invoke it.
+func (s *Service) SetApprovedStructuredHandler(handler func(context.Context, domain.SessionID)) {
+	s.approvedStructured = handler
 }
 
 var _ Manager = (*Service)(nil)
@@ -227,6 +234,9 @@ func (s *Service) SubmitStructured(ctx context.Context, workerID domain.SessionI
 	}
 	if !ok || run.Status != domain.ReviewRunComplete || run.Verdict != verdict || run.Body != body {
 		return domain.ReviewRun{}, fmt.Errorf("structured review result was recorded but could not be verified")
+	}
+	if verdict == domain.VerdictApproved && s.approvedStructured != nil {
+		s.approvedStructured(ctx, workerID)
 	}
 	if s.lifecycle == nil || verdict != domain.VerdictChangesRequested {
 		return run, nil
