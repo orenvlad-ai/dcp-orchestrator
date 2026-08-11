@@ -288,7 +288,7 @@ func ready(candidate mergeCandidate, observation ports.SCMObservation, review po
 		observation.Mergeability.State != string(domain.MergeMergeable) || !observation.Mergeability.Mergeable || len(observation.Mergeability.Blockers) != 0 || review.Partial {
 		return false
 	}
-	if (review.Decision != "" && review.Decision != string(domain.ReviewApproved)) || hasBlockingReview(review) {
+	if !knownNonBlockingReviewDecision(review.Decision) || hasBlockingReview(review) {
 		return false
 	}
 	if len(observation.CI.Checks) == 0 || observation.CI.Summary != string(domain.CIPassing) || !strings.EqualFold(observation.CI.HeadSHA, candidate.run.TargetSHA) {
@@ -316,6 +316,10 @@ func hasBlockingReview(review ports.SCMReviewObservation) bool {
 		}
 	}
 	return false
+}
+
+func knownNonBlockingReviewDecision(decision string) bool {
+	return decision == string(domain.ReviewNone) || decision == string(domain.ReviewApproved)
 }
 
 func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head string) error {
