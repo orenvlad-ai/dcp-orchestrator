@@ -103,6 +103,8 @@ func TestReviewCommandReplacesWorkerConfigApprovalAndSandbox(t *testing.T) {
 		"-c", `approval_policy="on-request"`,
 		"-c", `approvals_reviewer="auto_review"`,
 		"--sandbox", "workspace-write",
+		"--add-dir", "/repo/.git/worktrees/worker",
+		"--add-dir", "/repo/.git",
 		"--", "review",
 	}}
 	got, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{Prompt: "review"})
@@ -110,11 +112,19 @@ func TestReviewCommandReplacesWorkerConfigApprovalAndSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got.Argv, " ")
-	if strings.Contains(joined, `approval_policy="on-request"`) || strings.Contains(joined, "workspace-write") {
+	if strings.Contains(joined, `approval_policy="on-request"`) || strings.Contains(joined, "workspace-write") || strings.Contains(joined, "--add-dir") || strings.Contains(joined, "/repo/.git") {
 		t.Fatalf("reviewer retained worker approval/sandbox: %#v", got.Argv)
 	}
 	if !strings.Contains(joined, `approval_policy="never"`) || !strings.Contains(joined, "--sandbox read-only") {
 		t.Fatalf("reviewer command lost enforced read-only policy: %#v", got.Argv)
+	}
+}
+
+func TestReviewCommandRejectsIncompleteWorkerGitMetadataFlag(t *testing.T) {
+	agent := &captureAgent{argv: []string{"agent", "exec", "--add-dir"}}
+	_, err := (&Reviewer{agent: agent}).ReviewCommand(context.Background(), ports.ReviewInvocation{Prompt: "review"})
+	if err == nil || !strings.Contains(err.Error(), "incomplete --add-dir") {
+		t.Fatalf("ReviewCommand error = %v, want incomplete Git metadata flag rejection", err)
 	}
 }
 

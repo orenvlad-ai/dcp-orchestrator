@@ -112,6 +112,9 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if err := appendApprovalFlags(&cmd, cfg.Permissions); err != nil {
 		return nil, err
 	}
+	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.WorkspacePath); err != nil {
+		return nil, err
+	}
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
 	appendModelFlag(&cmd, cfg.Config)
 
@@ -152,6 +155,9 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	appendNoUpdateCheckFlag(&cmd)
 	appendHideRateLimitNudgeFlag(&cmd)
 	if err := appendApprovalFlags(&cmd, cfg.Permissions); err != nil {
+		return nil, false, err
+	}
+	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
 		return nil, false, err
 	}
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
@@ -406,6 +412,185 @@ func appendInteractiveWorkspaceFlags(cmd *[]string, autoReview bool) {
 		*cmd = append(*cmd, "-c", `approvals_reviewer="auto_review"`)
 	}
 	*cmd = append(*cmd, "--sandbox", "workspace-write")
+}
+
+// appendWorkspaceGitMetadataFlags grants the workspace-write sandbox only the
+// two additional roots Git needs for a linked worktree: that worktree's
+// private metadata directory and its repository's common .git directory.
+//
+// The paths are derived from and cross-checked against the concrete workspace
+// instead of accepting caller-supplied add-dir values. Any missing, ordinary,
+// ambiguous, or inconsistent Git layout fails closed before Codex starts.
+func appendWorkspaceGitMetadataFlags(ctx context.Context, cmd *[]string, permissions ports.PermissionMode, workspacePath string) error {
+	switch permissions {
+	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
+		gitDir, commonDir, err := workspaceGitMetadataRoots(ctx, workspacePath)
+		if err != nil {
+			return err
+		}
+		*cmd = append(*cmd, "--add-dir", gitDir, "--add-dir", commonDir)
+	}
+	return nil
+}
+
+func workspaceGitMetadataRoots(ctx context.Context, workspacePath string) (string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	workspace, err := canonicalExistingDir(strings.TrimSpace(workspacePath))
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: workspace: %w", err)
+	}
+
+	gitFile := filepath.Join(workspace, ".git")
+	gitDirPath, err := readGitPathFile(gitFile, "gitdir: ")
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: .git pointer: %w", err)
+	}
+	gitDir, err := canonicalExistingDir(resolveGitPath(workspace, gitDirPath))
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: gitdir: %w", err)
+	}
+
+	commonPath, err := readGitPathFile(filepath.Join(gitDir, "commondir"), "")
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: commondir: %w", err)
+	}
+	commonDir, err := canonicalExistingDir(resolveGitPath(gitDir, commonPath))
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: common dir: %w", err)
+	}
+	if filepath.Base(commonDir) != ".git" {
+		return "", "", fmt.Errorf("codex workspace metadata: common dir %q is not a .git directory", commonDir)
+	}
+
+	worktreesDir, err := canonicalExistingDir(filepath.Join(commonDir, "worktrees"))
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: common worktrees dir: %w", err)
+	}
+	rel, err := filepath.Rel(worktreesDir, gitDir)
+	if err != nil || rel == "." || filepath.Dir(rel) != "." || filepath.IsAbs(rel) {
+		return "", "", fmt.Errorf("codex workspace metadata: gitdir %q is not one concrete child of %q", gitDir, worktreesDir)
+	}
+
+	backlinkPath, err := readGitPathFile(filepath.Join(gitDir, "gitdir"), "")
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: gitdir backlink: %w", err)
+	}
+	backlink, err := canonicalExistingFile(resolveGitPath(gitDir, backlinkPath))
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: gitdir backlink target: %w", err)
+	}
+	canonicalGitFile, err := canonicalExistingFile(gitFile)
+	if err != nil {
+		return "", "", fmt.Errorf("codex workspace metadata: .git file: %w", err)
+	}
+	if backlink != canonicalGitFile {
+		return "", "", fmt.Errorf("codex workspace metadata: gitdir backlink %q does not target workspace .git %q", backlink, canonicalGitFile)
+	}
+
+	checks := []struct {
+		name string
+		arg  string
+		want string
+	}{
+		{name: "top level", arg: "--show-toplevel", want: workspace},
+		{name: "git dir", arg: "--absolute-git-dir", want: gitDir},
+		{name: "common dir", arg: "--git-common-dir", want: commonDir},
+	}
+	for _, check := range checks {
+		got, err := gitRevParsePath(ctx, workspace, check.arg)
+		if err != nil {
+			return "", "", fmt.Errorf("codex workspace metadata: verify %s: %w", check.name, err)
+		}
+		if got != check.want {
+			return "", "", fmt.Errorf("codex workspace metadata: verified %s %q does not match %q", check.name, got, check.want)
+		}
+	}
+
+	return gitDir, commonDir, nil
+}
+
+func readGitPathFile(path, prefix string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a regular file", path)
+	}
+	if info.Size() <= 0 || info.Size() > 4096 {
+		return "", fmt.Errorf("%q has invalid size %d", path, info.Size())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	if strings.ContainsAny(line, "\r\n\x00") || !strings.HasPrefix(line, prefix) {
+		return "", fmt.Errorf("%q is not a single valid Git path", path)
+	}
+	value := strings.TrimPrefix(line, prefix)
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%q contains an empty Git path", path)
+	}
+	return value, nil
+}
+
+func resolveGitPath(base, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(base, path)
+}
+
+func canonicalExistingDir(path string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path %q is not absolute", path)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%q is not a directory", resolved)
+	}
+	return resolved, nil
+}
+
+func canonicalExistingFile(path string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path %q is not absolute", path)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a regular file", resolved)
+	}
+	return resolved, nil
+}
+
+func gitRevParsePath(ctx context.Context, workspace, arg string) (string, error) {
+	command := aoprocess.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--path-format=absolute", arg)
+	out, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %w: %s", arg, err, strings.TrimSpace(string(out)))
+	}
+	line := strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r")
+	if strings.ContainsAny(line, "\r\n\x00") {
+		return "", fmt.Errorf("git rev-parse %s returned an ambiguous path", arg)
+	}
+	return canonicalExistingDir(line)
 }
 
 // fileExists is a package var so tests can stub it to scope candidate probing.
