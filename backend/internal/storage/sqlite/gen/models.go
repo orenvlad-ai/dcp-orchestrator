@@ -54,6 +54,34 @@ type DcpArbiterSuccessorResultValidationRecovery struct {
 	FinishedAt              sql.NullTime
 }
 
+type DcpCard12FreshWorkerPreflightRecovery struct {
+	RecoveryID             string
+	RecoveryGeneration     int64
+	RecoveryIdentityDigest string
+	PriorStatus            string
+	PriorErrorCode         string
+	PriorRevision          int64
+	PriorWorkerCalls       int64
+	PriorReviewerCalls     int64
+	PriorLaunchID          string
+	PriorWorkerSessionID   string
+	PriorWorkerTokens      int64
+	PriorInputDigest       string
+	PriorResultDigest      string
+	PriorLogDigest         string
+	PriorNewHead           string
+	PriorReviewRunID       string
+	PriorMergeCommitSha    string
+	PriorAuthorizedAt      time.Time
+	PriorUpdatedAt         time.Time
+	PriorFinishedAt        time.Time
+	FailedSourceSha        string
+	AuthorityContractSha   string
+	ObservedDiffStatus     string
+	RecoveryReason         string
+	RearmedAt              time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string

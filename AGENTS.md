@@ -176,6 +176,15 @@ review, named green check and current CLEAN/MERGEABLE facts. Every preflight,
 worker, reviewer, restart or terminal ambiguity fails closed after its
 applicable fence without another model call.
 
+Exact source `fbcf4929f9192f7cce9c5097b0bc6a449d28e663` then failed closed at
+the first fresh-worker preflight with zero calls because its model-free Git
+check required the conflict path to be added from current main. The exact
+current-main/candidate bytes prove the path is modified (`M`). The owner's
+delegated direct-path-defect authority permits migration 0058 to retain that
+zero-call failure in a separate immutable audit, re-arm only the same unused
+generation-1 row once and correct only that exact path-status check. It adds no
+identity, worker/reviewer/arbiter call, artifact, transcript or retry policy.
+
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or
 control-plane command channel and emits exactly one bounded JSON result through
