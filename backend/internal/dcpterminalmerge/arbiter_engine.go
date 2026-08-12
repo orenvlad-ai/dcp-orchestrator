@@ -216,6 +216,9 @@ func (e *Engine) advanceArbiterLocked(ctx context.Context, incident domain.DCPRe
 }
 
 func (e *Engine) SubmitArbiterDecision(ctx context.Context, incidentID string, data []byte) error {
+	if strings.HasPrefix(strings.TrimSpace(incidentID), "dcp-arbiter-successor-") {
+		return e.submitArbiterSuccessorDecision(ctx, incidentID, data)
+	}
 	if err := e.configured(); err != nil {
 		return err
 	}
@@ -277,6 +280,9 @@ func (e *Engine) persistArbiterDecisionLocked(ctx context.Context, incident doma
 }
 
 func (e *Engine) ReportArbiterProcessExit(ctx context.Context, incidentID string, report ArbiterProcessExitReport) error {
+	if strings.HasPrefix(strings.TrimSpace(incidentID), "dcp-arbiter-successor-") {
+		return e.reportArbiterSuccessorProcessExit(ctx, incidentID, report)
+	}
 	if err := e.configured(); err != nil {
 		return err
 	}

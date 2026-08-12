@@ -136,6 +136,45 @@ type DcpReviewLabArbiterV1SchemaRecovery struct {
 	RearmedAt               time.Time
 }
 
+type DcpReviewLabArbiterV1SuccessorAttempt struct {
+	AttemptID                    string
+	IncidentID                   string
+	IncidentGeneration           int64
+	AttemptGeneration            int64
+	AttemptIdentityDigest        string
+	IncidentIdentityDigest       string
+	IncidentInputDigest          string
+	OriginalInputArtifactDigest  string
+	OriginalSchemaArtifactDigest string
+	OriginalResultArtifactDigest string
+	OriginalCodexSessionID       string
+	OriginalTokenCount           int64
+	ContractCommit               string
+	InputJson                    string
+	InputDigest                  string
+	Model                        string
+	Reasoning                    string
+	TokenBudget                  int64
+	PolicyMaxWorkerCalls         int64
+	PolicyMaxFreshReviews        int64
+	RuntimeHandleID              string
+	LaunchID                     string
+	Status                       string
+	ModelCallCount               int64
+	DecisionJson                 string
+	DecisionDigest               string
+	RecoveryOwnerSessionID       string
+	RecoveryPath                 string
+	RecoveryWakeCount            int64
+	RecoveryReviewRunID          string
+	RecoveryTargetSha            string
+	ErrorCode                    string
+	AuthorizedAt                 time.Time
+	UpdatedAt                    time.Time
+	DecisionAt                   sql.NullTime
+	FinishedAt                   sql.NullTime
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string

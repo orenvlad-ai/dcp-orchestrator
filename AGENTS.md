@@ -9,11 +9,12 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001`](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/AGENTS.md)
-2. [current operating contract revision `2026-08-11.19`](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-4. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/docs/TARGET_ARCHITECTURE_V1.md)
-5. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/3f3a3bb2c2e951cbf7a34da75d3cc3f09d906001/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `4dfff558ac425080d62bd6fe2fb13b573ef50661`](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/AGENTS.md)
+2. [current operating contract revision `2026-08-12.1`](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
+4. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+5. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/docs/TARGET_ARCHITECTURE_V1.md)
+6. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/4dfff558ac425080d62bd6fe2fb13b573ef50661/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -132,6 +133,19 @@ exact-head review and rebind the original FIFO row; the arbiter never merges.
 Duplicate, late, stale, foreign or malformed results and restart replay are
 inert. Cards outside 11/12, failed CI, waiting, ordinary staleness and the
 historical false `canonical_main_diverged` packet cannot open an arbiter.
+
+The owner-approved successor correction preserves the first rejected card-12
+attempt and all of its artifacts as immutable evidence. Migration 0055 adds
+one exact generation-2 attempt for that same incident, with one separately
+fenced `gpt-5.6-sol`/`xhigh` call and a hard 16,384-token ceiling. The model
+does not own worker or reviewer limits: its successor decision schema omits
+those fields, while the trusted daemon deterministically enforces one worker
+wake and one fresh review at most. An accepted decision is bound to the exact
+incident, attempt, input and decision digests. The `decided` state cannot wake
+the worker until a controlled restart; duplicate, late, stale, foreign or
+malformed results and every later restart are inert. This authorization does
+not create a replacement card, PR, incident, general retry policy or broader
+recovery path.
 Never synthesize owner acceptance.
 
 The active Codex reviewer success path is deterministic after model exit. The

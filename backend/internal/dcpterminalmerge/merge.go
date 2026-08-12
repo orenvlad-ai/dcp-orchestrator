@@ -119,6 +119,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 	if err := e.reconcileStage2Arbiter(ctx); err != nil {
 		return err
 	}
+	if err := e.reconcileStage2ArbiterSuccessor(ctx); err != nil {
+		return err
+	}
 
 	sessions, err := e.store.ListAllSessions(ctx)
 	if err != nil {
@@ -265,6 +268,38 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		arbiter, ok, err := arbiterStore.GetDCPReleaseArbiterIncidentBySession(ctx, candidate.session.ID)
 		if err != nil {
 			return err
+		}
+		if ok {
+			if successorStore, successorOK := e.store.(ArbiterSuccessorStore); successorOK {
+				successor, successorFound, successorErr := successorStore.GetDCPReleaseArbiterSuccessorAttemptByIncident(ctx, arbiter.IncidentID)
+				if successorErr != nil {
+					return successorErr
+				}
+				if successorFound && successor.Status == domain.DCPArbiterSuccessorRepairing {
+					original, found, getErr := arbiterStore.GetDCPReviewLabAdmissionByID(ctx, arbiter.AdmissionID)
+					if getErr != nil || !found {
+						return errors.New("dcp arbiter successor: repairing admission is unavailable")
+					}
+					if !exactSuccessorAuthorization(successor, arbiter) || original.Status != domain.DCPAdmissionIncident ||
+						original.SessionID != candidate.session.ID || original.PRURL != candidate.pr.URL || original.TargetSHA != arbiter.TargetSHA ||
+						strings.EqualFold(candidate.run.TargetSHA, arbiter.TargetSHA) || !strings.EqualFold(observation.PR.BaseSHA, arbiter.CurrentBaseSHA) ||
+						successor.RecoveryOwnerSessionID != candidate.session.ID || successor.RecoveryPath != "same_worker_conflict_repair" ||
+						successor.RecoveryWakeCount != 1 || successor.PolicyMaxWorkerCalls != 1 || successor.PolicyMaxFreshReviews != 1 {
+						_, _ = successorStore.FailDCPReleaseArbiterSuccessorAfterDecision(ctx, successor.AttemptID, "repair_identity_drift", now)
+						return errors.New("dcp arbiter successor: repaired exact-head identity drifted")
+					}
+					if validateErr := e.validateArbiterRecoveryCandidate(ctx, candidate, arbiter); validateErr != nil {
+						_, _ = successorStore.FailDCPReleaseArbiterSuccessorAfterDecision(ctx, successor.AttemptID, "repair_scope_drift", now)
+						return validateErr
+					}
+					rebound, updateErr := successorStore.RebindDCPAdmissionAfterArbiterSuccessorRepair(ctx, original, arbiter, successor, candidate.run, strings.ToLower(observation.PR.BaseSHA), now)
+					if updateErr != nil || !rebound {
+						_, _ = successorStore.FailDCPReleaseArbiterSuccessorAfterDecision(ctx, successor.AttemptID, "repair_rebind_rejected", now)
+						return errors.Join(updateErr, errors.New("dcp arbiter successor: repaired exact-head rebind was rejected"))
+					}
+					return nil
+				}
+			}
 		}
 		if ok && arbiter.Status == domain.DCPArbiterRepairing {
 			original, found, getErr := arbiterStore.GetDCPReviewLabAdmissionByID(ctx, arbiter.AdmissionID)

@@ -68,3 +68,61 @@ const (
 	DCPArbiterSucceeded        DCPReleaseArbiterStatus = "succeeded"
 	DCPArbiterFailed           DCPReleaseArbiterStatus = "failed"
 )
+
+// DCPReleaseArbiterSuccessorAttempt is the one owner-authorized second model
+// attempt for the already-persisted card-12 incident. It is deliberately
+// separate from DCPReleaseArbiterIncident so the rejected first row and its
+// counters never become an accepted-decision record.
+type DCPReleaseArbiterSuccessorAttempt struct {
+	AttemptID                    string
+	IncidentID                   string
+	IncidentGeneration           int64
+	AttemptGeneration            int64
+	AttemptIdentityDigest        string
+	IncidentIdentityDigest       string
+	IncidentInputDigest          string
+	OriginalInputArtifactDigest  string
+	OriginalSchemaArtifactDigest string
+	OriginalResultArtifactDigest string
+	OriginalCodexSessionID       string
+	OriginalTokenCount           int64
+	ContractCommit               string
+	InputJSON                    string
+	InputDigest                  string
+	Model                        string
+	Reasoning                    string
+	TokenBudget                  int64
+	PolicyMaxWorkerCalls         int64
+	PolicyMaxFreshReviews        int64
+	RuntimeHandleID              string
+	LaunchID                     string
+	Status                       DCPReleaseArbiterSuccessorStatus
+	ModelCallCount               int64
+	DecisionJSON                 string
+	DecisionDigest               string
+	RecoveryOwnerSessionID       SessionID
+	RecoveryPath                 string
+	RecoveryWakeCount            int64
+	RecoveryReviewRunID          string
+	RecoveryTargetSHA            string
+	ErrorCode                    string
+	AuthorizedAt                 time.Time
+	UpdatedAt                    time.Time
+	DecisionAt                   *time.Time
+	FinishedAt                   *time.Time
+}
+
+type DCPReleaseArbiterSuccessorStatus string
+
+const (
+	DCPArbiterSuccessorAuthorized       DCPReleaseArbiterSuccessorStatus = "authorized"
+	DCPArbiterSuccessorRequested        DCPReleaseArbiterSuccessorStatus = "requested"
+	DCPArbiterSuccessorPreflightFailed  DCPReleaseArbiterSuccessorStatus = "preflight_failed"
+	DCPArbiterSuccessorRunning          DCPReleaseArbiterSuccessorStatus = "running"
+	DCPArbiterSuccessorDecided          DCPReleaseArbiterSuccessorStatus = "decided"
+	DCPArbiterSuccessorSafeStopped      DCPReleaseArbiterSuccessorStatus = "safe_stopped"
+	DCPArbiterSuccessorRepairing        DCPReleaseArbiterSuccessorStatus = "repairing"
+	DCPArbiterSuccessorRecoveryReviewed DCPReleaseArbiterSuccessorStatus = "recovery_reviewed"
+	DCPArbiterSuccessorSucceeded        DCPReleaseArbiterSuccessorStatus = "succeeded"
+	DCPArbiterSuccessorFailed           DCPReleaseArbiterSuccessorStatus = "failed"
+)

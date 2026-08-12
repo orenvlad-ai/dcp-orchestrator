@@ -215,6 +215,147 @@ FROM dcp_review_lab_arbiter_v1_schema_recovery
 	}
 }
 
+func TestArbiterSuccessorMigrationPreservesRejectedRowAndAddsOneExactAttempt(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE dcp_review_lab_admission (
+    id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, session_id TEXT NOT NULL,
+    review_run_id TEXT NOT NULL, pr_url TEXT NOT NULL, pr_number INTEGER NOT NULL,
+    target_sha TEXT NOT NULL, status TEXT NOT NULL, lease_id TEXT NOT NULL,
+    error_code TEXT NOT NULL
+);
+CREATE TABLE dcp_review_lab_arbiter_v1 (
+    incident_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+    identity_digest TEXT NOT NULL, input_digest TEXT NOT NULL,
+    admission_id TEXT NOT NULL, incident_lease_id TEXT NOT NULL,
+    source_packet_digest TEXT NOT NULL, task_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, pr_url TEXT NOT NULL, pr_number INTEGER NOT NULL,
+    target_sha TEXT NOT NULL, current_base_sha TEXT NOT NULL,
+    review_run_id TEXT NOT NULL, status TEXT NOT NULL,
+    model_call_count INTEGER NOT NULL, decision_json TEXT NOT NULL,
+    decision_digest TEXT NOT NULL, recovery_wake_count INTEGER NOT NULL,
+    error_code TEXT NOT NULL, finished_at TIMESTAMP,
+    model TEXT NOT NULL, reasoning TEXT NOT NULL, token_budget INTEGER NOT NULL
+);
+CREATE TABLE dcp_review_lab_arbiter_v1_prelaunch_recovery (incident_id TEXT PRIMARY KEY);
+CREATE TABLE dcp_review_lab_arbiter_v1_schema_recovery (incident_id TEXT PRIMARY KEY);
+INSERT INTO dcp_review_lab_admission VALUES (
+    'dcp-admission-ecb500ad-f9f0-443b-9d73-2c8a6350ce34', 4,
+    'dcp-review-lab-12', 'ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'https://github.com/orenvlad-ai/dcp-review-lab/pull/9', 9,
+    'd4fcb68051ae113ed497d02151a759800ee85633', 'incident',
+    'dcp-incident-dcp-admission-ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'merge_conflict_or_ambiguity'
+);
+INSERT INTO dcp_review_lab_arbiter_v1 VALUES (
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60', 1,
+    '2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    'f618fa8a46715acce0958b592384f0d42c071562e36988163e2b96f2c157fc49',
+    'dcp-admission-ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'dcp-incident-dcp-admission-ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'fab52d627d14a21ea7ab2a7fdadb4d6f53478d5cdc496858ca74c37e1dfda057',
+    'i13-arbiter-b', 'dcp-review-lab-12',
+    'https://github.com/orenvlad-ai/dcp-review-lab/pull/9', 9,
+    'd4fcb68051ae113ed497d02151a759800ee85633',
+    'b34b31b5443890e69128db2862726950a6bbac0d',
+    'ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'failed', 1, '', '', 0, 'submit_failed', '2026-08-11 19:11:47',
+    'gpt-5.6-sol', 'xhigh', 16384
+);
+INSERT INTO dcp_review_lab_arbiter_v1_prelaunch_recovery VALUES (
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60'
+);
+INSERT INTO dcp_review_lab_arbiter_v1_schema_recovery VALUES (
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60'
+);`); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err := db.QueryRow(`SELECT status || ':' || model_call_count || ':' || error_code || ':' || decision_json || ':' || recovery_wake_count FROM dcp_review_lab_arbiter_v1`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationsFS.ReadFile("migrations/0055_dcp_arbiter_successor_attempt.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(migration), "-- +goose Down")
+	if len(parts) != 2 {
+		t.Fatal("migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(parts[0]); err != nil {
+		t.Fatalf("apply up: %v", err)
+	}
+	var after string
+	if err := db.QueryRow(`SELECT status || ':' || model_call_count || ':' || error_code || ':' || decision_json || ':' || recovery_wake_count FROM dcp_review_lab_arbiter_v1`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before || after != "failed:1:submit_failed::0" {
+		t.Fatalf("original row changed: before=%q after=%q", before, after)
+	}
+	var count, attemptGeneration, calls, maxWorkers, maxReviews int
+	var attemptID, status, contract string
+	if err := db.QueryRow(`
+SELECT count(*), attempt_id, attempt_generation, status, model_call_count,
+       policy_max_worker_calls, policy_max_fresh_reviews, contract_commit
+FROM dcp_review_lab_arbiter_v1_successor_attempt
+`).Scan(&count, &attemptID, &attemptGeneration, &status, &calls, &maxWorkers, &maxReviews, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || attemptID != "dcp-arbiter-successor-3c62ea80b56ef94165519d4f01e4c449c320bff22d16b902dd68d4a1a355ea7d" ||
+		attemptGeneration != 2 || status != "authorized" || calls != 0 || maxWorkers != 1 || maxReviews != 1 ||
+		contract != "4dfff558ac425080d62bd6fe2fb13b573ef50661" {
+		t.Fatalf("successor row = count:%d id:%s generation:%d status:%s calls:%d policy:%d/%d contract:%s", count, attemptID, attemptGeneration, status, calls, maxWorkers, maxReviews, contract)
+	}
+	store := sqlitestore.NewStore(db, db)
+	attempt, found, err := store.GetDCPReleaseArbiterSuccessorAttemptByID(context.Background(), attemptID)
+	if err != nil || !found {
+		t.Fatalf("get successor attempt: found=%v err=%v", found, err)
+	}
+	attempt.InputJSON = `{"schemaVersion":"dcp.review-lab.global-release-arbiter-successor-input/v1"}`
+	attempt.InputDigest = strings.Repeat("a", 64)
+	prepared, err := store.PrepareDCPReleaseArbiterSuccessorAttempt(context.Background(), attempt, time.Now())
+	if err != nil || !prepared {
+		t.Fatalf("prepare successor attempt: prepared=%v err=%v", prepared, err)
+	}
+	if duplicate, err := store.PrepareDCPReleaseArbiterSuccessorAttempt(context.Background(), attempt, time.Now()); err != nil || duplicate {
+		t.Fatalf("duplicate prepare was not inert: updated=%v err=%v", duplicate, err)
+	}
+	started, err := store.StartDCPReleaseArbiterSuccessorCall(context.Background(), attempt, time.Now())
+	if err != nil || !started {
+		t.Fatalf("start successor call: started=%v err=%v", started, err)
+	}
+	if duplicate, err := store.StartDCPReleaseArbiterSuccessorCall(context.Background(), attempt, time.Now()); err != nil || duplicate {
+		t.Fatalf("duplicate call fence was not inert: updated=%v err=%v", duplicate, err)
+	}
+	decisionJSON := `{"schemaVersion":"dcp.review-lab.global-release-arbiter-successor-decision/v1"}`
+	decisionDigest := strings.Repeat("b", 64)
+	recorded, err := store.RecordDCPReleaseArbiterSuccessorDecision(context.Background(), attempt, decisionJSON, decisionDigest, false, "", time.Now())
+	if err != nil || !recorded {
+		t.Fatalf("record successor decision: recorded=%v err=%v", recorded, err)
+	}
+	if duplicate, err := store.RecordDCPReleaseArbiterSuccessorDecision(context.Background(), attempt, decisionJSON, decisionDigest, false, "", time.Now()); err != nil || duplicate {
+		t.Fatalf("duplicate decision was not inert: updated=%v err=%v", duplicate, err)
+	}
+	attempt.DecisionDigest = decisionDigest
+	consumed, err := store.ConsumeDCPReleaseArbiterSuccessorRepair(context.Background(), attempt, time.Now())
+	if err != nil || !consumed {
+		t.Fatalf("consume successor recovery: consumed=%v err=%v", consumed, err)
+	}
+	if duplicate, err := store.ConsumeDCPReleaseArbiterSuccessorRepair(context.Background(), attempt, time.Now()); err != nil || duplicate {
+		t.Fatalf("duplicate recovery wake was not inert: updated=%v err=%v", duplicate, err)
+	}
+	if _, err := db.Exec(parts[1]); err == nil {
+		t.Fatal("rollback erased a fenced successor attempt")
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM dcp_review_lab_arbiter_v1_successor_attempt`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("successor evidence did not survive refused rollback: count=%d err=%v", count, err)
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "missing")
 	if _, err := OpenReadOnly(context.Background(), dataDir); err == nil {
