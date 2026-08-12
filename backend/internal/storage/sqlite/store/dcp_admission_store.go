@@ -133,7 +133,7 @@ func (s *Store) CompleteDCPReviewLabAdmission(ctx context.Context, a domain.DCPR
 	defer s.writeMu.Unlock()
 	completed := false
 	err := s.inTx(ctx, "complete DCP review-lab admission", func(q *gen.Queries) error {
-		if err := requireDCPArbiterCompletion(q, ctx, a, now); err != nil {
+		if err := requireDCPArbiterCompletion(q, ctx, a, mergeSHA, now); err != nil {
 			return err
 		}
 		n, err := q.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{MergeCommitSha: mergeSHA, RunID: a.ReviewRunID})
@@ -222,6 +222,19 @@ func (s *Store) RecordDCPReviewLabIncident(ctx context.Context, a domain.DCPRevi
 		}
 		if n != 1 {
 			return errors.New("exact admission incident transition was unavailable")
+		}
+		fresh, freshErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+		if freshErr == nil && fresh.Status == string(domain.DCPFreshWorkerRecoveryReviewed) &&
+			fresh.RecoveryReviewRunID == a.ReviewRunID && fresh.NewHead == a.TargetSHA {
+			n, failErr := q.FailDCPCard12FreshWorkerTerminal(ctx, gen.FailDCPCard12FreshWorkerTerminalParams{
+				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 fresh recovery terminal failure was unavailable"))
+			}
+		} else if freshErr != nil && !errors.Is(freshErr, sql.ErrNoRows) {
+			return freshErr
 		}
 		recorded = true
 		return nil

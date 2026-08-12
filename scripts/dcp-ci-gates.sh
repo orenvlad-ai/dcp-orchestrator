@@ -10,8 +10,8 @@ i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
-control_plane_commit='28546ce0cc2be84349221464c4938c98ed11d32a'
-operating_contract_revision='2026-08-12.3'
+control_plane_commit='2a174899ae72bf1db548c3b2f172d963488191f1'
+operating_contract_revision='2026-08-12.6'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2

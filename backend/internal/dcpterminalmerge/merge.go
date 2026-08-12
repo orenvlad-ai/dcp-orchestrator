@@ -76,14 +76,15 @@ type SCM interface {
 type RefreshWaker func(context.Context, domain.SessionID, string) error
 
 type Engine struct {
-	store   Store
-	scm     SCM
-	dataDir string
-	mu      sync.Mutex
-	git     func(context.Context, string, ...string) (string, error)
-	wake    RefreshWaker
-	arbiter ArbiterLauncher
-	clock   func() time.Time
+	store       Store
+	scm         SCM
+	dataDir     string
+	mu          sync.Mutex
+	git         func(context.Context, string, ...string) (string, error)
+	wake        RefreshWaker
+	arbiter     ArbiterLauncher
+	freshWorker FreshWorkerLauncher
+	clock       func() time.Time
 }
 
 func New(store Store, scm SCM, dataDir string) *Engine {
@@ -120,6 +121,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		return err
 	}
 	if err := e.reconcileStage2ArbiterSuccessor(ctx); err != nil {
+		return err
+	}
+	if err := e.reconcileCard12FreshWorker(ctx); err != nil {
 		return err
 	}
 
@@ -244,6 +248,9 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		return nil
 	}
 	now := e.clock()
+	if handled, recoveryErr := e.tryRebindFreshRecovery(ctx, candidate, observation, now); handled {
+		return recoveryErr
+	}
 	if refreshing, ok, err := e.store.GetRefreshingDCPReviewLabAdmissionBySession(ctx, candidate.session.ID); err != nil {
 		return err
 	} else if ok {

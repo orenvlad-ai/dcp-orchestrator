@@ -51,12 +51,20 @@ type Service struct {
 	lifecycle          Reducer
 	clock              func() time.Time
 	approvedStructured func(context.Context, domain.SessionID)
+	structuredResult   func(context.Context, domain.SessionID, domain.ReviewRun) bool
 }
 
 // SetApprovedStructuredHandler late-binds the bounded DCP terminal action.
 // Ordinary/manual review results never invoke it.
 func (s *Service) SetApprovedStructuredHandler(handler func(context.Context, domain.SessionID)) {
 	s.approvedStructured = handler
+}
+
+// SetStructuredResultHandler lets the one exact card-12 recovery consume its
+// fresh structured result before ordinary delivery/terminal callbacks. All
+// unrelated results return false and keep the stock behavior.
+func (s *Service) SetStructuredResultHandler(handler func(context.Context, domain.SessionID, domain.ReviewRun) bool) {
+	s.structuredResult = handler
 }
 
 var _ Manager = (*Service)(nil)
@@ -234,6 +242,9 @@ func (s *Service) SubmitStructured(ctx context.Context, workerID domain.SessionI
 	}
 	if !ok || run.Status != domain.ReviewRunComplete || run.Verdict != verdict || run.Body != body {
 		return domain.ReviewRun{}, fmt.Errorf("structured review result was recorded but could not be verified")
+	}
+	if s.structuredResult != nil && s.structuredResult(ctx, workerID, run) {
+		return run, nil
 	}
 	if verdict == domain.VerdictApproved && s.approvedStructured != nil {
 		s.approvedStructured(ctx, workerID)

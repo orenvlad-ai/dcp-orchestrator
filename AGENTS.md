@@ -1,6 +1,6 @@
 # DCP Orchestrator repository rules
 
-This private managed fork owns DCP Orchestrator application source. It is not
+This public managed fork owns DCP Orchestrator application source. It is not
 ordinary Agent Orchestrator, not a production control plane, and not an
 independent source of DCP architecture policy.
 
@@ -9,13 +9,15 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `28546ce0cc2be84349221464c4938c98ed11d32a`](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/AGENTS.md)
-2. [current operating contract revision `2026-08-12.3`](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
-4. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
-5. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-6. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/docs/TARGET_ARCHITECTURE_V1.md)
-7. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/28546ce0cc2be84349221464c4938c98ed11d32a/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `2a174899ae72bf1db548c3b2f172d963488191f1`](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/AGENTS.md)
+2. [current operating contract revision `2026-08-12.6`](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
+4. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
+5. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
+6. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
+7. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+8. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/docs/TARGET_ARCHITECTURE_V1.md)
+9. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/2a174899ae72bf1db548c3b2f172d963488191f1/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -157,6 +159,22 @@ launch a model, replace or rewrite the artifact, accept an arbitrary late
 result, or create another attempt. The next controlled startup is the sole
 existing path that may consume the deterministic 1/1 worker/reviewer policy.
 Never synthesize owner acceptance.
+
+The successor's accepted generation-2 decision and one consumed native wake
+are immutable. That native resume failed before model launch because card 12
+has no historical `agent_session_id` or `runtime_launch_id`; its successor row
+is terminal `failed/repair_launch_failed`. Migration 0057 adds one separately
+audited fresh stateless worker action for only that existing card/task/worktree/
+branch/PR/incident. Its old empty native identities remain unchanged. The new
+row fences at most one `gpt-5.6-sol`/`xhigh` worker call with a hard 16,384-token
+ceiling, one new runtime/Codex identity, one exact guarded same-branch push,
+and at most one context-free reviewer on the resulting exact head. It permits
+no card/task/worktree/branch/PR/incident/arbiter replacement, no transcript
+replay and no retry. Only the existing trusted admission line may rebind
+sequence 4 and terminally merge PR #9 after the one approved/no-findings
+review, named green check and current CLEAN/MERGEABLE facts. Every preflight,
+worker, reviewer, restart or terminal ambiguity fails closed after its
+applicable fence without another model call.
 
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or

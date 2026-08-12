@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
@@ -216,6 +217,7 @@ func Run() error {
 		prActions = prsvc.NewActionService(prsvc.ActionDeps{Store: store, Merger: scmProvider, Reader: scmProvider})
 		terminalMerger = dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
 		terminalMerger.SetArbiterLauncher(dcpterminalmerge.NewArbiterLauncher(runtimeAdapter, cfg.DataDir, cfg.RunFilePath))
+		terminalMerger.SetFreshWorkerLauncher(dcpterminalmerge.NewFreshWorkerLauncher(runtimeAdapter, codex.New(), cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetRefreshWaker(func(wakeCtx context.Context, id domain.SessionID, prompt string) error {
 			_, wakeErr := sessMgr.ResumeDCPReviewLabIdleAgent(wakeCtx, id, prompt)
 			return wakeErr
@@ -228,6 +230,13 @@ func Run() error {
 			}()
 		}
 		reviewSvc.SetApprovedStructuredHandler(triggerTerminalMerge)
+		reviewSvc.SetStructuredResultHandler(func(resultCtx context.Context, id domain.SessionID, run domain.ReviewRun) bool {
+			handled, handleErr := terminalMerger.HandleFreshRecoveryReview(resultCtx, id, run)
+			if handleErr != nil && !errors.Is(handleErr, context.Canceled) {
+				log.Warn("DCP card-12 fresh recovery review failed closed", "session", id, "run", run.ID, "err", handleErr)
+			}
+			return handled
+		})
 		lcStack.LCM.SetTerminalMergeEligibilityHandler(triggerTerminalMerge)
 	}
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)

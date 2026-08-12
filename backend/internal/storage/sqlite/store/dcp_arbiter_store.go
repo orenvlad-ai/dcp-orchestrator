@@ -217,7 +217,7 @@ func sameDCPArbiterImmutable(a, b domain.DCPReleaseArbiterIncident) bool {
 		a.RuntimeHandleID == b.RuntimeHandleID && a.LaunchID == b.LaunchID
 }
 
-func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission domain.DCPReviewLabAdmission, now time.Time) error {
+func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission domain.DCPReviewLabAdmission, mergeSHA string, now time.Time) error {
 	row, err := q.GetDCPReleaseArbiterIncidentByAdmission(ctx, admission.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -226,6 +226,32 @@ func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission 
 		return err
 	}
 	incident := dcpArbiterFromRow(row)
+	freshRow, freshErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+	if freshErr == nil {
+		fresh := dcpCard12FreshWorkerRecoveryFromRow(freshRow)
+		if fresh.AdmissionID != admission.ID || fresh.IncidentID != incident.IncidentID ||
+			fresh.Status != domain.DCPFreshWorkerRecoveryReviewed ||
+			fresh.RecoveryReviewRunID != admission.ReviewRunID || fresh.NewHead != admission.TargetSHA ||
+			fresh.WorkerModelCallCount != 1 || fresh.ReviewerModelCallCount != 1 ||
+			fresh.PredecessorStatus != "failed" || fresh.PredecessorError != "repair_launch_failed" {
+			return errors.New("card-12 fresh recovery terminal identity is not exact")
+		}
+		n, completeErr := q.CompleteDCPCard12FreshWorkerRecovery(ctx, gen.CompleteDCPCard12FreshWorkerRecoveryParams{
+			MergeCommitSha: mergeSHA, UpdatedAt: now,
+			FinishedAt: sql.NullTime{Time: now, Valid: true}, RecoveryID: fresh.RecoveryID,
+			ReviewRunID: admission.ReviewRunID, TargetSha: admission.TargetSHA,
+		})
+		if completeErr != nil {
+			return completeErr
+		}
+		if n != 1 {
+			return errors.New("card-12 fresh recovery terminal completion was unavailable")
+		}
+		return nil
+	}
+	if !errors.Is(freshErr, sql.ErrNoRows) {
+		return freshErr
+	}
 	if incident.Status == domain.DCPArbiterFailed && incident.IncidentID == "dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60" {
 		if incident.Generation != 1 || incident.IdentityDigest != "2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60" ||
 			incident.InputDigest != "f618fa8a46715acce0958b592384f0d42c071562e36988163e2b96f2c157fc49" ||

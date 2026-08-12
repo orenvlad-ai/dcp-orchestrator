@@ -80,6 +80,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 type DCPArbiterService interface {
 	SubmitArbiterDecision(context.Context, string, []byte) error
 	ReportArbiterProcessExit(context.Context, string, dcpterminalmerge.ArbiterProcessExitReport) error
+	ProcessFreshWorkerExit(context.Context, string, dcpterminalmerge.FreshWorkerExitReport) error
 }
 
 type dcpArbiterDecisionRequest struct {
@@ -92,6 +93,12 @@ type dcpArbiterExitRequest struct {
 	Started       bool   `json:"started"`
 	ExitCode      int    `json:"exitCode"`
 	ResultFailure string `json:"resultFailure,omitempty"`
+}
+
+type dcpFreshWorkerExitRequest struct {
+	RecoveryID string `json:"recoveryId"`
+	Started    bool   `json:"started"`
+	ExitCode   int    `json:"exitCode"`
 }
 
 func mountDCPArbiter(r chi.Router, service DCPArbiterService) {
@@ -136,6 +143,23 @@ func mountDCPArbiter(r chi.Router, service DCPArbiterService) {
 		report := dcpterminalmerge.ArbiterProcessExitReport{Started: body.Started, ExitCode: body.ExitCode, ResultFailure: body.ResultFailure}
 		if err := service.ReportArbiterProcessExit(req.Context(), body.IncidentID, report); err != nil {
 			envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "ARBITER_EXIT_REJECTED", "arbiter exit rejected fail-closed", nil)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	r.Post("/internal/dcp/review-lab/card12-recovery/process-exit", func(w http.ResponseWriter, req *http.Request) {
+		if !local(w, req) {
+			return
+		}
+		var body dcpFreshWorkerExitRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || body.RecoveryID == "" {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_RECOVERY_EXIT", "invalid bounded recovery exit", nil)
+			return
+		}
+		if err := service.ProcessFreshWorkerExit(req.Context(), body.RecoveryID, dcpterminalmerge.FreshWorkerExitReport{Started: body.Started, ExitCode: body.ExitCode}); err != nil {
+			envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "RECOVERY_EXIT_REJECTED", "recovery exit rejected fail-closed", nil)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
