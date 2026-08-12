@@ -409,6 +409,103 @@ func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {
 	}
 }
 
+func TestCard12FreshWorkerPreflightRecoveryPreservesZeroCallFailureAudit(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE dcp_review_lab_card12_fresh_worker_recovery (
+    recovery_id TEXT PRIMARY KEY, recovery_generation INTEGER NOT NULL,
+    recovery_identity_digest TEXT NOT NULL, incident_id TEXT NOT NULL,
+    successor_attempt_id TEXT NOT NULL, accepted_decision_digest TEXT NOT NULL,
+    admission_id TEXT NOT NULL, session_id TEXT NOT NULL, task_id TEXT NOT NULL,
+    source_branch TEXT NOT NULL, pr_number INTEGER NOT NULL, old_head TEXT NOT NULL,
+    current_main TEXT NOT NULL, predecessor_status TEXT NOT NULL,
+    predecessor_error TEXT NOT NULL, old_agent_session_id TEXT NOT NULL,
+    old_runtime_launch_id TEXT NOT NULL, contract_commit TEXT NOT NULL,
+    status TEXT NOT NULL, error_code TEXT NOT NULL, revision INTEGER NOT NULL,
+    worker_model_call_count INTEGER NOT NULL, reviewer_model_call_count INTEGER NOT NULL,
+    launch_id TEXT NOT NULL, worker_codex_session_id TEXT NOT NULL,
+    worker_token_count INTEGER NOT NULL, input_json TEXT NOT NULL,
+    input_digest TEXT NOT NULL, result_path TEXT NOT NULL, log_path TEXT NOT NULL,
+    worker_result_digest TEXT NOT NULL, worker_log_digest TEXT NOT NULL,
+    new_head TEXT NOT NULL, new_commit TEXT NOT NULL,
+    recovery_review_run_id TEXT NOT NULL, merge_commit_sha TEXT NOT NULL,
+    authorized_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP
+);
+INSERT INTO dcp_review_lab_card12_fresh_worker_recovery VALUES (
+    'dcp-card12-fresh-worker-recovery-d2b7142bc9e5844ba165abe24d3222b3e1a94c3577fba5f6f8d97ec3dbad151b',
+    1, 'd2b7142bc9e5844ba165abe24d3222b3e1a94c3577fba5f6f8d97ec3dbad151b',
+    'dcp-global-release-2694dbd8b3d4897063603d7a8607ca516aa2f8e05c5a3c39cf56d8e3f18c3c60',
+    'dcp-arbiter-successor-3c62ea80b56ef94165519d4f01e4c449c320bff22d16b902dd68d4a1a355ea7d',
+    '237472879b22a8db65c5a3a0715510dc17aee1de93c45eaab45dde538cefb939',
+    'dcp-admission-ecb500ad-f9f0-443b-9d73-2c8a6350ce34',
+    'dcp-review-lab-12', 'i13-arbiter-b', 'ao/dcp-review-lab-12/root', 9,
+    'd4fcb68051ae113ed497d02151a759800ee85633',
+    'b34b31b5443890e69128db2862726950a6bbac0d',
+    'failed', 'repair_launch_failed', '', '',
+    '2a174899ae72bf1db548c3b2f172d963488191f1',
+    'preflight_failed', 'identity_drift', 1, 0, 0, '', '', 0,
+    '', '', '', '', '', '', '', '', '', '',
+    '2026-08-12 12:06:18', '2026-08-12 12:06:23', '2026-08-12 12:06:23'
+);`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationsFS.ReadFile("migrations/0058_dcp_review_lab_card12_fresh_worker_preflight_recovery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(migration), "-- +goose Down")
+	if len(parts) != 2 {
+		t.Fatal("migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(parts[0]); err != nil {
+		t.Fatalf("apply up: %v", err)
+	}
+	var status, errorCode string
+	var revision, workerCalls, reviewerCalls int
+	if err := db.QueryRow(`
+SELECT status, error_code, revision, worker_model_call_count,
+       reviewer_model_call_count
+FROM dcp_review_lab_card12_fresh_worker_recovery
+`).Scan(&status, &errorCode, &revision, &workerCalls, &reviewerCalls); err != nil {
+		t.Fatal(err)
+	}
+	if status != "authorized" || errorCode != "" || revision != 2 || workerCalls != 0 || reviewerCalls != 0 {
+		t.Fatalf("rearmed row = status:%s error:%s revision:%d calls:%d/%d", status, errorCode, revision, workerCalls, reviewerCalls)
+	}
+	var auditCount, priorRevision int
+	var priorStatus, priorError, sourceSHA, observedStatus, reason string
+	if err := db.QueryRow(`
+SELECT count(*), prior_status, prior_error_code, prior_revision,
+       failed_source_sha, observed_diff_status, recovery_reason
+FROM dcp_card12_fresh_worker_preflight_recovery
+`).Scan(&auditCount, &priorStatus, &priorError, &priorRevision, &sourceSHA, &observedStatus, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 || priorStatus != "preflight_failed" || priorError != "identity_drift" || priorRevision != 1 ||
+		sourceSHA != "fbcf4929f9192f7cce9c5097b0bc6a449d28e663" || observedStatus != "M" ||
+		reason != "exact_conflict_path_is_modified_from_current_main" {
+		t.Fatalf("preflight recovery audit = count:%d prior:%s/%s/%d source:%s diff:%s reason:%s", auditCount, priorStatus, priorError, priorRevision, sourceSHA, observedStatus, reason)
+	}
+	if _, err := db.Exec(`
+UPDATE dcp_review_lab_card12_fresh_worker_recovery
+SET status = 'running', worker_model_call_count = 1,
+    launch_id = recovery_id, revision = revision + 1
+`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(parts[1]); err == nil {
+		t.Fatal("rollback erased a fenced fresh-worker preflight recovery")
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM dcp_card12_fresh_worker_preflight_recovery`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("preflight recovery audit did not survive refused rollback: count=%d err=%v", auditCount, err)
+	}
+}
+
 func TestOpenReadOnlyDoesNotMigrate(t *testing.T) {
 	dataDir := t.TempDir()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db")+pragmas)

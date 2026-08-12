@@ -331,7 +331,7 @@ func (e *Engine) validateFreshWorkerGit(ctx context.Context, recovery domain.DCP
 			return errors.New("card-12 fresh worker: old worktree head drifted")
 		}
 		status, err := e.git(ctx, repo, "diff", "--name-status", recovery.CurrentMain+".."+recovery.OldHead)
-		if err != nil || status != "A\t"+arbiterConflictPath {
+		if err != nil || status != "M\t"+arbiterConflictPath {
 			return errors.New("card-12 fresh worker: old candidate diff drifted")
 		}
 		current, err := e.git(ctx, repo, "show", recovery.CurrentMain+":"+arbiterConflictPath)
