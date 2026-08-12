@@ -14,7 +14,7 @@ func exactTestSuccessorState() (domain.DCPReleaseArbiterIncident, domain.DCPRele
 		IncidentID: exactSuccessorIncidentID, Generation: 1, IdentityDigest: exactSuccessorIncidentDigest,
 		AdmissionID: exactSuccessorAdmissionID, IncidentLeaseID: exactSuccessorIncidentLeaseID,
 		SourcePacketDigest: exactSuccessorSourcePacketDigest,
-		InputJSON:          `{"schemaVersion":"dcp.review-lab.global-release-arbiter-input/v1","allowedPaths":["same_worker_conflict_repair"]}`,
+		InputJSON:          `{"schemaVersion":"dcp.review-lab.global-release-arbiter-input/v1","mechanical":{"mergeTreeEvidenceDigest":"a19c64060d0f41320b6bf652c47ff5c58810ebec0416d003963bc1b4fcdf524f"},"allowedPaths":["same_worker_conflict_repair"]}`,
 		InputDigest:        exactSuccessorIncidentInputDigest, TaskID: ArbiterTaskB, SessionID: ArbiterSessionB,
 		SourceBranch: "ao/dcp-review-lab-12/root", PRURL: exactSuccessorPRURL, PRNumber: 9,
 		TargetSHA: exactSuccessorTargetSHA, CurrentBaseSHA: exactSuccessorCurrentBaseSHA,
@@ -38,6 +38,51 @@ func exactTestSuccessorState() (domain.DCPReleaseArbiterIncident, domain.DCPRele
 		Status: domain.DCPArbiterSuccessorAuthorized, AuthorizedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
 	}
 	return incident, attempt
+}
+
+func TestArbiterSuccessorAllowsOnlyExactFrozenNestedRecoveryDigest(t *testing.T) {
+	incident, attempt := exactTestSuccessorState()
+	attempt.InputDigest = exactSuccessorInputDigest
+	attempt.Status = domain.DCPArbiterSuccessorFailed
+	attempt.ModelCallCount = 1
+	attempt.ErrorCode = "submit_failed"
+	decision := validSuccessorAssignDecision(incident, attempt)
+	decision.EvidenceDigests = []string{exactSuccessorMergeTreeEvidence, attempt.InputDigest}
+	data, _ := json.Marshal(decision)
+	if _, _, err := ParseArbiterSuccessorDecision(data, incident, attempt); err != nil {
+		t.Fatalf("exact frozen nested digest rejected: %v", err)
+	}
+	decision.EvidenceDigests[0] = strings.Repeat("8", 64)
+	data, _ = json.Marshal(decision)
+	if _, _, err := ParseArbiterSuccessorDecision(data, incident, attempt); err == nil {
+		t.Fatal("foreign nested digest was accepted")
+	}
+}
+
+func TestArbiterSuccessorAcceptsExactObservedSuccessorResult(t *testing.T) {
+	incident, attempt := exactTestSuccessorState()
+	incident.ScopeDigest = "1259b9d8569638c986e1dcd56d13f5d8e1e049e5ad2987c94b713bbbc28fd62f"
+	incident.DiffDigest = "c81b1e31b06c0045562ac8a2eb13a6cb772483e8c8859b01c3822ad7e630aa62"
+	incident.MechanicalDigest = "1730d612b1f6755c507cd8d6a21871a329e4f5d556361fcef8dbd289d3ab9cc3"
+	attempt.InputDigest = exactSuccessorInputDigest
+	attempt.Status = domain.DCPArbiterSuccessorFailed
+	attempt.ModelCallCount = 1
+	attempt.ErrorCode = "submit_failed"
+	decision := validSuccessorAssignDecision(incident, attempt)
+	decision.Summary = "The authoritative evidence identifies the original worker and PR, exact old head and current main, and a sole conflict path identical to the only approved task file; the bounded same-worker conflict repair remains within scope."
+	decision.EvidenceDigests = []string{
+		incident.ScopeDigest,
+		incident.DiffDigest,
+		exactSuccessorMergeTreeEvidence,
+		incident.MechanicalDigest,
+	}
+	data, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ParseArbiterSuccessorDecision(data, incident, attempt); err != nil {
+		t.Fatalf("exact observed successor result rejected: %v", err)
+	}
 }
 
 func validSuccessorAssignDecision(incident domain.DCPReleaseArbiterIncident, attempt domain.DCPReleaseArbiterSuccessorAttempt) ArbiterSuccessorDecision {

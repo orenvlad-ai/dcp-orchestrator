@@ -370,3 +370,50 @@ WHERE incident_id = sqlc.arg(incident_id)
   AND status = 'recovery_reviewed'
   AND recovery_review_run_id = sqlc.arg(recovery_review_run_id)
   AND recovery_target_sha = sqlc.arg(recovery_target_sha);
+
+-- name: GetDCPArbiterSuccessorValidationRecovery :one
+SELECT * FROM dcp_arbiter_successor_result_validation_recovery WHERE attempt_id = ?;
+
+-- name: RecoverDCPArbiterSuccessorExactDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'decided', decision_json = sqlc.arg(decision_json),
+    decision_digest = sqlc.arg(decision_digest), error_code = '',
+    decision_at = sqlc.arg(decision_at), finished_at = NULL,
+    updated_at = sqlc.arg(decision_at)
+WHERE dcp_review_lab_arbiter_v1_successor_attempt.attempt_id = sqlc.arg(attempt_id)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = sqlc.arg(incident_id)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.attempt_generation = 2
+  AND dcp_review_lab_arbiter_v1_successor_attempt.attempt_identity_digest = sqlc.arg(attempt_identity_digest)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.input_digest = sqlc.arg(input_digest)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.status = 'failed'
+  AND dcp_review_lab_arbiter_v1_successor_attempt.model_call_count = 1
+  AND dcp_review_lab_arbiter_v1_successor_attempt.decision_json = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.decision_digest = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_owner_session_id = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_path = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_wake_count = 0
+  AND dcp_review_lab_arbiter_v1_successor_attempt.error_code = 'submit_failed'
+  AND dcp_review_lab_arbiter_v1_successor_attempt.finished_at IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM dcp_arbiter_successor_result_validation_recovery recovery
+    WHERE recovery.attempt_id = dcp_review_lab_arbiter_v1_successor_attempt.attempt_id
+      AND recovery.status = 'pending'
+      AND recovery.input_digest = dcp_review_lab_arbiter_v1_successor_attempt.input_digest
+      AND recovery.prior_status = dcp_review_lab_arbiter_v1_successor_attempt.status
+      AND recovery.prior_error_code = dcp_review_lab_arbiter_v1_successor_attempt.error_code
+      AND recovery.prior_finished_at = dcp_review_lab_arbiter_v1_successor_attempt.finished_at
+      AND recovery.prior_model_call_count = dcp_review_lab_arbiter_v1_successor_attempt.model_call_count
+      AND recovery.prior_decision_digest = dcp_review_lab_arbiter_v1_successor_attempt.decision_digest
+      AND recovery.prior_recovery_wake_count = dcp_review_lab_arbiter_v1_successor_attempt.recovery_wake_count
+  );
+
+-- name: MarkDCPArbiterSuccessorValidationRecoveryApplied :execrows
+UPDATE dcp_arbiter_successor_result_validation_recovery
+SET status = 'applied', error_code = '', finished_at = sqlc.arg(finished_at)
+WHERE attempt_id = sqlc.arg(attempt_id) AND status = 'pending';
+
+-- name: FailDCPArbiterSuccessorValidationRecovery :execrows
+UPDATE dcp_arbiter_successor_result_validation_recovery
+SET status = 'failed', error_code = sqlc.arg(error_code),
+    finished_at = sqlc.arg(finished_at)
+WHERE attempt_id = sqlc.arg(attempt_id) AND status = 'pending';

@@ -38,6 +38,13 @@ const (
 	exactSuccessorOriginalResultDigest = "d121d012a0b3042f02886fdc0c2aca806f34be64f9e5a3d15e1edf444ff3ae2d"
 	exactSuccessorOriginalCodexSession = "019ff23c-7cbf-7ee1-9567-30c6693f95fe"
 	exactSuccessorOriginalTokens       = int64(11583)
+	exactSuccessorInputDigest          = "aa44c625c940048d5e0266dac23dd4835a1afcf7648116a056758093b67160e6"
+	exactSuccessorResultArtifactDigest = "9b5ff7847db2533e56bdbbc424114e5bea8e5e3c352ad1d029a99deaba05c172"
+	exactSuccessorResultArtifactSize   = int64(1705)
+	exactSuccessorMergeTreeEvidence    = "a19c64060d0f41320b6bf652c47ff5c58810ebec0416d003963bc1b4fcdf524f"
+	exactSuccessorCodexSession         = "019ff3a1-7f0e-79e2-baa5-cbaa1cc6fc37"
+	exactSuccessorTokens               = int64(12271)
+	exactSuccessorValidationContract   = "28546ce0cc2be84349221464c4938c98ed11d32a"
 )
 
 type arbiterSuccessorInput struct {
@@ -215,6 +222,18 @@ func ReadArbiterSuccessorDecision(path string, incident domain.DCPReleaseArbiter
 	return ParseArbiterSuccessorDecision(data, incident, attempt)
 }
 
+func hasExactSuccessorMergeTreeEvidence(incident domain.DCPReleaseArbiterIncident, attempt domain.DCPReleaseArbiterSuccessorAttempt) bool {
+	if attempt.InputDigest != exactSuccessorInputDigest || incident.InputDigest != exactSuccessorIncidentInputDigest {
+		return false
+	}
+	var input struct {
+		Mechanical struct {
+			MergeTreeEvidenceDigest string `json:"mergeTreeEvidenceDigest"`
+		} `json:"mechanical"`
+	}
+	return json.Unmarshal([]byte(incident.InputJSON), &input) == nil && input.Mechanical.MergeTreeEvidenceDigest == exactSuccessorMergeTreeEvidence
+}
+
 func validateArbiterSuccessorDecision(d ArbiterSuccessorDecision, incident domain.DCPReleaseArbiterIncident, attempt domain.DCPReleaseArbiterSuccessorAttempt) error {
 	if !exactSuccessorAuthorization(attempt, incident) || d.SchemaVersion != ArbiterSuccessorDecisionSchema ||
 		d.IncidentID != incident.IncidentID || d.IncidentGeneration != 1 || d.IncidentIdentityDigest != incident.IdentityDigest ||
@@ -232,6 +251,12 @@ func validateArbiterSuccessorDecision(d ArbiterSuccessorDecision, incident domai
 		incident.DiffDigest: true, incident.CheckSetDigest: true, incident.ReviewSetDigest: true,
 		incident.FrozenQueueDigest: true, incident.MechanicalDigest: true, incident.InputDigest: true,
 		attempt.InputDigest: true, attempt.AttemptIdentityDigest: true,
+	}
+	// This one nested digest was already frozen in the exact incident input.
+	// Contract 28546ce0 authorizes only its omission correction; this does not
+	// turn arbitrary nested strings or late results into acceptable evidence.
+	if hasExactSuccessorMergeTreeEvidence(incident, attempt) {
+		allowedEvidence[exactSuccessorMergeTreeEvidence] = true
 	}
 	seen := map[string]bool{}
 	for _, digest := range d.EvidenceDigests {

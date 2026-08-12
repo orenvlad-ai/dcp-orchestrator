@@ -354,6 +354,49 @@ FROM dcp_review_lab_arbiter_v1_successor_attempt
 	if err := db.QueryRow(`SELECT count(*) FROM dcp_review_lab_arbiter_v1_successor_attempt`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("successor evidence did not survive refused rollback: count=%d err=%v", count, err)
 	}
+	if _, err := db.Exec(`
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'failed',
+    input_json = '{"schemaVersion":"dcp.review-lab.global-release-arbiter-successor-input/v1"}',
+    input_digest = 'aa44c625c940048d5e0266dac23dd4835a1afcf7648116a056758093b67160e6',
+    decision_json = '', decision_digest = '', decision_at = NULL,
+    recovery_owner_session_id = '', recovery_path = '', recovery_wake_count = 0,
+    error_code = 'submit_failed', finished_at = '2099-08-12 01:41:41',
+    updated_at = '2099-08-12 01:41:41'
+`); err != nil {
+		t.Fatal(err)
+	}
+	validationMigration, err := migrationsFS.ReadFile("migrations/0056_dcp_arbiter_successor_result_validation_recovery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationParts := strings.Split(string(validationMigration), "-- +goose Down")
+	if len(validationParts) != 2 {
+		t.Fatal("validation migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(validationParts[0]); err != nil {
+		t.Fatalf("apply validation recovery: %v", err)
+	}
+	recovery, found, err := store.GetDCPArbiterSuccessorValidationRecovery(context.Background(), attemptID)
+	if err != nil || !found || recovery.Status != "pending" || recovery.PriorErrorCode != "submit_failed" ||
+		recovery.ResultArtifactDigest != "9b5ff7847db2533e56bdbbc424114e5bea8e5e3c352ad1d029a99deaba05c172" ||
+		recovery.CodexSessionID != "019ff3a1-7f0e-79e2-baa5-cbaa1cc6fc37" || recovery.TokenCount != 12271 {
+		t.Fatalf("exact validation audit = found:%v err:%v row:%+v", found, err, recovery)
+	}
+	attempt, found, err = store.GetDCPReleaseArbiterSuccessorAttemptByID(context.Background(), attemptID)
+	if err != nil || !found {
+		t.Fatalf("reload failed successor: found=%v err=%v", found, err)
+	}
+	recovered, err := store.RecoverDCPArbiterSuccessorExactDecision(context.Background(), attempt, decisionJSON, decisionDigest, time.Now())
+	if err != nil || !recovered {
+		t.Fatalf("recover exact decision: recovered=%v err=%v", recovered, err)
+	}
+	if duplicate, err := store.RecoverDCPArbiterSuccessorExactDecision(context.Background(), attempt, decisionJSON, decisionDigest, time.Now()); err != nil || duplicate {
+		t.Fatalf("duplicate exact result recovery was not inert: recovered=%v err=%v", duplicate, err)
+	}
+	if _, err := db.Exec(validationParts[1]); err == nil {
+		t.Fatal("rollback erased a consumed validation recovery audit")
+	}
 }
 
 func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {

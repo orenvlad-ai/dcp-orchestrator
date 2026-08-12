@@ -137,6 +137,68 @@ func (s *Store) RebindDCPAdmissionAfterArbiterSuccessorRepair(ctx context.Contex
 	return rebound, err
 }
 
+func (s *Store) GetDCPArbiterSuccessorValidationRecovery(ctx context.Context, attemptID string) (domain.DCPArbiterSuccessorValidationRecovery, bool, error) {
+	row, err := s.qr.GetDCPArbiterSuccessorValidationRecovery(ctx, attemptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DCPArbiterSuccessorValidationRecovery{}, false, nil
+	}
+	if err != nil {
+		return domain.DCPArbiterSuccessorValidationRecovery{}, false, err
+	}
+	recovery := domain.DCPArbiterSuccessorValidationRecovery{
+		AttemptID: row.AttemptID, IncidentID: row.IncidentID, AttemptGeneration: row.AttemptGeneration,
+		AttemptIdentityDigest: row.AttemptIdentityDigest, InputDigest: row.InputDigest,
+		PriorStatus: row.PriorStatus, PriorErrorCode: row.PriorErrorCode, PriorFinishedAt: row.PriorFinishedAt,
+		PriorModelCallCount: row.PriorModelCallCount, PriorDecisionDigest: row.PriorDecisionDigest,
+		PriorRecoveryWakeCount: row.PriorRecoveryWakeCount, ResultArtifactDigest: row.ResultArtifactDigest,
+		ResultArtifactSize: row.ResultArtifactSize, MergeTreeEvidenceDigest: row.MergeTreeEvidenceDigest,
+		CodexSessionID: row.CodexSessionID, TokenCount: row.TokenCount, ContractCommit: row.ContractCommit,
+		Status: row.Status, ErrorCode: row.ErrorCode, CreatedAt: row.CreatedAt,
+	}
+	if row.FinishedAt.Valid {
+		value := row.FinishedAt.Time
+		recovery.FinishedAt = &value
+	}
+	return recovery, true, nil
+}
+
+func (s *Store) RecoverDCPArbiterSuccessorExactDecision(ctx context.Context, attempt domain.DCPReleaseArbiterSuccessorAttempt, decisionJSON, decisionDigest string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	recovered := false
+	err := s.inTx(ctx, "recover exact DCP arbiter successor decision", func(q *gen.Queries) error {
+		n, err := q.RecoverDCPArbiterSuccessorExactDecision(ctx, gen.RecoverDCPArbiterSuccessorExactDecisionParams{
+			DecisionJson: decisionJSON, DecisionDigest: decisionDigest, DecisionAt: sql.NullTime{Time: now, Valid: true},
+			AttemptID: attempt.AttemptID, IncidentID: attempt.IncidentID,
+			AttemptIdentityDigest: attempt.AttemptIdentityDigest, InputDigest: attempt.InputDigest,
+		})
+		if err != nil || n == 0 {
+			return err
+		}
+		n, err = q.MarkDCPArbiterSuccessorValidationRecoveryApplied(ctx, gen.MarkDCPArbiterSuccessorValidationRecoveryAppliedParams{
+			FinishedAt: sql.NullTime{Time: now, Valid: true}, AttemptID: attempt.AttemptID,
+		})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("exact DCP arbiter successor validation audit was unavailable")
+		}
+		recovered = true
+		return nil
+	})
+	return recovered, err
+}
+
+func (s *Store) FailDCPArbiterSuccessorValidationRecovery(ctx context.Context, attemptID, errorCode string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.FailDCPArbiterSuccessorValidationRecovery(ctx, gen.FailDCPArbiterSuccessorValidationRecoveryParams{
+		ErrorCode: errorCode, FinishedAt: sql.NullTime{Time: now, Valid: true}, AttemptID: attemptID,
+	})
+	return n == 1, err
+}
+
 func dcpArbiterSuccessorResult(row gen.DcpReviewLabArbiterV1SuccessorAttempt, err error) (domain.DCPReleaseArbiterSuccessorAttempt, bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DCPReleaseArbiterSuccessorAttempt{}, false, nil
