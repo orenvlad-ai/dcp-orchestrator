@@ -199,6 +199,65 @@ type DcpReviewLabArbiterV1SuccessorAttempt struct {
 	FinishedAt                   sql.NullTime
 }
 
+type DcpReviewLabCard12FreshWorkerRecovery struct {
+	RecoveryID                 string
+	RecoveryGeneration         int64
+	RecoveryIdentityDigest     string
+	IncidentID                 string
+	IncidentGeneration         int64
+	SuccessorAttemptID         string
+	SuccessorAttemptGeneration int64
+	SuccessorIdentityDigest    string
+	AcceptedDecisionDigest     string
+	AdmissionID                string
+	SessionID                  string
+	TaskID                     string
+	ProjectID                  string
+	Repository                 string
+	WorktreePath               string
+	SourceBranch               string
+	PRURL                      string
+	PRNumber                   int64
+	OldHead                    string
+	CurrentMain                string
+	PredecessorStatus          string
+	PredecessorError           string
+	OldRuntimeHandleID         string
+	OldAgentSessionID          string
+	OldRuntimeLaunchID         string
+	ContractCommit             string
+	Model                      string
+	Reasoning                  string
+	TokenBudget                int64
+	WorkerModelCallCount       int64
+	ReviewerModelCallCount     int64
+	RuntimeActionID            string
+	RuntimeHandleID            string
+	LaunchID                   string
+	InputJson                  string
+	InputDigest                string
+	InputPath                  string
+	ResultPath                 string
+	LogPath                    string
+	WorkerCodexSessionID       string
+	WorkerTokenCount           int64
+	WorkerResultDigest         string
+	WorkerLogDigest            string
+	NewHead                    string
+	NewCommit                  string
+	RecoveryReviewRunID        string
+	RecoveryReviewID           string
+	RecoveryReviewBatchID      string
+	RecoveryCheckID            string
+	MergeCommitSha             string
+	Status                     string
+	Revision                   int64
+	ErrorCode                  string
+	AuthorizedAt               time.Time
+	UpdatedAt                  time.Time
+	FinishedAt                 sql.NullTime
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string

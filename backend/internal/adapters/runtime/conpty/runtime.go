@@ -180,6 +180,23 @@ func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.Run
 	return status.Alive, nil
 }
 
+// IsRuntimeQuiescent reports whether the retained host is absent or has no
+// supervised child. The pty host owns exactly one child, so this is exhaustive.
+func (r *Runtime) IsRuntimeQuiescent(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	sess := r.resolve(handle.ID)
+	if sess == nil {
+		return true, nil
+	}
+	status, hostAlive, err := clientStatus(sess.addr)
+	if err != nil {
+		return false, err
+	}
+	if !hostAlive {
+		return true, nil
+	}
+	return !status.Alive, nil
+}
+
 // SendMessage chunks message and writes it to the pty-host followed by Enter.
 func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error {
 	sess := r.resolve(handle.ID)

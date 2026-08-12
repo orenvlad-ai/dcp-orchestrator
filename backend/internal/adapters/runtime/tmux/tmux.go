@@ -549,6 +549,42 @@ func (r *Runtime) IsSupervisedProcessAlive(ctx context.Context, handle ports.Run
 	return containsManagedWorkload(entries, panePID, string(ref.SessionID), ref.LaunchID), nil
 }
 
+// IsRuntimeQuiescent proves the exact pane is either absent or a bare retained
+// shell. Any descendant, including a stale/foreign supervisor, is non-quiescent.
+func (r *Runtime) IsRuntimeQuiescent(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return !alive, err
+	}
+	id, err := handleID(handle)
+	if err != nil {
+		return false, err
+	}
+	paneOut, err := r.run(ctx, panePIDArgs(id)...)
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: inspect quiescent pane %s: %w", id, err)
+	}
+	panePID, err := strconv.Atoi(strings.TrimSpace(string(paneOut)))
+	if err != nil || panePID <= 0 {
+		return false, fmt.Errorf("tmux runtime: invalid quiescent pane pid %q", strings.TrimSpace(string(paneOut)))
+	}
+	processOut, err := r.runCommand(ctx, "ps", "-ww", "-axo", "pid=,ppid=,args=")
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: inspect quiescent process tree %s: %w", id, err)
+	}
+	entries, err := parseProcessTable(string(processOut))
+	if err != nil {
+		return false, fmt.Errorf("tmux runtime: parse quiescent process tree %s: %w", id, err)
+	}
+	descendants := descendantPIDs(entries, panePID)
+	for _, entry := range entries {
+		if entry.pid != panePID && descendants[entry.pid] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // SendMessage sends literal text to the session (chunked via send-keys -l) then
 // presses Enter to submit. An empty message presses Enter alone (the nudge
 // contract on ports.AgentMessenger).
@@ -803,7 +839,7 @@ func containsSupervisor(entries []processEntry, rootPID int, sessionID, launchID
 func isAnySupervisorCommand(command string) bool {
 	fields := strings.Fields(command)
 	for i := 0; i+1 < len(fields); i++ {
-		if (fields[i] == "agent-process" || fields[i] == "review" || fields[i] == "arbiter") && fields[i+1] == "supervise" {
+		if (fields[i] == "agent-process" || fields[i] == "review" || fields[i] == "arbiter" || fields[i] == "recovery") && fields[i+1] == "supervise" {
 			return true
 		}
 	}
@@ -843,6 +879,16 @@ func isSupervisorCommand(command, sessionID, launchID string) bool {
 			}
 			if handleMatch && incidentMatch {
 				return true
+			}
+		}
+		if fields[i] == "recovery" && fields[i+1] == "supervise" {
+			if sessionID != "dcp-card12-fresh-worker-recovery" {
+				continue
+			}
+			for j := i + 2; j+1 < len(fields) && fields[j] != "--"; j++ {
+				if fields[j] == "--recovery" && fields[j+1] == launchID {
+					return true
+				}
 			}
 		}
 	}

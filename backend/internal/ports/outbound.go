@@ -127,6 +127,13 @@ type SupervisedProcessInspector interface {
 	IsSupervisedProcessAlive(ctx context.Context, handle RuntimeHandle, ref SupervisedProcessRef) (bool, error)
 }
 
+// RuntimeQuiescenceInspector proves that a retained runtime is absent or has
+// no descendant workload. It is stricter than process-generation matching and
+// is used only before the bounded card-12 fresh worker action.
+type RuntimeQuiescenceInspector interface {
+	IsRuntimeQuiescent(ctx context.Context, handle RuntimeHandle) (bool, error)
+}
+
 // ContainerReaper removes Docker containers a worker session owns, identified
 // by the ao.session=<id> label convention (see EnvSessionID). It is an
 // optional capability: nil wiring means container reaping is a no-op, not an

@@ -47,19 +47,36 @@ func (s *Store) GetReviewBySession(ctx context.Context, id domain.SessionID) (do
 func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	err := s.qw.InsertReviewRun(ctx, gen.InsertReviewRunParams{
-		ID:             r.ID,
-		ReviewID:       r.ReviewID,
-		SessionID:      r.SessionID,
-		BatchID:        r.BatchID,
-		Harness:        r.Harness,
-		PRURL:          r.PRURL,
-		TargetSha:      r.TargetSHA,
-		Status:         r.Status,
-		Verdict:        r.Verdict,
-		Body:           r.Body,
-		GithubReviewID: r.GithubReviewID,
-		CreatedAt:      r.CreatedAt,
+	err := s.inTx(ctx, "insert review run", func(q *gen.Queries) error {
+		if err := q.InsertReviewRun(ctx, gen.InsertReviewRunParams{
+			ID: r.ID, ReviewID: r.ReviewID, SessionID: r.SessionID, BatchID: r.BatchID,
+			Harness: r.Harness, PRURL: r.PRURL, TargetSha: r.TargetSHA,
+			Status: r.Status, Verdict: r.Verdict, Body: r.Body,
+			GithubReviewID: r.GithubReviewID, CreatedAt: r.CreatedAt,
+		}); err != nil {
+			return err
+		}
+		row, getErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+		if errors.Is(getErr, sql.ErrNoRows) {
+			return nil
+		}
+		if getErr != nil {
+			return getErr
+		}
+		if row.SessionID != string(r.SessionID) || row.PRURL != r.PRURL || row.NewHead != r.TargetSHA {
+			return nil
+		}
+		if row.Status != string(domain.DCPFreshWorkerSucceeded) || row.ReviewerModelCallCount != 0 {
+			return errors.New("card-12 fresh recovery reviewer fence is already consumed")
+		}
+		n, fenceErr := q.FenceDCPCard12FreshRecoveryReview(ctx, gen.FenceDCPCard12FreshRecoveryReviewParams{
+			ReviewRunID: r.ID, ReviewID: r.ReviewID, BatchID: r.BatchID,
+			UpdatedAt: r.CreatedAt, SessionID: string(r.SessionID), PRURL: r.PRURL, TargetSha: r.TargetSHA,
+		})
+		if fenceErr != nil || n != 1 {
+			return errors.Join(fenceErr, errors.New("card-12 fresh recovery reviewer fence was unavailable"))
+		}
+		return nil
 	})
 	if isSQLiteUnique(err) {
 		return fmt.Errorf("insert review run for session %s pr %s sha %s: %w", r.SessionID, r.PRURL, r.TargetSHA, domain.ErrDuplicateReviewRun)
@@ -72,17 +89,43 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	n, err := s.qw.UpdateReviewRunResult(ctx, gen.UpdateReviewRunResultParams{
-		Status:         status,
-		Verdict:        verdict,
-		Body:           body,
-		GithubReviewID: githubReviewID,
-		ID:             id,
+	updated := false
+	err := s.inTx(ctx, "update review run result", func(q *gen.Queries) error {
+		n, err := q.UpdateReviewRunResult(ctx, gen.UpdateReviewRunResultParams{
+			Status: status, Verdict: verdict, Body: body, GithubReviewID: githubReviewID, ID: id,
+		})
+		if err != nil || n == 0 {
+			return err
+		}
+		updated = true
+		if status != domain.ReviewRunFailed {
+			return nil
+		}
+		run, runErr := q.GetReviewRun(ctx, id)
+		if runErr != nil {
+			return runErr
+		}
+		recovery, recoveryErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+		if errors.Is(recoveryErr, sql.ErrNoRows) {
+			return nil
+		}
+		if recoveryErr != nil {
+			return recoveryErr
+		}
+		if recovery.Status != string(domain.DCPFreshReviewerRunning) || recovery.RecoveryReviewRunID != run.ID || recovery.NewHead != run.TargetSha {
+			return nil
+		}
+		n, failErr := q.FailDCPCard12FreshRecoveryReview(ctx, gen.FailDCPCard12FreshRecoveryReviewParams{
+			ErrorCode: "reviewer_failed", UpdatedAt: time.Now().UTC(),
+			FinishedAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, RecoveryID: recovery.RecoveryID,
+			ReviewRunID: run.ID, TargetSha: run.TargetSha,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 failed reviewer fence could not be closed"))
+		}
+		return nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return updated, err
 }
 
 // UpdateBoundReviewRunResult atomically completes one still-running exact-head
@@ -91,20 +134,41 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 func (s *Store) UpdateBoundReviewRunResult(ctx context.Context, expected reviewcore.StructuredResultExpected, verdict domain.ReviewVerdict, body string) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	n, err := s.qw.UpdateBoundReviewRunResult(ctx, gen.UpdateBoundReviewRunResultParams{
-		Verdict:          verdict,
-		Body:             body,
-		RunID:            expected.RunID,
-		SessionID:        domain.SessionID(expected.WorkerSessionID),
-		BatchID:          expected.BatchID,
-		PRURL:            expected.PRURL,
-		TargetSha:        expected.TargetSHA,
-		ReviewerHandleID: expected.ReviewerHandleID,
+	updated := false
+	err := s.inTx(ctx, "update bound review run result", func(q *gen.Queries) error {
+		n, err := q.UpdateBoundReviewRunResult(ctx, gen.UpdateBoundReviewRunResultParams{
+			Verdict: verdict, Body: body, RunID: expected.RunID,
+			SessionID: domain.SessionID(expected.WorkerSessionID), BatchID: expected.BatchID,
+			PRURL: expected.PRURL, TargetSha: expected.TargetSHA, ReviewerHandleID: expected.ReviewerHandleID,
+		})
+		if err != nil || n == 0 {
+			return err
+		}
+		updated = true
+		if verdict != domain.VerdictChangesRequested {
+			return nil
+		}
+		recovery, recoveryErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+		if errors.Is(recoveryErr, sql.ErrNoRows) {
+			return nil
+		}
+		if recoveryErr != nil {
+			return recoveryErr
+		}
+		if recovery.Status != string(domain.DCPFreshReviewerRunning) || recovery.RecoveryReviewRunID != expected.RunID || recovery.NewHead != expected.TargetSHA {
+			return nil
+		}
+		now := time.Now().UTC()
+		n, failErr := q.FailDCPCard12FreshRecoveryReview(ctx, gen.FailDCPCard12FreshRecoveryReviewParams{
+			ErrorCode: "review_changes_requested", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			RecoveryID: recovery.RecoveryID, ReviewRunID: expected.RunID, TargetSha: expected.TargetSHA,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 changes-requested reviewer fence could not be closed"))
+		}
+		return nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return n == 1, nil
+	return updated, err
 }
 
 // SupersedeStaleRunningReviewRuns marks older running unverdicted passes for a
