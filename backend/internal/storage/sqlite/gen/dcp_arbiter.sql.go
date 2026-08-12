@@ -129,6 +129,27 @@ func (q *Queries) ConsumeDCPReleaseArbiterSuccessorRepair(ctx context.Context, a
 	return result.RowsAffected()
 }
 
+const failDCPArbiterSuccessorValidationRecovery = `-- name: FailDCPArbiterSuccessorValidationRecovery :execrows
+UPDATE dcp_arbiter_successor_result_validation_recovery
+SET status = 'failed', error_code = ?1,
+    finished_at = ?2
+WHERE attempt_id = ?3 AND status = 'pending'
+`
+
+type FailDCPArbiterSuccessorValidationRecoveryParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	AttemptID  string
+}
+
+func (q *Queries) FailDCPArbiterSuccessorValidationRecovery(ctx context.Context, arg FailDCPArbiterSuccessorValidationRecoveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPArbiterSuccessorValidationRecovery, arg.ErrorCode, arg.FinishedAt, arg.AttemptID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const failDCPReleaseArbiterAfterDecision = `-- name: FailDCPReleaseArbiterAfterDecision :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = 'failed', error_code = ?1,
@@ -269,6 +290,39 @@ func (q *Queries) FailDCPReleaseArbiterSuccessorPreflight(ctx context.Context, a
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getDCPArbiterSuccessorValidationRecovery = `-- name: GetDCPArbiterSuccessorValidationRecovery :one
+SELECT attempt_id, incident_id, attempt_generation, attempt_identity_digest, input_digest, prior_status, prior_error_code, prior_finished_at, prior_model_call_count, prior_decision_digest, prior_recovery_wake_count, result_artifact_digest, result_artifact_size, merge_tree_evidence_digest, codex_session_id, token_count, contract_commit, status, error_code, created_at, finished_at FROM dcp_arbiter_successor_result_validation_recovery WHERE attempt_id = ?
+`
+
+func (q *Queries) GetDCPArbiterSuccessorValidationRecovery(ctx context.Context, attemptID string) (DcpArbiterSuccessorResultValidationRecovery, error) {
+	row := q.db.QueryRowContext(ctx, getDCPArbiterSuccessorValidationRecovery, attemptID)
+	var i DcpArbiterSuccessorResultValidationRecovery
+	err := row.Scan(
+		&i.AttemptID,
+		&i.IncidentID,
+		&i.AttemptGeneration,
+		&i.AttemptIdentityDigest,
+		&i.InputDigest,
+		&i.PriorStatus,
+		&i.PriorErrorCode,
+		&i.PriorFinishedAt,
+		&i.PriorModelCallCount,
+		&i.PriorDecisionDigest,
+		&i.PriorRecoveryWakeCount,
+		&i.ResultArtifactDigest,
+		&i.ResultArtifactSize,
+		&i.MergeTreeEvidenceDigest,
+		&i.CodexSessionID,
+		&i.TokenCount,
+		&i.ContractCommit,
+		&i.Status,
+		&i.ErrorCode,
+		&i.CreatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
 }
 
 const getDCPReleaseArbiterIncidentByAdmission = `-- name: GetDCPReleaseArbiterIncidentByAdmission :one
@@ -786,6 +840,25 @@ func (q *Queries) ListDCPReleaseArbiterSuccessorAttempts(ctx context.Context) ([
 	return items, nil
 }
 
+const markDCPArbiterSuccessorValidationRecoveryApplied = `-- name: MarkDCPArbiterSuccessorValidationRecoveryApplied :execrows
+UPDATE dcp_arbiter_successor_result_validation_recovery
+SET status = 'applied', error_code = '', finished_at = ?1
+WHERE attempt_id = ?2 AND status = 'pending'
+`
+
+type MarkDCPArbiterSuccessorValidationRecoveryAppliedParams struct {
+	FinishedAt sql.NullTime
+	AttemptID  string
+}
+
+func (q *Queries) MarkDCPArbiterSuccessorValidationRecoveryApplied(ctx context.Context, arg MarkDCPArbiterSuccessorValidationRecoveryAppliedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDCPArbiterSuccessorValidationRecoveryApplied, arg.FinishedAt, arg.AttemptID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markDCPReleaseArbiterRecoveryReviewed = `-- name: MarkDCPReleaseArbiterRecoveryReviewed :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = 'recovery_reviewed', recovery_review_run_id = ?1,
@@ -1174,6 +1247,66 @@ func (q *Queries) RecordDCPReleaseArbiterSuccessorDecision(ctx context.Context, 
 		arg.ErrorCode,
 		arg.DecisionAt,
 		arg.FinishedAt,
+		arg.AttemptID,
+		arg.IncidentID,
+		arg.AttemptIdentityDigest,
+		arg.InputDigest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverDCPArbiterSuccessorExactDecision = `-- name: RecoverDCPArbiterSuccessorExactDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'decided', decision_json = ?1,
+    decision_digest = ?2, error_code = '',
+    decision_at = ?3, finished_at = NULL,
+    updated_at = ?3
+WHERE dcp_review_lab_arbiter_v1_successor_attempt.attempt_id = ?4
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = ?5
+  AND dcp_review_lab_arbiter_v1_successor_attempt.attempt_generation = 2
+  AND dcp_review_lab_arbiter_v1_successor_attempt.attempt_identity_digest = ?6
+  AND dcp_review_lab_arbiter_v1_successor_attempt.input_digest = ?7
+  AND dcp_review_lab_arbiter_v1_successor_attempt.status = 'failed'
+  AND dcp_review_lab_arbiter_v1_successor_attempt.model_call_count = 1
+  AND dcp_review_lab_arbiter_v1_successor_attempt.decision_json = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.decision_digest = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_owner_session_id = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_path = ''
+  AND dcp_review_lab_arbiter_v1_successor_attempt.recovery_wake_count = 0
+  AND dcp_review_lab_arbiter_v1_successor_attempt.error_code = 'submit_failed'
+  AND dcp_review_lab_arbiter_v1_successor_attempt.finished_at IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM dcp_arbiter_successor_result_validation_recovery recovery
+    WHERE recovery.attempt_id = dcp_review_lab_arbiter_v1_successor_attempt.attempt_id
+      AND recovery.status = 'pending'
+      AND recovery.input_digest = dcp_review_lab_arbiter_v1_successor_attempt.input_digest
+      AND recovery.prior_status = dcp_review_lab_arbiter_v1_successor_attempt.status
+      AND recovery.prior_error_code = dcp_review_lab_arbiter_v1_successor_attempt.error_code
+      AND recovery.prior_finished_at = dcp_review_lab_arbiter_v1_successor_attempt.finished_at
+      AND recovery.prior_model_call_count = dcp_review_lab_arbiter_v1_successor_attempt.model_call_count
+      AND recovery.prior_decision_digest = dcp_review_lab_arbiter_v1_successor_attempt.decision_digest
+      AND recovery.prior_recovery_wake_count = dcp_review_lab_arbiter_v1_successor_attempt.recovery_wake_count
+  )
+`
+
+type RecoverDCPArbiterSuccessorExactDecisionParams struct {
+	DecisionJson          string
+	DecisionDigest        string
+	DecisionAt            sql.NullTime
+	AttemptID             string
+	IncidentID            string
+	AttemptIdentityDigest string
+	InputDigest           string
+}
+
+func (q *Queries) RecoverDCPArbiterSuccessorExactDecision(ctx context.Context, arg RecoverDCPArbiterSuccessorExactDecisionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverDCPArbiterSuccessorExactDecision,
+		arg.DecisionJson,
+		arg.DecisionDigest,
+		arg.DecisionAt,
 		arg.AttemptID,
 		arg.IncidentID,
 		arg.AttemptIdentityDigest,

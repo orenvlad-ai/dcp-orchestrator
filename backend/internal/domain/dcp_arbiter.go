@@ -126,3 +126,30 @@ const (
 	DCPArbiterSuccessorSucceeded        DCPReleaseArbiterSuccessorStatus = "succeeded"
 	DCPArbiterSuccessorFailed           DCPReleaseArbiterSuccessorStatus = "failed"
 )
+
+// DCPArbiterSuccessorValidationRecovery is the one exact model-free audit and
+// consumption fence for the already-produced generation-2 result. It cannot
+// represent a model attempt, call, result replacement, or general replay.
+type DCPArbiterSuccessorValidationRecovery struct {
+	AttemptID               string
+	IncidentID              string
+	AttemptGeneration       int64
+	AttemptIdentityDigest   string
+	InputDigest             string
+	PriorStatus             string
+	PriorErrorCode          string
+	PriorFinishedAt         time.Time
+	PriorModelCallCount     int64
+	PriorDecisionDigest     string
+	PriorRecoveryWakeCount  int64
+	ResultArtifactDigest    string
+	ResultArtifactSize      int64
+	MergeTreeEvidenceDigest string
+	CodexSessionID          string
+	TokenCount              int64
+	ContractCommit          string
+	Status                  string
+	ErrorCode               string
+	CreatedAt               time.Time
+	FinishedAt              *time.Time
+}

@@ -22,6 +22,9 @@ type ArbiterSuccessorStore interface {
 	FailDCPReleaseArbiterSuccessorCall(context.Context, string, string, time.Time) (bool, error)
 	FailDCPReleaseArbiterSuccessorAfterDecision(context.Context, string, string, time.Time) (bool, error)
 	RebindDCPAdmissionAfterArbiterSuccessorRepair(context.Context, domain.DCPReviewLabAdmission, domain.DCPReleaseArbiterIncident, domain.DCPReleaseArbiterSuccessorAttempt, domain.ReviewRun, string, time.Time) (bool, error)
+	GetDCPArbiterSuccessorValidationRecovery(context.Context, string) (domain.DCPArbiterSuccessorValidationRecovery, bool, error)
+	RecoverDCPArbiterSuccessorExactDecision(context.Context, domain.DCPReleaseArbiterSuccessorAttempt, string, string, time.Time) (bool, error)
+	FailDCPArbiterSuccessorValidationRecovery(context.Context, string, string, time.Time) (bool, error)
 }
 
 func (e *Engine) arbiterSuccessorStore() (ArbiterSuccessorStore, error) {
@@ -209,11 +212,93 @@ func (e *Engine) advanceArbiterSuccessorLocked(ctx context.Context, incident dom
 		return nil
 	case domain.DCPArbiterSuccessorPreflightFailed, domain.DCPArbiterSuccessorSafeStopped,
 		domain.DCPArbiterSuccessorRepairing, domain.DCPArbiterSuccessorRecoveryReviewed,
-		domain.DCPArbiterSuccessorSucceeded, domain.DCPArbiterSuccessorFailed:
+		domain.DCPArbiterSuccessorSucceeded:
 		return nil
+	case domain.DCPArbiterSuccessorFailed:
+		return e.recoverArbiterSuccessorExactResultLocked(ctx, incident, attempt, launcher, launcherOK)
 	default:
 		return errors.New("dcp arbiter successor: unknown durable state")
 	}
+}
+
+func exactArbiterSuccessorValidationRecovery(recovery domain.DCPArbiterSuccessorValidationRecovery, attempt domain.DCPReleaseArbiterSuccessorAttempt) bool {
+	return recovery.AttemptID == ArbiterSuccessorAttemptID && attempt.AttemptID == ArbiterSuccessorAttemptID &&
+		recovery.IncidentID == exactSuccessorIncidentID && attempt.IncidentID == exactSuccessorIncidentID &&
+		recovery.AttemptGeneration == 2 && recovery.AttemptIdentityDigest == ArbiterSuccessorAttemptDigest &&
+		recovery.InputDigest == exactSuccessorInputDigest && attempt.InputDigest == exactSuccessorInputDigest &&
+		recovery.PriorStatus == string(domain.DCPArbiterSuccessorFailed) && recovery.PriorErrorCode == "submit_failed" &&
+		attempt.FinishedAt != nil && recovery.PriorFinishedAt.Equal(*attempt.FinishedAt) &&
+		recovery.PriorModelCallCount == 1 && recovery.PriorDecisionDigest == "" && recovery.PriorRecoveryWakeCount == 0 &&
+		recovery.ResultArtifactDigest == exactSuccessorResultArtifactDigest && recovery.ResultArtifactSize == exactSuccessorResultArtifactSize &&
+		recovery.MergeTreeEvidenceDigest == exactSuccessorMergeTreeEvidence && recovery.CodexSessionID == exactSuccessorCodexSession &&
+		recovery.TokenCount == exactSuccessorTokens && recovery.ContractCommit == exactSuccessorValidationContract &&
+		recovery.Status == "pending" && recovery.ErrorCode == "" && recovery.FinishedAt == nil
+}
+
+func (e *Engine) failArbiterSuccessorValidationRecovery(ctx context.Context, store ArbiterSuccessorStore, attemptID, code string, cause error) error {
+	_, persistErr := store.FailDCPArbiterSuccessorValidationRecovery(ctx, attemptID, code, e.clock())
+	return errors.Join(cause, persistErr)
+}
+
+func (e *Engine) recoverArbiterSuccessorExactResultLocked(ctx context.Context, incident domain.DCPReleaseArbiterIncident, attempt domain.DCPReleaseArbiterSuccessorAttempt, launcher ArbiterSuccessorLauncher, launcherOK bool) error {
+	store, err := e.arbiterSuccessorStore()
+	if err != nil {
+		return err
+	}
+	recovery, found, err := store.GetDCPArbiterSuccessorValidationRecovery(ctx, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if attempt.InputDigest == exactSuccessorInputDigest && attempt.ErrorCode == "submit_failed" && attempt.ModelCallCount == 1 {
+			return errors.New("dcp arbiter successor: exact failed result lacks its validation recovery audit")
+		}
+		return nil
+	}
+	if recovery.Status != "pending" {
+		return nil
+	}
+	if !exactArbiterSuccessorValidationRecovery(recovery, attempt) || !exactSuccessorAuthorization(attempt, incident) ||
+		attempt.Status != domain.DCPArbiterSuccessorFailed || attempt.ModelCallCount != 1 || attempt.DecisionJSON != "" ||
+		attempt.DecisionDigest != "" || attempt.RecoveryWakeCount != 0 || attempt.ErrorCode != "submit_failed" {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "identity_drift", errors.New("dcp arbiter successor: exact validation recovery identity drifted"))
+	}
+	if !launcherOK {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "launcher_unavailable", errors.New("dcp arbiter successor: validation recovery launcher is unavailable"))
+	}
+	if err := e.revalidateArbiterSuccessor(ctx, incident, attempt); err != nil {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "identity_drift", err)
+	}
+	alive, err := launcher.SuccessorProcessAlive(ctx, attempt)
+	if err != nil {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "process_state_ambiguous", err)
+	}
+	if alive {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "process_still_active", errors.New("dcp arbiter successor: prior model process is still active"))
+	}
+	resultPath, err := launcher.SuccessorResultPath(attempt)
+	if err != nil {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "result_path_invalid", err)
+	}
+	info, err := os.Lstat(resultPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 || info.Size() != recovery.ResultArtifactSize {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "result_identity_drift", errors.New("dcp arbiter successor: validation result file identity drifted"))
+	}
+	resultBytes, err := os.ReadFile(resultPath)
+	if err != nil || digestBytes(resultBytes) != recovery.ResultArtifactDigest {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "result_digest_drift", errors.Join(err, errors.New("dcp arbiter successor: validation result digest drifted")))
+	}
+	_, canonical, err := ParseArbiterSuccessorDecision(resultBytes, incident, attempt)
+	if err != nil {
+		return e.failArbiterSuccessorValidationRecovery(ctx, store, attempt.AttemptID, "result_still_invalid", err)
+	}
+	recovered, err := store.RecoverDCPArbiterSuccessorExactDecision(ctx, attempt, string(canonical), digestBytes(canonical), e.clock())
+	if err != nil || !recovered {
+		return errors.Join(err, errors.New("dcp arbiter successor: exact model-free result recovery was unavailable"))
+	}
+	// Deliberately stop at decided/zero wake. Only the next controlled startup
+	// may consume the pre-existing deterministic 1/1 recovery policy.
+	return nil
 }
 
 func (e *Engine) submitArbiterSuccessorDecision(ctx context.Context, attemptID string, data []byte) error {

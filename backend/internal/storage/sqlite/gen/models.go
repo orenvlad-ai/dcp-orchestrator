@@ -30,6 +30,30 @@ type ChangeLog struct {
 	CreatedAt time.Time
 }
 
+type DcpArbiterSuccessorResultValidationRecovery struct {
+	AttemptID               string
+	IncidentID              string
+	AttemptGeneration       int64
+	AttemptIdentityDigest   string
+	InputDigest             string
+	PriorStatus             string
+	PriorErrorCode          string
+	PriorFinishedAt         time.Time
+	PriorModelCallCount     int64
+	PriorDecisionDigest     string
+	PriorRecoveryWakeCount  int64
+	ResultArtifactDigest    string
+	ResultArtifactSize      int64
+	MergeTreeEvidenceDigest string
+	CodexSessionID          string
+	TokenCount              int64
+	ContractCommit          string
+	Status                  string
+	ErrorCode               string
+	CreatedAt               time.Time
+	FinishedAt              sql.NullTime
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string
