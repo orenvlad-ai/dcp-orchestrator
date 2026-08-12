@@ -219,7 +219,7 @@ source_gates() {
 	grep -Fq 'fbcf4929f9192f7cce9c5097b0bc6a449d28e663' "$fresh_worker_preflight_recovery_migration" || fail 'card-12 failed preflight source is not exact'
 	grep -Fq 'prior_worker_calls = 0' "$fresh_worker_preflight_recovery_migration" || fail 'card-12 preflight recovery does not prove zero prior worker calls'
 	grep -Fq "observed_diff_status = 'M'" "$fresh_worker_preflight_recovery_migration" || fail 'card-12 exact modified-path evidence is absent'
-	grep -Fq 'status != "M\\t"+arbiterConflictPath' backend/internal/dcpterminalmerge/fresh_worker_engine.go || fail 'card-12 conflict path is not validated as modified'
+	[[ "$(grep -Fc 'status != "M\t"+arbiterConflictPath' backend/internal/dcpterminalmerge/fresh_worker_engine.go)" -eq 2 ]] || fail 'card-12 conflict path is not validated as modified before and after repair'
 	grep -Fq 'ArbiterSuccessorDecision struct' backend/internal/dcpterminalmerge/arbiter_successor.go || fail 'successor decision contract is absent'
 	! sed -n '/type ArbiterSuccessorDecision struct/,/^}/p' backend/internal/dcpterminalmerge/arbiter_successor.go | grep -Fq 'MaxFreshReviews' || fail 'model still owns successor review policy'
 	grep -Fq 'opts.handle != dcpArbiterSuccessorHandle' backend/internal/cli/arbiter.go || fail 'successor result evidence is not retained'
