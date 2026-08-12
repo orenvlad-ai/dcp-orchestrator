@@ -41,6 +41,36 @@ func (q *Queries) CompleteDCPReleaseArbiterIncident(ctx context.Context, arg Com
 	return result.RowsAffected()
 }
 
+const completeDCPReleaseArbiterSuccessorAttempt = `-- name: CompleteDCPReleaseArbiterSuccessorAttempt :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'succeeded', error_code = '', finished_at = ?1,
+    updated_at = ?1
+WHERE incident_id = ?2
+  AND status = 'recovery_reviewed'
+  AND recovery_review_run_id = ?3
+  AND recovery_target_sha = ?4
+`
+
+type CompleteDCPReleaseArbiterSuccessorAttemptParams struct {
+	FinishedAt          sql.NullTime
+	IncidentID          string
+	RecoveryReviewRunID string
+	RecoveryTargetSha   string
+}
+
+func (q *Queries) CompleteDCPReleaseArbiterSuccessorAttempt(ctx context.Context, arg CompleteDCPReleaseArbiterSuccessorAttemptParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeDCPReleaseArbiterSuccessorAttempt,
+		arg.FinishedAt,
+		arg.IncidentID,
+		arg.RecoveryReviewRunID,
+		arg.RecoveryTargetSha,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const consumeDCPReleaseArbiterRepair = `-- name: ConsumeDCPReleaseArbiterRepair :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = 'repairing', recovery_owner_session_id = session_id,
@@ -66,6 +96,33 @@ type ConsumeDCPReleaseArbiterRepairParams struct {
 
 func (q *Queries) ConsumeDCPReleaseArbiterRepair(ctx context.Context, arg ConsumeDCPReleaseArbiterRepairParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, consumeDCPReleaseArbiterRepair, arg.UpdatedAt, arg.IncidentID, arg.DecisionDigest)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const consumeDCPReleaseArbiterSuccessorRepair = `-- name: ConsumeDCPReleaseArbiterSuccessorRepair :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'repairing', recovery_owner_session_id = 'dcp-review-lab-12',
+    recovery_path = 'same_worker_conflict_repair', recovery_wake_count = 1,
+    updated_at = ?1
+WHERE attempt_id = ?2
+  AND decision_digest = ?3
+  AND status = 'decided'
+  AND recovery_wake_count = 0
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+`
+
+type ConsumeDCPReleaseArbiterSuccessorRepairParams struct {
+	UpdatedAt      time.Time
+	AttemptID      string
+	DecisionDigest string
+}
+
+func (q *Queries) ConsumeDCPReleaseArbiterSuccessorRepair(ctx context.Context, arg ConsumeDCPReleaseArbiterSuccessorRepairParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, consumeDCPReleaseArbiterSuccessorRepair, arg.UpdatedAt, arg.AttemptID, arg.DecisionDigest)
 	if err != nil {
 		return 0, err
 	}
@@ -137,6 +194,77 @@ type FailDCPReleaseArbiterPreflightParams struct {
 
 func (q *Queries) FailDCPReleaseArbiterPreflight(ctx context.Context, arg FailDCPReleaseArbiterPreflightParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, failDCPReleaseArbiterPreflight, arg.ErrorCode, arg.FinishedAt, arg.IncidentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failDCPReleaseArbiterSuccessorAfterDecision = `-- name: FailDCPReleaseArbiterSuccessorAfterDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'failed', error_code = ?1,
+    finished_at = ?2, updated_at = ?2
+WHERE attempt_id = ?3
+  AND status IN ('decided', 'repairing')
+  AND model_call_count = 1
+  AND decision_json <> ''
+`
+
+type FailDCPReleaseArbiterSuccessorAfterDecisionParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	AttemptID  string
+}
+
+func (q *Queries) FailDCPReleaseArbiterSuccessorAfterDecision(ctx context.Context, arg FailDCPReleaseArbiterSuccessorAfterDecisionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPReleaseArbiterSuccessorAfterDecision, arg.ErrorCode, arg.FinishedAt, arg.AttemptID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failDCPReleaseArbiterSuccessorCall = `-- name: FailDCPReleaseArbiterSuccessorCall :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'failed', error_code = ?1,
+    finished_at = ?2, updated_at = ?2
+WHERE attempt_id = ?3
+  AND status = 'running'
+  AND model_call_count = 1
+  AND decision_json = ''
+`
+
+type FailDCPReleaseArbiterSuccessorCallParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	AttemptID  string
+}
+
+func (q *Queries) FailDCPReleaseArbiterSuccessorCall(ctx context.Context, arg FailDCPReleaseArbiterSuccessorCallParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPReleaseArbiterSuccessorCall, arg.ErrorCode, arg.FinishedAt, arg.AttemptID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failDCPReleaseArbiterSuccessorPreflight = `-- name: FailDCPReleaseArbiterSuccessorPreflight :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'preflight_failed', error_code = ?1,
+    finished_at = ?2, updated_at = ?2
+WHERE attempt_id = ?3
+  AND status = 'requested'
+  AND model_call_count = 0
+`
+
+type FailDCPReleaseArbiterSuccessorPreflightParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	AttemptID  string
+}
+
+func (q *Queries) FailDCPReleaseArbiterSuccessorPreflight(ctx context.Context, arg FailDCPReleaseArbiterSuccessorPreflightParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPReleaseArbiterSuccessorPreflight, arg.ErrorCode, arg.FinishedAt, arg.AttemptID)
 	if err != nil {
 		return 0, err
 	}
@@ -313,6 +441,102 @@ func (q *Queries) GetDCPReleaseArbiterIncidentBySession(ctx context.Context, ses
 		&i.RecoveryTargetSha,
 		&i.ErrorCode,
 		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DecisionAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDCPReleaseArbiterSuccessorAttemptByID = `-- name: GetDCPReleaseArbiterSuccessorAttemptByID :one
+SELECT attempt_id, incident_id, incident_generation, attempt_generation, attempt_identity_digest, incident_identity_digest, incident_input_digest, original_input_artifact_digest, original_schema_artifact_digest, original_result_artifact_digest, original_codex_session_id, original_token_count, contract_commit, input_json, input_digest, model, reasoning, token_budget, policy_max_worker_calls, policy_max_fresh_reviews, runtime_handle_id, launch_id, status, model_call_count, decision_json, decision_digest, recovery_owner_session_id, recovery_path, recovery_wake_count, recovery_review_run_id, recovery_target_sha, error_code, authorized_at, updated_at, decision_at, finished_at FROM dcp_review_lab_arbiter_v1_successor_attempt WHERE attempt_id = ?
+`
+
+func (q *Queries) GetDCPReleaseArbiterSuccessorAttemptByID(ctx context.Context, attemptID string) (DcpReviewLabArbiterV1SuccessorAttempt, error) {
+	row := q.db.QueryRowContext(ctx, getDCPReleaseArbiterSuccessorAttemptByID, attemptID)
+	var i DcpReviewLabArbiterV1SuccessorAttempt
+	err := row.Scan(
+		&i.AttemptID,
+		&i.IncidentID,
+		&i.IncidentGeneration,
+		&i.AttemptGeneration,
+		&i.AttemptIdentityDigest,
+		&i.IncidentIdentityDigest,
+		&i.IncidentInputDigest,
+		&i.OriginalInputArtifactDigest,
+		&i.OriginalSchemaArtifactDigest,
+		&i.OriginalResultArtifactDigest,
+		&i.OriginalCodexSessionID,
+		&i.OriginalTokenCount,
+		&i.ContractCommit,
+		&i.InputJson,
+		&i.InputDigest,
+		&i.Model,
+		&i.Reasoning,
+		&i.TokenBudget,
+		&i.PolicyMaxWorkerCalls,
+		&i.PolicyMaxFreshReviews,
+		&i.RuntimeHandleID,
+		&i.LaunchID,
+		&i.Status,
+		&i.ModelCallCount,
+		&i.DecisionJson,
+		&i.DecisionDigest,
+		&i.RecoveryOwnerSessionID,
+		&i.RecoveryPath,
+		&i.RecoveryWakeCount,
+		&i.RecoveryReviewRunID,
+		&i.RecoveryTargetSha,
+		&i.ErrorCode,
+		&i.AuthorizedAt,
+		&i.UpdatedAt,
+		&i.DecisionAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDCPReleaseArbiterSuccessorAttemptByIncident = `-- name: GetDCPReleaseArbiterSuccessorAttemptByIncident :one
+SELECT attempt_id, incident_id, incident_generation, attempt_generation, attempt_identity_digest, incident_identity_digest, incident_input_digest, original_input_artifact_digest, original_schema_artifact_digest, original_result_artifact_digest, original_codex_session_id, original_token_count, contract_commit, input_json, input_digest, model, reasoning, token_budget, policy_max_worker_calls, policy_max_fresh_reviews, runtime_handle_id, launch_id, status, model_call_count, decision_json, decision_digest, recovery_owner_session_id, recovery_path, recovery_wake_count, recovery_review_run_id, recovery_target_sha, error_code, authorized_at, updated_at, decision_at, finished_at FROM dcp_review_lab_arbiter_v1_successor_attempt WHERE incident_id = ?
+`
+
+func (q *Queries) GetDCPReleaseArbiterSuccessorAttemptByIncident(ctx context.Context, incidentID string) (DcpReviewLabArbiterV1SuccessorAttempt, error) {
+	row := q.db.QueryRowContext(ctx, getDCPReleaseArbiterSuccessorAttemptByIncident, incidentID)
+	var i DcpReviewLabArbiterV1SuccessorAttempt
+	err := row.Scan(
+		&i.AttemptID,
+		&i.IncidentID,
+		&i.IncidentGeneration,
+		&i.AttemptGeneration,
+		&i.AttemptIdentityDigest,
+		&i.IncidentIdentityDigest,
+		&i.IncidentInputDigest,
+		&i.OriginalInputArtifactDigest,
+		&i.OriginalSchemaArtifactDigest,
+		&i.OriginalResultArtifactDigest,
+		&i.OriginalCodexSessionID,
+		&i.OriginalTokenCount,
+		&i.ContractCommit,
+		&i.InputJson,
+		&i.InputDigest,
+		&i.Model,
+		&i.Reasoning,
+		&i.TokenBudget,
+		&i.PolicyMaxWorkerCalls,
+		&i.PolicyMaxFreshReviews,
+		&i.RuntimeHandleID,
+		&i.LaunchID,
+		&i.Status,
+		&i.ModelCallCount,
+		&i.DecisionJson,
+		&i.DecisionDigest,
+		&i.RecoveryOwnerSessionID,
+		&i.RecoveryPath,
+		&i.RecoveryWakeCount,
+		&i.RecoveryReviewRunID,
+		&i.RecoveryTargetSha,
+		&i.ErrorCode,
+		&i.AuthorizedAt,
 		&i.UpdatedAt,
 		&i.DecisionAt,
 		&i.FinishedAt,
@@ -498,6 +722,70 @@ func (q *Queries) ListDCPReleaseArbiterIncidents(ctx context.Context) ([]DcpRevi
 	return items, nil
 }
 
+const listDCPReleaseArbiterSuccessorAttempts = `-- name: ListDCPReleaseArbiterSuccessorAttempts :many
+SELECT attempt_id, incident_id, incident_generation, attempt_generation, attempt_identity_digest, incident_identity_digest, incident_input_digest, original_input_artifact_digest, original_schema_artifact_digest, original_result_artifact_digest, original_codex_session_id, original_token_count, contract_commit, input_json, input_digest, model, reasoning, token_budget, policy_max_worker_calls, policy_max_fresh_reviews, runtime_handle_id, launch_id, status, model_call_count, decision_json, decision_digest, recovery_owner_session_id, recovery_path, recovery_wake_count, recovery_review_run_id, recovery_target_sha, error_code, authorized_at, updated_at, decision_at, finished_at FROM dcp_review_lab_arbiter_v1_successor_attempt ORDER BY authorized_at, attempt_id
+`
+
+func (q *Queries) ListDCPReleaseArbiterSuccessorAttempts(ctx context.Context) ([]DcpReviewLabArbiterV1SuccessorAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listDCPReleaseArbiterSuccessorAttempts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DcpReviewLabArbiterV1SuccessorAttempt{}
+	for rows.Next() {
+		var i DcpReviewLabArbiterV1SuccessorAttempt
+		if err := rows.Scan(
+			&i.AttemptID,
+			&i.IncidentID,
+			&i.IncidentGeneration,
+			&i.AttemptGeneration,
+			&i.AttemptIdentityDigest,
+			&i.IncidentIdentityDigest,
+			&i.IncidentInputDigest,
+			&i.OriginalInputArtifactDigest,
+			&i.OriginalSchemaArtifactDigest,
+			&i.OriginalResultArtifactDigest,
+			&i.OriginalCodexSessionID,
+			&i.OriginalTokenCount,
+			&i.ContractCommit,
+			&i.InputJson,
+			&i.InputDigest,
+			&i.Model,
+			&i.Reasoning,
+			&i.TokenBudget,
+			&i.PolicyMaxWorkerCalls,
+			&i.PolicyMaxFreshReviews,
+			&i.RuntimeHandleID,
+			&i.LaunchID,
+			&i.Status,
+			&i.ModelCallCount,
+			&i.DecisionJson,
+			&i.DecisionDigest,
+			&i.RecoveryOwnerSessionID,
+			&i.RecoveryPath,
+			&i.RecoveryWakeCount,
+			&i.RecoveryReviewRunID,
+			&i.RecoveryTargetSha,
+			&i.ErrorCode,
+			&i.AuthorizedAt,
+			&i.UpdatedAt,
+			&i.DecisionAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markDCPReleaseArbiterRecoveryReviewed = `-- name: MarkDCPReleaseArbiterRecoveryReviewed :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = 'recovery_reviewed', recovery_review_run_id = ?1,
@@ -522,6 +810,97 @@ func (q *Queries) MarkDCPReleaseArbiterRecoveryReviewed(ctx context.Context, arg
 		arg.RecoveryTargetSha,
 		arg.UpdatedAt,
 		arg.IncidentID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markDCPReleaseArbiterSuccessorRecoveryReviewed = `-- name: MarkDCPReleaseArbiterSuccessorRecoveryReviewed :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'recovery_reviewed', recovery_review_run_id = ?1,
+    recovery_target_sha = ?2, updated_at = ?3
+WHERE attempt_id = ?4
+  AND status = 'repairing'
+  AND recovery_wake_count = 1
+  AND policy_max_fresh_reviews = 1
+  AND recovery_review_run_id = ''
+  AND recovery_target_sha = ''
+`
+
+type MarkDCPReleaseArbiterSuccessorRecoveryReviewedParams struct {
+	RecoveryReviewRunID string
+	RecoveryTargetSha   string
+	UpdatedAt           time.Time
+	AttemptID           string
+}
+
+func (q *Queries) MarkDCPReleaseArbiterSuccessorRecoveryReviewed(ctx context.Context, arg MarkDCPReleaseArbiterSuccessorRecoveryReviewedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDCPReleaseArbiterSuccessorRecoveryReviewed,
+		arg.RecoveryReviewRunID,
+		arg.RecoveryTargetSha,
+		arg.UpdatedAt,
+		arg.AttemptID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const prepareDCPReleaseArbiterSuccessorAttempt = `-- name: PrepareDCPReleaseArbiterSuccessorAttempt :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'requested', input_json = ?1,
+    input_digest = ?2, updated_at = ?3
+WHERE attempt_id = ?4
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = ?5
+  AND attempt_generation = 2
+  AND attempt_identity_digest = ?6
+  AND incident_identity_digest = ?7
+  AND incident_input_digest = ?8
+  AND status = 'authorized'
+  AND model_call_count = 0
+  AND input_json = ''
+  AND input_digest = ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1 original
+    WHERE original.incident_id = dcp_review_lab_arbiter_v1_successor_attempt.incident_id
+      AND original.generation = dcp_review_lab_arbiter_v1_successor_attempt.incident_generation
+      AND original.identity_digest = dcp_review_lab_arbiter_v1_successor_attempt.incident_identity_digest
+      AND original.input_digest = dcp_review_lab_arbiter_v1_successor_attempt.incident_input_digest
+      AND original.status = 'failed'
+      AND original.model_call_count = 1
+      AND original.decision_json = ''
+      AND original.decision_digest = ''
+      AND original.recovery_wake_count = 0
+      AND original.error_code = 'submit_failed'
+  )
+`
+
+type PrepareDCPReleaseArbiterSuccessorAttemptParams struct {
+	InputJson              string
+	InputDigest            string
+	UpdatedAt              time.Time
+	AttemptID              string
+	IncidentID             string
+	AttemptIdentityDigest  string
+	IncidentIdentityDigest string
+	IncidentInputDigest    string
+}
+
+func (q *Queries) PrepareDCPReleaseArbiterSuccessorAttempt(ctx context.Context, arg PrepareDCPReleaseArbiterSuccessorAttemptParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, prepareDCPReleaseArbiterSuccessorAttempt,
+		arg.InputJson,
+		arg.InputDigest,
+		arg.UpdatedAt,
+		arg.AttemptID,
+		arg.IncidentID,
+		arg.AttemptIdentityDigest,
+		arg.IncidentIdentityDigest,
+		arg.IncidentInputDigest,
 	)
 	if err != nil {
 		return 0, err
@@ -609,6 +988,91 @@ func (q *Queries) RebindDCPAdmissionAfterArbiterRepair(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
+const rebindDCPAdmissionAfterArbiterSuccessorRepair = `-- name: RebindDCPAdmissionAfterArbiterSuccessorRepair :execrows
+UPDATE dcp_review_lab_admission
+SET review_run_id = ?1,
+    review_id = ?2,
+    target_sha = ?3,
+    review_base_sha = ?4,
+    status = 'waiting', lease_id = '', admitted_base_sha = '', error_code = '',
+    recovered_incident_packet = incident_packet, incident_packet = '',
+    updated_at = ?5
+WHERE dcp_review_lab_admission.id = ?6
+  AND dcp_review_lab_admission.review_run_id = ?7
+  AND dcp_review_lab_admission.session_id = ?8
+  AND dcp_review_lab_admission.pr_url = ?9
+  AND dcp_review_lab_admission.target_sha = ?10
+  AND dcp_review_lab_admission.status = 'incident'
+  AND dcp_review_lab_admission.lease_id = ?11
+  AND dcp_review_lab_admission.error_code = 'merge_conflict_or_ambiguity'
+  AND dcp_review_lab_admission.recovered_incident_packet = ''
+  AND ?3 <> dcp_review_lab_admission.target_sha
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1_successor_attempt successor
+    WHERE successor.attempt_id = ?12
+      AND successor.incident_id = ?13
+      AND successor.status = 'repairing'
+      AND successor.attempt_generation = 2
+      AND successor.recovery_owner_session_id = dcp_review_lab_admission.session_id
+      AND successor.recovery_path = 'same_worker_conflict_repair'
+      AND successor.recovery_wake_count = 1
+      AND successor.policy_max_worker_calls = 1
+      AND successor.policy_max_fresh_reviews = 1
+  )
+  AND EXISTS (
+    SELECT 1 FROM review_run rr
+    JOIN pr ON pr.url = rr.pr_url AND pr.session_id = rr.session_id
+    WHERE rr.id = ?1
+      AND rr.review_id = ?2
+      AND rr.session_id = ?8
+      AND rr.pr_url = ?9
+      AND rr.target_sha = ?3
+      AND rr.status = 'complete' AND rr.verdict = 'approved'
+      AND rr.result_channel = 'structured_dcp_v1'
+      AND rr.terminal_merge_status = ''
+      AND pr.head_sha = rr.target_sha AND pr.pr_state = 'open'
+      AND pr.is_draft = 0 AND pr.is_merged = 0 AND pr.is_closed = 0
+  )
+`
+
+type RebindDCPAdmissionAfterArbiterSuccessorRepairParams struct {
+	NewReviewRunID   string
+	NewReviewID      string
+	NewTargetSha     string
+	NewReviewBaseSha string
+	UpdatedAt        time.Time
+	AdmissionID      string
+	OldReviewRunID   string
+	SessionID        string
+	PRURL            string
+	OldTargetSha     string
+	IncidentLeaseID  string
+	AttemptID        string
+	IncidentID       string
+}
+
+func (q *Queries) RebindDCPAdmissionAfterArbiterSuccessorRepair(ctx context.Context, arg RebindDCPAdmissionAfterArbiterSuccessorRepairParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rebindDCPAdmissionAfterArbiterSuccessorRepair,
+		arg.NewReviewRunID,
+		arg.NewReviewID,
+		arg.NewTargetSha,
+		arg.NewReviewBaseSha,
+		arg.UpdatedAt,
+		arg.AdmissionID,
+		arg.OldReviewRunID,
+		arg.SessionID,
+		arg.PRURL,
+		arg.OldTargetSha,
+		arg.IncidentLeaseID,
+		arg.AttemptID,
+		arg.IncidentID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const recordDCPReleaseArbiterDecision = `-- name: RecordDCPReleaseArbiterDecision :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = ?1, decision_json = ?2,
@@ -663,6 +1127,64 @@ func (q *Queries) RecordDCPReleaseArbiterDecision(ctx context.Context, arg Recor
 	return result.RowsAffected()
 }
 
+const recordDCPReleaseArbiterSuccessorDecision = `-- name: RecordDCPReleaseArbiterSuccessorDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = ?1, decision_json = ?2,
+    decision_digest = ?3, error_code = ?4,
+    decision_at = ?5, finished_at = ?6,
+    updated_at = ?5
+WHERE attempt_id = ?7
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = ?8
+  AND attempt_generation = 2
+  AND attempt_identity_digest = ?9
+  AND dcp_review_lab_arbiter_v1_successor_attempt.input_digest = ?10
+  AND status = 'running'
+  AND model_call_count = 1
+  AND decision_json = ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1 original
+    WHERE original.incident_id = dcp_review_lab_arbiter_v1_successor_attempt.incident_id
+      AND original.status = 'failed'
+      AND original.model_call_count = 1
+      AND original.decision_json = ''
+      AND original.error_code = 'submit_failed'
+  )
+`
+
+type RecordDCPReleaseArbiterSuccessorDecisionParams struct {
+	Status                string
+	DecisionJson          string
+	DecisionDigest        string
+	ErrorCode             string
+	DecisionAt            sql.NullTime
+	FinishedAt            sql.NullTime
+	AttemptID             string
+	IncidentID            string
+	AttemptIdentityDigest string
+	InputDigest           string
+}
+
+func (q *Queries) RecordDCPReleaseArbiterSuccessorDecision(ctx context.Context, arg RecordDCPReleaseArbiterSuccessorDecisionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recordDCPReleaseArbiterSuccessorDecision,
+		arg.Status,
+		arg.DecisionJson,
+		arg.DecisionDigest,
+		arg.ErrorCode,
+		arg.DecisionAt,
+		arg.FinishedAt,
+		arg.AttemptID,
+		arg.IncidentID,
+		arg.AttemptIdentityDigest,
+		arg.InputDigest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const startDCPReleaseArbiterCall = `-- name: StartDCPReleaseArbiterCall :execrows
 UPDATE dcp_review_lab_arbiter_v1
 SET status = 'running', model_call_count = 1, updated_at = ?1
@@ -692,6 +1214,39 @@ func (q *Queries) StartDCPReleaseArbiterCall(ctx context.Context, arg StartDCPRe
 		arg.UpdatedAt,
 		arg.IncidentID,
 		arg.IdentityDigest,
+		arg.InputDigest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const startDCPReleaseArbiterSuccessorCall = `-- name: StartDCPReleaseArbiterSuccessorCall :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'running', model_call_count = 1, updated_at = ?1
+WHERE attempt_id = ?2
+  AND attempt_identity_digest = ?3
+  AND input_digest = ?4
+  AND status = 'requested'
+  AND model_call_count = 0
+  AND input_json <> ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+`
+
+type StartDCPReleaseArbiterSuccessorCallParams struct {
+	UpdatedAt             time.Time
+	AttemptID             string
+	AttemptIdentityDigest string
+	InputDigest           string
+}
+
+func (q *Queries) StartDCPReleaseArbiterSuccessorCall(ctx context.Context, arg StartDCPReleaseArbiterSuccessorCallParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, startDCPReleaseArbiterSuccessorCall,
+		arg.UpdatedAt,
+		arg.AttemptID,
+		arg.AttemptIdentityDigest,
 		arg.InputDigest,
 	)
 	if err != nil {

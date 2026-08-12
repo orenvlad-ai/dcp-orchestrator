@@ -190,3 +190,183 @@ WHERE admission_id = sqlc.arg(admission_id)
   AND status = 'recovery_reviewed'
   AND recovery_review_run_id = sqlc.arg(recovery_review_run_id)
   AND recovery_target_sha = sqlc.arg(recovery_target_sha);
+
+-- name: GetDCPReleaseArbiterSuccessorAttemptByID :one
+SELECT * FROM dcp_review_lab_arbiter_v1_successor_attempt WHERE attempt_id = ?;
+
+-- name: GetDCPReleaseArbiterSuccessorAttemptByIncident :one
+SELECT * FROM dcp_review_lab_arbiter_v1_successor_attempt WHERE incident_id = ?;
+
+-- name: ListDCPReleaseArbiterSuccessorAttempts :many
+SELECT * FROM dcp_review_lab_arbiter_v1_successor_attempt ORDER BY authorized_at, attempt_id;
+
+-- name: PrepareDCPReleaseArbiterSuccessorAttempt :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'requested', input_json = sqlc.arg(input_json),
+    input_digest = sqlc.arg(input_digest), updated_at = sqlc.arg(updated_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = sqlc.arg(incident_id)
+  AND attempt_generation = 2
+  AND attempt_identity_digest = sqlc.arg(attempt_identity_digest)
+  AND incident_identity_digest = sqlc.arg(incident_identity_digest)
+  AND incident_input_digest = sqlc.arg(incident_input_digest)
+  AND status = 'authorized'
+  AND model_call_count = 0
+  AND input_json = ''
+  AND input_digest = ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1 original
+    WHERE original.incident_id = dcp_review_lab_arbiter_v1_successor_attempt.incident_id
+      AND original.generation = dcp_review_lab_arbiter_v1_successor_attempt.incident_generation
+      AND original.identity_digest = dcp_review_lab_arbiter_v1_successor_attempt.incident_identity_digest
+      AND original.input_digest = dcp_review_lab_arbiter_v1_successor_attempt.incident_input_digest
+      AND original.status = 'failed'
+      AND original.model_call_count = 1
+      AND original.decision_json = ''
+      AND original.decision_digest = ''
+      AND original.recovery_wake_count = 0
+      AND original.error_code = 'submit_failed'
+  );
+
+-- name: StartDCPReleaseArbiterSuccessorCall :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'running', model_call_count = 1, updated_at = sqlc.arg(updated_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND attempt_identity_digest = sqlc.arg(attempt_identity_digest)
+  AND input_digest = sqlc.arg(input_digest)
+  AND status = 'requested'
+  AND model_call_count = 0
+  AND input_json <> ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1;
+
+-- name: FailDCPReleaseArbiterSuccessorPreflight :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'preflight_failed', error_code = sqlc.arg(error_code),
+    finished_at = sqlc.arg(finished_at), updated_at = sqlc.arg(finished_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND status = 'requested'
+  AND model_call_count = 0;
+
+-- name: RecordDCPReleaseArbiterSuccessorDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = sqlc.arg(status), decision_json = sqlc.arg(decision_json),
+    decision_digest = sqlc.arg(decision_digest), error_code = sqlc.arg(error_code),
+    decision_at = sqlc.arg(decision_at), finished_at = sqlc.narg(finished_at),
+    updated_at = sqlc.arg(decision_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.incident_id = sqlc.arg(incident_id)
+  AND attempt_generation = 2
+  AND attempt_identity_digest = sqlc.arg(attempt_identity_digest)
+  AND dcp_review_lab_arbiter_v1_successor_attempt.input_digest = sqlc.arg(input_digest)
+  AND status = 'running'
+  AND model_call_count = 1
+  AND decision_json = ''
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1 original
+    WHERE original.incident_id = dcp_review_lab_arbiter_v1_successor_attempt.incident_id
+      AND original.status = 'failed'
+      AND original.model_call_count = 1
+      AND original.decision_json = ''
+      AND original.error_code = 'submit_failed'
+  );
+
+-- name: ConsumeDCPReleaseArbiterSuccessorRepair :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'repairing', recovery_owner_session_id = 'dcp-review-lab-12',
+    recovery_path = 'same_worker_conflict_repair', recovery_wake_count = 1,
+    updated_at = sqlc.arg(updated_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND decision_digest = sqlc.arg(decision_digest)
+  AND status = 'decided'
+  AND recovery_wake_count = 0
+  AND policy_max_worker_calls = 1
+  AND policy_max_fresh_reviews = 1;
+
+-- name: FailDCPReleaseArbiterSuccessorCall :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'failed', error_code = sqlc.arg(error_code),
+    finished_at = sqlc.arg(finished_at), updated_at = sqlc.arg(finished_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND status = 'running'
+  AND model_call_count = 1
+  AND decision_json = '';
+
+-- name: FailDCPReleaseArbiterSuccessorAfterDecision :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'failed', error_code = sqlc.arg(error_code),
+    finished_at = sqlc.arg(finished_at), updated_at = sqlc.arg(finished_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND status IN ('decided', 'repairing')
+  AND model_call_count = 1
+  AND decision_json <> '';
+
+-- name: RebindDCPAdmissionAfterArbiterSuccessorRepair :execrows
+UPDATE dcp_review_lab_admission
+SET review_run_id = sqlc.arg(new_review_run_id),
+    review_id = sqlc.arg(new_review_id),
+    target_sha = sqlc.arg(new_target_sha),
+    review_base_sha = sqlc.arg(new_review_base_sha),
+    status = 'waiting', lease_id = '', admitted_base_sha = '', error_code = '',
+    recovered_incident_packet = incident_packet, incident_packet = '',
+    updated_at = sqlc.arg(updated_at)
+WHERE dcp_review_lab_admission.id = sqlc.arg(admission_id)
+  AND dcp_review_lab_admission.review_run_id = sqlc.arg(old_review_run_id)
+  AND dcp_review_lab_admission.session_id = sqlc.arg(session_id)
+  AND dcp_review_lab_admission.pr_url = sqlc.arg(pr_url)
+  AND dcp_review_lab_admission.target_sha = sqlc.arg(old_target_sha)
+  AND dcp_review_lab_admission.status = 'incident'
+  AND dcp_review_lab_admission.lease_id = sqlc.arg(incident_lease_id)
+  AND dcp_review_lab_admission.error_code = 'merge_conflict_or_ambiguity'
+  AND dcp_review_lab_admission.recovered_incident_packet = ''
+  AND sqlc.arg(new_target_sha) <> dcp_review_lab_admission.target_sha
+  AND EXISTS (
+    SELECT 1 FROM dcp_review_lab_arbiter_v1_successor_attempt successor
+    WHERE successor.attempt_id = sqlc.arg(attempt_id)
+      AND successor.incident_id = sqlc.arg(incident_id)
+      AND successor.status = 'repairing'
+      AND successor.attempt_generation = 2
+      AND successor.recovery_owner_session_id = dcp_review_lab_admission.session_id
+      AND successor.recovery_path = 'same_worker_conflict_repair'
+      AND successor.recovery_wake_count = 1
+      AND successor.policy_max_worker_calls = 1
+      AND successor.policy_max_fresh_reviews = 1
+  )
+  AND EXISTS (
+    SELECT 1 FROM review_run rr
+    JOIN pr ON pr.url = rr.pr_url AND pr.session_id = rr.session_id
+    WHERE rr.id = sqlc.arg(new_review_run_id)
+      AND rr.review_id = sqlc.arg(new_review_id)
+      AND rr.session_id = sqlc.arg(session_id)
+      AND rr.pr_url = sqlc.arg(pr_url)
+      AND rr.target_sha = sqlc.arg(new_target_sha)
+      AND rr.status = 'complete' AND rr.verdict = 'approved'
+      AND rr.result_channel = 'structured_dcp_v1'
+      AND rr.terminal_merge_status = ''
+      AND pr.head_sha = rr.target_sha AND pr.pr_state = 'open'
+      AND pr.is_draft = 0 AND pr.is_merged = 0 AND pr.is_closed = 0
+  );
+
+-- name: MarkDCPReleaseArbiterSuccessorRecoveryReviewed :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'recovery_reviewed', recovery_review_run_id = sqlc.arg(recovery_review_run_id),
+    recovery_target_sha = sqlc.arg(recovery_target_sha), updated_at = sqlc.arg(updated_at)
+WHERE attempt_id = sqlc.arg(attempt_id)
+  AND status = 'repairing'
+  AND recovery_wake_count = 1
+  AND policy_max_fresh_reviews = 1
+  AND recovery_review_run_id = ''
+  AND recovery_target_sha = '';
+
+-- name: CompleteDCPReleaseArbiterSuccessorAttempt :execrows
+UPDATE dcp_review_lab_arbiter_v1_successor_attempt
+SET status = 'succeeded', error_code = '', finished_at = sqlc.arg(finished_at),
+    updated_at = sqlc.arg(finished_at)
+WHERE incident_id = sqlc.arg(incident_id)
+  AND status = 'recovery_reviewed'
+  AND recovery_review_run_id = sqlc.arg(recovery_review_run_id)
+  AND recovery_target_sha = sqlc.arg(recovery_target_sha);

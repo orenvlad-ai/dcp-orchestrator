@@ -26,6 +26,12 @@ type arbiterSuperviseOptions struct {
 	supervisorRunFile string
 }
 
+const (
+	dcpArbiterSuccessorHandle = "dcp-global-release-arbiter-v1-successor"
+	dcpArbiterSuccessorDigest = "3c62ea80b56ef94165519d4f01e4c449c320bff22d16b902dd68d4a1a355ea7d"
+	dcpArbiterSuccessorID     = "dcp-arbiter-successor-" + dcpArbiterSuccessorDigest
+)
+
 type arbiterDecisionRequest struct {
 	IncidentID string          `json:"incidentId"`
 	Decision   json.RawMessage `json:"decision"`
@@ -78,13 +84,18 @@ func newArbiterSuperviseCommand(ctx *commandContext) *cobra.Command {
 }
 
 func validateArbiterSupervisorOptions(opts arbiterSuperviseOptions) error {
-	if opts.handle != "dcp-global-release-arbiter-v1" || !strings.HasPrefix(opts.incident, "dcp-global-release-") || len(opts.incident) != 83 ||
-		len(opts.identityDigest) != 64 || len(opts.inputDigest) != 64 || !lowerHex(opts.identityDigest) || !lowerHex(opts.inputDigest) ||
+	original := opts.handle == "dcp-global-release-arbiter-v1" && strings.HasPrefix(opts.incident, "dcp-global-release-") && len(opts.incident) == 83
+	successor := opts.handle == dcpArbiterSuccessorHandle && opts.incident == dcpArbiterSuccessorID && opts.identityDigest == dcpArbiterSuccessorDigest
+	if (!original && !successor) || len(opts.identityDigest) != 64 || len(opts.inputDigest) != 64 || !lowerHex(opts.identityDigest) || !lowerHex(opts.inputDigest) ||
 		!filepath.IsAbs(opts.supervisorDataDir) || filepath.Clean(opts.supervisorDataDir) != opts.supervisorDataDir ||
 		!filepath.IsAbs(opts.supervisorRunFile) || filepath.Clean(opts.supervisorRunFile) != opts.supervisorRunFile {
 		return errors.New("invalid bounded arbiter supervisor identity")
 	}
-	root := filepath.Join(opts.supervisorDataDir, "runtime", "dcp-arbiter", opts.incident)
+	rootName := "dcp-arbiter"
+	if successor {
+		rootName = "dcp-arbiter-successor"
+	}
+	root := filepath.Join(opts.supervisorDataDir, "runtime", rootName, opts.incident)
 	result, schema := filepath.Clean(opts.resultFile), filepath.Clean(opts.resultSchema)
 	if result != filepath.Join(root, "result.json") || schema != filepath.Join(root, "schema.json") || result == schema {
 		return errors.New("arbiter artifacts are outside the exact incident root")
@@ -129,7 +140,10 @@ func (c *commandContext) runSupervisedArbiter(ctx context.Context, opts arbiterS
 			waitErr = fmt.Errorf("record DCP arbiter result: %w", err)
 		}
 	}
-	if resultFailure != "submit_failed" {
+	// The single successor's input/schema/result artifacts are immutable audit
+	// evidence after its fenced call. Durable state makes any restart replay
+	// inert; preserving the files cannot authorize another call.
+	if opts.handle != dcpArbiterSuccessorHandle && resultFailure != "submit_failed" {
 		_ = os.Remove(opts.resultFile)
 		_ = os.Remove(opts.resultSchema)
 	}
