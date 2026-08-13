@@ -231,6 +231,20 @@ zero arbiter calls and at most one fresh context-free exact-head reviewer,
 followed only by the existing admission and terminal-merge gates. Every drift,
 duplicate, later action/reviewer or broadened identity fails closed.
 
+The first exact source-0061 live start proved that quarantine ordering: cards
+11/12 remained bare shells with zero descendants and no worker call. The
+recovery then failed before backup/action because the trusted gh constant
+named Homebrew symlink `/opt/homebrew/bin/gh`, while the existing verifier
+correctly accepts only a physical regular file. That row is exact
+`failed/preflight_or_backup_failed`, revision 1, with 0/0/0/0 calls/actions,
+empty backup/head/review fields and two quarantine rows verified once each.
+Migration 0062 must preserve that failure in one immutable audit and may re-arm
+only the same recovery row once at revision 2. The corrected constant is only
+`/opt/homebrew/Cellar/gh/2.87.2/bin/gh` with existing digest
+`f392d9ad8d2260c671566936b127f5436772ce16e25b091cf1fa7b301987f27e`.
+This direct-path correction adds no identity, model call, action, reviewer,
+retry policy or authority; every absent or mismatched audit fails closed.
+
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or
 control-plane command channel and emits exactly one bounded JSON result through

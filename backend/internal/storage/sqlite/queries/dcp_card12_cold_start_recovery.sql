@@ -5,6 +5,40 @@ WHERE recovery_id = ?;
 -- name: ListDCPCard12ColdStartRecoveries :many
 SELECT * FROM dcp_review_lab_card12_cold_start_recovery ORDER BY authorized_at;
 
+-- name: CountExactDCPCard12ColdStartToolPathRecovery :one
+SELECT count(*)
+FROM dcp_card12_cold_start_tool_path_recovery audit
+JOIN dcp_review_lab_card12_cold_start_recovery recovery
+  ON recovery.recovery_id = audit.recovery_id
+WHERE audit.correction_id = 'dcp-card12-cold-start-tool-path-recovery-a10a121ce3cf41afeeeda32396a190d6de725592570ae02d0d136f1d1cbba9e1'
+  AND audit.recovery_id = 'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f'
+  AND audit.recovery_generation = 1
+  AND audit.recovery_identity_digest = '087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f'
+  AND audit.prior_status = 'failed'
+  AND audit.prior_error_code = 'preflight_or_backup_failed'
+  AND audit.prior_revision = 1
+  AND audit.prior_worker_calls = 0 AND audit.prior_arbiter_calls = 0
+  AND audit.prior_action_count = 0 AND audit.prior_reviewer_calls = 0
+  AND audit.prior_backup_path = '' AND audit.prior_backup_digest = ''
+  AND audit.prior_new_head = '' AND audit.prior_review_run_id = ''
+  AND audit.prior_merge_commit_sha = ''
+  AND audit.failed_source_sha = '032e16aa3025858eeddecc1a25e87d4ec8ea4f18'
+  AND audit.failed_source_tree = 'cc519e93923e02d59463bbe14dd77192a237ce95'
+  AND audit.rejected_tool_path = '/opt/homebrew/bin/gh'
+  AND audit.physical_tool_path = '/opt/homebrew/Cellar/gh/2.87.2/bin/gh'
+  AND audit.physical_tool_digest = 'f392d9ad8d2260c671566936b127f5436772ce16e25b091cf1fa7b301987f27e'
+  AND audit.quarantine_rows = 2 AND audit.quarantine_verifications = 2
+  AND audit.recovery_reason = 'trusted_gh_constant_named_symlink_not_physical_regular_file'
+  AND recovery.status = 'authorized' AND recovery.revision = 2
+  AND recovery.worker_model_call_count = 0
+  AND recovery.arbiter_model_call_count = 0
+  AND recovery.model_free_action_count = 0
+  AND recovery.reviewer_model_call_count = 0
+  AND recovery.backup_path = '' AND recovery.backup_digest = ''
+  AND recovery.local_ref_after = '' AND recovery.new_head = ''
+  AND recovery.recovery_review_run_id = ''
+  AND recovery.merge_commit_sha = '' AND recovery.error_code = '';
+
 -- name: BootstrapDCPCard12ColdStartRecovery :execrows
 INSERT INTO dcp_review_lab_card12_cold_start_recovery (
     recovery_id, generation, identity_digest, contract_commit,
