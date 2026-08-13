@@ -226,6 +226,30 @@ func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission 
 		return err
 	}
 	incident := dcpArbiterFromRow(row)
+	continuationRow, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
+	if continuationErr == nil {
+		continuation := dcpCard12ModelFreeRebaseContinuationFromRow(continuationRow)
+		if continuation.AdmissionID != admission.ID || continuation.IncidentID != incident.IncidentID ||
+			continuation.Status != domain.DCPModelFreeRebaseRecoveryReviewed ||
+			continuation.RecoveryReviewRunID != admission.ReviewRunID || continuation.NewHead != admission.TargetSHA ||
+			continuation.ModelFreeActionCount != 1 || continuation.ReviewerModelCallCount != 1 {
+			return errors.New("card-12 model-free terminal identity is not exact")
+		}
+		n, completeErr := q.CompleteDCPCard12ModelFreeRebase(ctx, gen.CompleteDCPCard12ModelFreeRebaseParams{
+			MergeCommitSha: mergeSHA, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			ContinuationID: continuation.ContinuationID, ReviewRunID: admission.ReviewRunID, TargetSha: admission.TargetSHA,
+		})
+		if completeErr != nil {
+			return completeErr
+		}
+		if n != 1 {
+			return errors.New("card-12 model-free terminal completion was unavailable")
+		}
+		return nil
+	}
+	if !errors.Is(continuationErr, sql.ErrNoRows) {
+		return continuationErr
+	}
 	freshRow, freshErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
 	if freshErr == nil {
 		fresh := dcpCard12FreshWorkerRecoveryFromRow(freshRow)

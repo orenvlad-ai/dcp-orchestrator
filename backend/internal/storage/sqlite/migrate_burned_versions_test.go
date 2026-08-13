@@ -74,6 +74,7 @@ var shippedMigrations = map[int64]string{
 	56: "0056_dcp_arbiter_successor_result_validation_recovery.sql",
 	57: "0057_dcp_review_lab_card12_fresh_worker_recovery.sql",
 	58: "0058_dcp_review_lab_card12_fresh_worker_preflight_recovery.sql",
+	59: "0059_dcp_review_lab_card12_model_free_rebase_continuation.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
