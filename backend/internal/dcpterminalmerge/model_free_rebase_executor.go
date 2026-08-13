@@ -222,8 +222,11 @@ func (x *modelFreeRebaseExecutor) validatePreservedRebase(ctx context.Context, r
 	if err := x.requireRemoteRefs(ctx, row, row.OldHead); err != nil {
 		return err
 	}
+	if _, err := x.git(ctx, repo, nil, "merge-base", "--is-ancestor", modelFreeProviderBaseSHA, row.CurrentMain); err != nil {
+		return errors.Join(err, errors.New("card-12 model-free rebase: exact provider base is not an ancestor of current main"))
+	}
 	parent, err := x.gitText(ctx, repo, nil, "show", "-s", "--format=%P", row.OldHead)
-	if err != nil || parent != "dbaf01b05e85ffffa4c843a905e2fe5229eaf0da" {
+	if err != nil || parent != modelFreeProviderBaseSHA {
 		return errors.Join(err, errors.New("card-12 model-free rebase: stopped commit parent drifted"))
 	}
 	base, err := x.gitText(ctx, repo, nil, "merge-base", row.OldHead, row.CurrentMain)

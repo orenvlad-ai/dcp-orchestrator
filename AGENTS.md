@@ -9,16 +9,17 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `e17fa9080434b5642667392fb06db61cf35f19bd`](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/AGENTS.md)
-2. [current operating contract revision `2026-08-13.1`](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 exact card-12 model-free rebase continuation contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_CONTRACT.md)
-4. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
-5. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
-6. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
-7. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
-8. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-9. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/docs/TARGET_ARCHITECTURE_V1.md)
-10. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/e17fa9080434b5642667392fb06db61cf35f19bd/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f`](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/AGENTS.md)
+2. [current operating contract revision `2026-08-13.3`](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 exact provider-base correction contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_CARD12_MODEL_FREE_PROVIDER_BASE_CORRECTION_CONTRACT.md)
+4. [I13 Stage 2 exact card-12 model-free rebase continuation contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_CONTRACT.md)
+5. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
+6. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
+7. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
+8. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
+9. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+10. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/docs/TARGET_ARCHITECTURE_V1.md)
+11. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -198,6 +199,17 @@ worker calls and zero arbiter calls. Only the resulting exact head may consume
 one context-free reviewer fence and pass the existing admission and terminal
 merge gates. Drift, uncertain one-shot state or any second action/reviewer
 fails closed without replacement identity or general Git recovery authority.
+
+Exact source `a7b5476fb886bcbb6bbd91aa89da17966547b3b8` was built, installed and
+preflighted without starting runtime. The final stopped pre-action proof showed
+that PR #9's provider-base snapshot is exact
+`dbaf01b05e85ffffa4c843a905e2fe5229eaf0da` while current main is exact
+`b34b31b5443890e69128db2862726950a6bbac0d`, with the former an ancestor of
+the latter. Migration 0060 may add only one immutable correction row bound to
+contract `9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f`. The pre-action validator
+must check the provider snapshot and current ref independently plus exact
+ancestry. This correction consumes no action/model/reviewer fence and adds no
+general base compatibility or retry authority.
 
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or

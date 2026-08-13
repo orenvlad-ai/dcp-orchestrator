@@ -17,6 +17,19 @@ SELECT
   (SELECT count(*) FROM dcp_card12_fresh_worker_preflight_recovery) AS preflight_audit_count,
   (SELECT count(*) FROM dcp_review_lab_card12_model_free_rebase_continuation) AS continuation_count;
 
+-- name: GetDCPCard12ModelFreeProviderBaseCorrectionCount :one
+SELECT count(*)
+FROM dcp_review_lab_card12_model_free_provider_base_correction
+WHERE correction_id = 'dcp-card12-model-free-provider-base-correction-25663a5a551fce7ec0d6d9055588b4c4d1d1294fd926e2c7c2347cacd799ab59'
+  AND generation = 1
+  AND identity_digest = '25663a5a551fce7ec0d6d9055588b4c4d1d1294fd926e2c7c2347cacd799ab59'
+  AND contract_commit = '9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f'
+  AND continuation_id = 'dcp-card12-model-free-rebase-continuation-66eb630c1995f90b37429a2f6c57c57794dda9fc98a29149c88bdb2f01131060'
+  AND original_contract_commit = 'e17fa9080434b5642667392fb06db61cf35f19bd'
+  AND reviewed_source_commit = 'a7b5476fb886bcbb6bbd91aa89da17966547b3b8'
+  AND provider_base_sha = 'dbaf01b05e85ffffa4c843a905e2fe5229eaf0da'
+  AND current_main_sha = 'b34b31b5443890e69128db2862726950a6bbac0d';
+
 -- name: StartDCPCard12ModelFreeRebaseContinuation :execrows
 UPDATE dcp_review_lab_card12_model_free_rebase_continuation
 SET status = 'running', model_free_action_count = 1,

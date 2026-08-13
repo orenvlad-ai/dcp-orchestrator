@@ -22,6 +22,11 @@ func (s *Store) ValidateDCPCard12ModelFreeRebaseDurableCounts(ctx context.Contex
 		counts.PreflightAuditCount == 1 && counts.ContinuationCount == 1, nil
 }
 
+func (s *Store) ValidateDCPCard12ModelFreeProviderBaseCorrection(ctx context.Context) (bool, error) {
+	count, err := s.qr.GetDCPCard12ModelFreeProviderBaseCorrectionCount(ctx)
+	return count == 1, err
+}
+
 func (s *Store) GetDCPCard12ModelFreeRebaseContinuation(ctx context.Context, id string) (domain.DCPCard12ModelFreeRebaseContinuation, bool, error) {
 	row, err := s.qr.GetDCPCard12ModelFreeRebaseContinuation(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
