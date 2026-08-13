@@ -146,6 +146,38 @@ type DcpCard12FreshWorkerPreflightRecovery struct {
 	RearmedAt              time.Time
 }
 
+type DcpCard12RebaseHeadFinalizationAuditRecovery struct {
+	CorrectionID            string
+	FinalizationID          string
+	FinalizationGeneration  int64
+	FinalizationIdentity    string
+	PredecessorRecoveryID   string
+	PriorStatus             string
+	PriorErrorCode          string
+	PriorRevision           int64
+	PriorWorkerCalls        int64
+	PriorArbiterCalls       int64
+	PriorActionCount        int64
+	PriorReviewerCalls      int64
+	PriorProviderNewHead    string
+	PriorReviewRunID        string
+	PriorMergeCommitSha     string
+	PriorUpdatedAt          time.Time
+	PriorFinishedAt         time.Time
+	FailedSourceSha         string
+	FailedSourceTree        string
+	ToolAuditCorrectionID   string
+	AutoAuditCorrectionID   string
+	ToolAuditRows           int64
+	AutoAuditRows           int64
+	StaleToolQueryMatches   int64
+	StaleAutoQueryMatches   int64
+	QuarantineRows          int64
+	QuarantineVerifications int64
+	RecoveryReason          string
+	RearmedAt               time.Time
+}
+
 type DcpGovernedStartupQuarantine struct {
 	SessionID         string
 	RecoveryID        string
