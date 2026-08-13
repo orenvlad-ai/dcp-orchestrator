@@ -16,10 +16,12 @@ const (
 	ModelFreeRebaseContinuationDigest = "66eb630c1995f90b37429a2f6c57c57794dda9fc98a29149c88bdb2f01131060"
 	ModelFreeRebaseContinuationID     = "dcp-card12-model-free-rebase-continuation-" + ModelFreeRebaseContinuationDigest
 	modelFreeContractCommit           = "e17fa9080434b5642667392fb06db61cf35f19bd"
+	modelFreeProviderBaseSHA          = "dbaf01b05e85ffffa4c843a905e2fe5229eaf0da"
 )
 
 type ModelFreeRebaseStore interface {
 	ValidateDCPCard12ModelFreeRebaseDurableCounts(context.Context) (bool, error)
+	ValidateDCPCard12ModelFreeProviderBaseCorrection(context.Context) (bool, error)
 	GetDCPCard12ModelFreeRebaseContinuation(context.Context, string) (domain.DCPCard12ModelFreeRebaseContinuation, bool, error)
 	ListDCPCard12ModelFreeRebaseContinuations(context.Context) ([]domain.DCPCard12ModelFreeRebaseContinuation, error)
 	StartDCPCard12ModelFreeRebaseContinuation(context.Context, domain.DCPCard12ModelFreeRebaseContinuation, time.Time) (bool, error)
@@ -86,6 +88,10 @@ func (e *Engine) reconcileCard12ModelFreeRebase(ctx context.Context) error {
 	}
 	if len(rows) != 1 || !exactModelFreeRebaseContinuation(rows[0]) {
 		return errors.New("card-12 model-free rebase: row count or immutable identity drifted")
+	}
+	correctionExact, err := store.ValidateDCPCard12ModelFreeProviderBaseCorrection(ctx)
+	if err != nil || !correctionExact {
+		return errors.Join(err, errors.New("card-12 model-free rebase: provider-base correction identity drifted"))
 	}
 	return e.advanceCard12ModelFreeRebaseLocked(ctx, rows[0])
 }
@@ -257,7 +263,7 @@ func (e *Engine) validateModelFreeProvider(ctx context.Context, row domain.DCPCa
 	}
 	stored := prs[0]
 	if stored.URL != row.PRURL || stored.Number != int(row.PRNumber) || stored.Repo != row.Repository || stored.SourceBranch != row.SourceBranch ||
-		stored.TargetBranch != TargetBranch || stored.Author != "orenvlad-ai" {
+		stored.TargetBranch != TargetBranch || stored.Author != "orenvlad-ai" || !strings.EqualFold(stored.BaseSHA, modelFreeProviderBaseSHA) {
 		return errors.New("card-12 model-free rebase: stored PR is foreign")
 	}
 	if pre && !strings.EqualFold(stored.HeadSHA, row.OldHead) {
@@ -271,7 +277,7 @@ func (e *Engine) validateModelFreeProvider(ctx context.Context, row domain.DCPCa
 	observation, pr := observations[0], observations[0].PR
 	if observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != row.Repository ||
 		pr.Number != int(row.PRNumber) || pr.URL != row.PRURL || pr.HeadRepo != row.Repository || pr.SourceBranch != row.SourceBranch ||
-		pr.TargetBranch != TargetBranch || !strings.EqualFold(pr.HeadSHA, wantHead) || !strings.EqualFold(pr.BaseSHA, row.CurrentMain) ||
+		pr.TargetBranch != TargetBranch || !strings.EqualFold(pr.HeadSHA, wantHead) || !strings.EqualFold(pr.BaseSHA, modelFreeProviderBaseSHA) ||
 		pr.State != string(domain.PRStateOpen) || pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
 		pr.Draft || pr.Merged || pr.Closed {
 		return errors.New("card-12 model-free rebase: provider identity/head drifted")

@@ -286,6 +286,19 @@ type DcpReviewLabCard12FreshWorkerRecovery struct {
 	FinishedAt                 sql.NullTime
 }
 
+type DcpReviewLabCard12ModelFreeProviderBaseCorrection struct {
+	CorrectionID           string
+	Generation             int64
+	IdentityDigest         string
+	ContractCommit         string
+	ContinuationID         string
+	OriginalContractCommit string
+	ReviewedSourceCommit   string
+	ProviderBaseSha        string
+	CurrentMainSha         string
+	AuthorizedAt           time.Time
+}
+
 type DcpReviewLabCard12ModelFreeRebaseContinuation struct {
 	ContinuationID           string
 	Generation               int64

@@ -51,6 +51,16 @@ func TestExactModelFreeRebaseContinuationRejectsIdentityDrift(t *testing.T) {
 	}
 }
 
+func TestModelFreeProviderBaseCorrectionIsExact(t *testing.T) {
+	if modelFreeProviderBaseSHA != "dbaf01b05e85ffffa4c843a905e2fe5229eaf0da" {
+		t.Fatalf("provider base = %q", modelFreeProviderBaseSHA)
+	}
+	row := exactTestModelFreeRebaseContinuation()
+	if row.CurrentMain != "b34b31b5443890e69128db2862726950a6bbac0d" || row.CurrentMain == modelFreeProviderBaseSHA {
+		t.Fatalf("provider base/current main distinction drifted: %s / %s", modelFreeProviderBaseSHA, row.CurrentMain)
+	}
+}
+
 func TestExactPreservedRebasePreflight(t *testing.T) {
 	if os.Getenv("DCP_EXACT_CARD12_PREFLIGHT") != "1" {
 		t.Skip("exact retained card-12 state is only available in the bounded lab")

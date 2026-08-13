@@ -227,6 +227,27 @@ func (q *Queries) FenceDCPCard12ModelFreeRebaseReview(ctx context.Context, arg F
 	return result.RowsAffected()
 }
 
+const getDCPCard12ModelFreeProviderBaseCorrectionCount = `-- name: GetDCPCard12ModelFreeProviderBaseCorrectionCount :one
+SELECT count(*)
+FROM dcp_review_lab_card12_model_free_provider_base_correction
+WHERE correction_id = 'dcp-card12-model-free-provider-base-correction-25663a5a551fce7ec0d6d9055588b4c4d1d1294fd926e2c7c2347cacd799ab59'
+  AND generation = 1
+  AND identity_digest = '25663a5a551fce7ec0d6d9055588b4c4d1d1294fd926e2c7c2347cacd799ab59'
+  AND contract_commit = '9610bf1a8fa41f631ca5ed336d0d9b0313d7d73f'
+  AND continuation_id = 'dcp-card12-model-free-rebase-continuation-66eb630c1995f90b37429a2f6c57c57794dda9fc98a29149c88bdb2f01131060'
+  AND original_contract_commit = 'e17fa9080434b5642667392fb06db61cf35f19bd'
+  AND reviewed_source_commit = 'a7b5476fb886bcbb6bbd91aa89da17966547b3b8'
+  AND provider_base_sha = 'dbaf01b05e85ffffa4c843a905e2fe5229eaf0da'
+  AND current_main_sha = 'b34b31b5443890e69128db2862726950a6bbac0d'
+`
+
+func (q *Queries) GetDCPCard12ModelFreeProviderBaseCorrectionCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getDCPCard12ModelFreeProviderBaseCorrectionCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getDCPCard12ModelFreeRebaseContinuation = `-- name: GetDCPCard12ModelFreeRebaseContinuation :one
 SELECT continuation_id, generation, identity_digest, contract_commit, predecessor_recovery_id, incident_id, admission_id, session_id, task_id, project_id, repository, worktree_path, source_branch, pr_url, pr_number, old_head, current_main, predecessor_status, predecessor_error, predecessor_revision, predecessor_worker_calls, predecessor_reviewer_calls, predecessor_input_digest, input_artifact_digest, result_artifact_digest, log_artifact_digest, rebase_metadata_digest, resolved_bytes_digest, worker_model_call_count, arbiter_model_call_count, model_free_action_count, reviewer_model_call_count, local_ref_before, local_ref_after, push_ref, push_lease_old_head, new_head, new_commit, provider_new_head, recovery_review_run_id, recovery_review_id, recovery_review_batch_id, recovery_check_id, merge_commit_sha, status, revision, error_code, authorized_at, updated_at, finished_at FROM dcp_review_lab_card12_model_free_rebase_continuation
 WHERE continuation_id = ?
