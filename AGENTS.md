@@ -245,6 +245,20 @@ only the same recovery row once at revision 2. The corrected constant is only
 This direct-path correction adds no identity, model call, action, reviewer,
 retry policy or authority; every absent or mismatched audit fails closed.
 
+The source-0062 live start again held that fence with no governed worker and
+failed before backup/action at revision 3 with 0/0/0/0 counters. The newly
+proven direct-path fact is the one regular `AUTO_MERGE` ref already created by
+the original stock Git conflict: exact tree
+`3eba7b0dec18c759875b2b33a8d7d2379caaa6a1`, file digest
+`dac6e5a895aed94e8cd5a0f1a39b1c23f0201393e621c635ed228070710c13ed`
+and conflict blob `1af18aad20e3aab90ea7f1c617d330abc3b08de9` reproduce the exact preserved
+marker bytes. It is evidence, not an active mutator. Migration 0063 may preserve
+only that exact second zero-call failure and re-arm only the same row at
+revision 4. The daemon must include the exact ref in its immutable backup, then
+normal `reset --hard` removes it before reconstruction. Any missing, foreign or
+changed ref remains terminal; no identity, model call, action, reviewer, retry
+policy or authority is added.
+
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or
 control-plane command channel and emits exactly one bounded JSON result through

@@ -23,13 +23,19 @@ type coldStartRecoveryExecutor struct {
 	dataDir string
 }
 
+const (
+	coldStartAutoMergeTree       = "3eba7b0dec18c759875b2b33a8d7d2379caaa6a1"
+	coldStartAutoMergeFileDigest = "dac6e5a895aed94e8cd5a0f1a39b1c23f0201393e621c635ed228070710c13ed"
+	coldStartAutoMergeBlob       = "1af18aad20e3aab90ea7f1c617d330abc3b08de9"
+)
+
 func NewColdStartRecoveryExecutor(runtime arbiterRuntime, dataDir string) ColdStartRecoveryExecutor {
 	return &coldStartRecoveryExecutor{runtime: runtime, dataDir: filepath.Clean(dataDir)}
 }
 
 func (x *coldStartRecoveryExecutor) PrepareBackup(ctx context.Context, row domain.DCPCard12ColdStartRecovery) (string, string, error) {
 	if x == nil || x.runtime == nil || !exactColdStartRecovery(row) || row.Status != domain.DCPColdStartRecoveryAuthorized ||
-		(row.Revision != 0 && row.Revision != 2) || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.BackupPath != "" || row.BackupDigest != "" {
+		(row.Revision != 0 && row.Revision != 2 && row.Revision != 4) || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.BackupPath != "" || row.BackupDigest != "" {
 		return "", "", errors.New("card-12 cold-start recovery: backup identity is invalid")
 	}
 	if err := x.requireQuiescence(ctx); err != nil {
@@ -201,6 +207,13 @@ func (x *coldStartRecoveryExecutor) captureBackupFiles(ctx context.Context, row 
 		}
 		files[relative] = data
 	}
+	if row.Revision >= 4 {
+		data, err := readRegular(filepath.Join(gitDir, "AUTO_MERGE"))
+		if err != nil {
+			return nil, fmt.Errorf("card-12 cold-start recovery: backup source git/AUTO_MERGE: %w", err)
+		}
+		files["git/AUTO_MERGE"] = data
+	}
 	status, err := x.git(ctx, row.WorktreePath, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil, err
@@ -309,7 +322,16 @@ func (x *coldStartRecoveryExecutor) validateAttachedConflict(ctx context.Context
 	if err := x.validateCommitTopology(ctx, row); err != nil {
 		return "", "", err
 	}
-	for _, residue := range []string{"AUTO_MERGE", "MERGE_HEAD", "REBASE_HEAD", "rebase-apply", "rebase-merge", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "sequencer", "index.lock", "packed-refs.lock", "shallow.lock"} {
+	if row.Revision >= 4 {
+		if err := x.validateExactAutoMerge(ctx, row, gitDir); err != nil {
+			return "", "", err
+		}
+	} else if _, err := os.Lstat(filepath.Join(gitDir, "AUTO_MERGE")); err == nil {
+		return "", "", errors.New("card-12 cold-start recovery: foreign Git residue AUTO_MERGE exists")
+	} else if !os.IsNotExist(err) {
+		return "", "", err
+	}
+	for _, residue := range []string{"MERGE_HEAD", "REBASE_HEAD", "rebase-apply", "rebase-merge", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "sequencer", "index.lock", "packed-refs.lock", "shallow.lock"} {
 		if _, err := os.Lstat(filepath.Join(gitDir, residue)); err == nil {
 			return "", "", fmt.Errorf("card-12 cold-start recovery: foreign Git residue %s exists", residue)
 		} else if !os.IsNotExist(err) {
@@ -320,6 +342,37 @@ func (x *coldStartRecoveryExecutor) validateAttachedConflict(ctx context.Context
 		return "", "", err
 	}
 	return gitDir, common, nil
+}
+
+func (x *coldStartRecoveryExecutor) validateExactAutoMerge(ctx context.Context, row domain.DCPCard12ColdStartRecovery, gitDir string) error {
+	path := filepath.Join(gitDir, "AUTO_MERGE")
+	if err := requireExactAutoMergeRef(path); err != nil {
+		return err
+	}
+	typeName, err := x.gitText(ctx, row.WorktreePath, nil, "cat-file", "-t", coldStartAutoMergeTree)
+	if err != nil || typeName != "tree" {
+		return errors.Join(err, errors.New("card-12 cold-start recovery: exact AUTO_MERGE object drifted"))
+	}
+	blob, err := x.gitText(ctx, row.WorktreePath, nil, "rev-parse", coldStartAutoMergeTree+":"+row.ConflictPath)
+	if err != nil || blob != coldStartAutoMergeBlob {
+		return errors.Join(err, errors.New("card-12 cold-start recovery: exact AUTO_MERGE conflict blob drifted"))
+	}
+	conflict, err := x.git(ctx, row.WorktreePath, nil, "show", coldStartAutoMergeTree+":"+row.ConflictPath)
+	if err != nil || digestBytes(conflict) != row.MarkerDigest {
+		return errors.Join(err, errors.New("card-12 cold-start recovery: exact AUTO_MERGE conflict bytes drifted"))
+	}
+	return nil
+}
+
+func requireExactAutoMergeRef(path string) error {
+	data, err := readRegular(path)
+	if err != nil || !bytes.Equal(data, []byte(coldStartAutoMergeTree+"\n")) || digestBytes(data) != coldStartAutoMergeFileDigest {
+		return errors.Join(err, errors.New("card-12 cold-start recovery: exact AUTO_MERGE ref drifted"))
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode().Perm() != 0o644 {
+		return errors.Join(err, errors.New("card-12 cold-start recovery: exact AUTO_MERGE mode drifted"))
+	}
+	return nil
 }
 
 func (x *coldStartRecoveryExecutor) validateCommitTopology(ctx context.Context, row domain.DCPCard12ColdStartRecovery) error {

@@ -99,6 +99,11 @@ func (s *Store) HasExactDCPCard12ColdStartToolPathRecovery(ctx context.Context) 
 	return count == 1, err
 }
 
+func (s *Store) HasExactDCPCard12ColdStartAutoMergeRecovery(ctx context.Context) (bool, error) {
+	count, err := s.qr.CountExactDCPCard12ColdStartAutoMergeRecovery(ctx)
+	return count == 1, err
+}
+
 func (s *Store) PersistDCPCard12ColdStartBackup(ctx context.Context, row domain.DCPCard12ColdStartRecovery, path, digest string, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
