@@ -218,6 +218,11 @@ func Run() error {
 		terminalMerger = dcpterminalmerge.New(store, scmProvider, cfg.DataDir)
 		terminalMerger.SetArbiterLauncher(dcpterminalmerge.NewArbiterLauncher(runtimeAdapter, cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetFreshWorkerLauncher(dcpterminalmerge.NewFreshWorkerLauncher(runtimeAdapter, codex.New(), cfg.DataDir, cfg.RunFilePath))
+		terminalMerger.SetModelFreeRebaseExecutor(dcpterminalmerge.NewModelFreeRebaseExecutor(runtimeAdapter))
+		terminalMerger.SetModelFreeReviewTrigger(func(triggerCtx context.Context, id domain.SessionID) error {
+			_, triggerErr := reviewSvc.AutoTrigger(triggerCtx, id)
+			return triggerErr
+		})
 		terminalMerger.SetRefreshWaker(func(wakeCtx context.Context, id domain.SessionID, prompt string) error {
 			_, wakeErr := sessMgr.ResumeDCPReviewLabIdleAgent(wakeCtx, id, prompt)
 			return wakeErr

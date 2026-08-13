@@ -56,6 +56,23 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		}); err != nil {
 			return err
 		}
+		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
+		if continuationErr == nil && continuation.SessionID == string(r.SessionID) && continuation.PRURL == r.PRURL && continuation.NewHead == r.TargetSHA {
+			if continuation.Status != string(domain.DCPModelFreeRebaseCandidateReady) || continuation.ReviewerModelCallCount != 0 {
+				return errors.New("card-12 model-free reviewer fence is already consumed")
+			}
+			n, fenceErr := q.FenceDCPCard12ModelFreeRebaseReview(ctx, gen.FenceDCPCard12ModelFreeRebaseReviewParams{
+				ReviewRunID: r.ID, ReviewID: r.ReviewID, BatchID: r.BatchID,
+				UpdatedAt: r.CreatedAt, SessionID: string(r.SessionID), PRURL: r.PRURL, TargetSha: r.TargetSHA,
+			})
+			if fenceErr != nil || n != 1 {
+				return errors.Join(fenceErr, errors.New("card-12 model-free reviewer fence was unavailable"))
+			}
+			return nil
+		}
+		if continuationErr != nil && !errors.Is(continuationErr, sql.ErrNoRows) {
+			return continuationErr
+		}
 		row, getErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
 		if errors.Is(getErr, sql.ErrNoRows) {
 			return nil
@@ -105,6 +122,20 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 		if runErr != nil {
 			return runErr
 		}
+		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
+		if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseReviewRunning) && continuation.RecoveryReviewRunID == run.ID && continuation.NewHead == run.TargetSha {
+			n, failErr := q.FailDCPCard12ModelFreeRebaseReview(ctx, gen.FailDCPCard12ModelFreeRebaseReviewParams{
+				ErrorCode: "reviewer_failed", UpdatedAt: time.Now().UTC(), FinishedAt: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+				ContinuationID: continuation.ContinuationID, ReviewRunID: run.ID, TargetSha: run.TargetSha,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 model-free failed reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if continuationErr != nil && !errors.Is(continuationErr, sql.ErrNoRows) {
+			return continuationErr
+		}
 		recovery, recoveryErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
 		if errors.Is(recoveryErr, sql.ErrNoRows) {
 			return nil
@@ -147,6 +178,21 @@ func (s *Store) UpdateBoundReviewRunResult(ctx context.Context, expected reviewc
 		updated = true
 		if verdict != domain.VerdictChangesRequested {
 			return nil
+		}
+		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
+		if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseReviewRunning) && continuation.RecoveryReviewRunID == expected.RunID && continuation.NewHead == expected.TargetSHA {
+			now := time.Now().UTC()
+			n, failErr := q.FailDCPCard12ModelFreeRebaseReview(ctx, gen.FailDCPCard12ModelFreeRebaseReviewParams{
+				ErrorCode: "review_changes_requested", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				ContinuationID: continuation.ContinuationID, ReviewRunID: expected.RunID, TargetSha: expected.TargetSHA,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 model-free changes-requested reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if continuationErr != nil && !errors.Is(continuationErr, sql.ErrNoRows) {
+			return continuationErr
 		}
 		recovery, recoveryErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
 		if errors.Is(recoveryErr, sql.ErrNoRows) {
