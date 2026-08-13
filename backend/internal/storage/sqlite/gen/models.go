@@ -54,6 +54,39 @@ type DcpArbiterSuccessorResultValidationRecovery struct {
 	FinishedAt              sql.NullTime
 }
 
+type DcpCard12ColdStartAutoMergeRecovery struct {
+	CorrectionID            string
+	RecoveryID              string
+	RecoveryGeneration      int64
+	RecoveryIdentityDigest  string
+	PriorStatus             string
+	PriorErrorCode          string
+	PriorRevision           int64
+	PriorWorkerCalls        int64
+	PriorArbiterCalls       int64
+	PriorActionCount        int64
+	PriorReviewerCalls      int64
+	PriorBackupPath         string
+	PriorBackupDigest       string
+	PriorLocalRefAfter      string
+	PriorNewHead            string
+	PriorReviewRunID        string
+	PriorMergeCommitSha     string
+	PriorUpdatedAt          time.Time
+	PriorFinishedAt         time.Time
+	FailedSourceSha         string
+	FailedSourceTree        string
+	ResiduePath             string
+	AutoMergeTree           string
+	AutoMergeFileDigest     string
+	AutoMergeConflictBlob   string
+	MarkerDigest            string
+	QuarantineRows          int64
+	QuarantineVerifications int64
+	RecoveryReason          string
+	RearmedAt               time.Time
+}
+
 type DcpCard12ColdStartToolPathRecovery struct {
 	CorrectionID            string
 	RecoveryID              string

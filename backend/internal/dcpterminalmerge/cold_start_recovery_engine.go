@@ -20,6 +20,7 @@ type ColdStartRecoveryStore interface {
 	GetDCPCard12ColdStartRecovery(context.Context, string) (domain.DCPCard12ColdStartRecovery, bool, error)
 	ListDCPCard12ColdStartRecoveries(context.Context) ([]domain.DCPCard12ColdStartRecovery, error)
 	HasExactDCPCard12ColdStartToolPathRecovery(context.Context) (bool, error)
+	HasExactDCPCard12ColdStartAutoMergeRecovery(context.Context) (bool, error)
 	PersistDCPCard12ColdStartBackup(context.Context, domain.DCPCard12ColdStartRecovery, string, string, time.Time) (bool, error)
 	StartDCPCard12ColdStartRecovery(context.Context, domain.DCPCard12ColdStartRecovery, time.Time) (bool, error)
 	CompleteDCPCard12ColdStartRecoveryAction(context.Context, domain.DCPCard12ColdStartRecovery, string, time.Time) (bool, error)
@@ -177,7 +178,7 @@ func (e *Engine) advanceCard12ColdStartRecoveryLocked(ctx context.Context, row d
 }
 
 func (e *Engine) validateColdStartPredecessor(ctx context.Context, row domain.DCPCard12ColdStartRecovery) error {
-	if !exactColdStartRecovery(row) || row.Status != domain.DCPColdStartRecoveryAuthorized || (row.Revision != 0 && row.Revision != 2) ||
+	if !exactColdStartRecovery(row) || row.Status != domain.DCPColdStartRecoveryAuthorized || (row.Revision != 0 && row.Revision != 2 && row.Revision != 4) ||
 		row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.BackupPath != "" || row.BackupDigest != "" {
 		return errors.New("card-12 cold-start recovery: authorization row is not pristine")
 	}
@@ -189,6 +190,16 @@ func (e *Engine) validateColdStartPredecessor(ctx context.Context, row domain.DC
 		exact, err := store.HasExactDCPCard12ColdStartToolPathRecovery(ctx)
 		if err != nil || !exact {
 			return errors.Join(err, errors.New("card-12 cold-start recovery: tool-path recovery audit drifted"))
+		}
+	}
+	if row.Revision == 4 {
+		store, ok := e.store.(ColdStartRecoveryStore)
+		if !ok {
+			return errors.New("card-12 cold-start recovery: AUTO_MERGE recovery store unavailable")
+		}
+		exact, err := store.HasExactDCPCard12ColdStartAutoMergeRecovery(ctx)
+		if err != nil || !exact {
+			return errors.Join(err, errors.New("card-12 cold-start recovery: AUTO_MERGE recovery audit drifted"))
 		}
 	}
 	oldStore, ok := e.store.(ModelFreeRebaseStore)

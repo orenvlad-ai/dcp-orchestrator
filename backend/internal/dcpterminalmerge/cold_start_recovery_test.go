@@ -53,6 +53,22 @@ func TestColdStartTrustedGHPathIsPhysicalAndSymlinkFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRequireExactAutoMergeRefAcceptsOnlyExactRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AUTO_MERGE")
+	if err := os.WriteFile(path, []byte(coldStartAutoMergeTree+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireExactAutoMergeRef(path); err != nil {
+		t.Fatalf("exact AUTO_MERGE ref rejected: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Repeat("0", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireExactAutoMergeRef(path); err == nil {
+		t.Fatal("drifted AUTO_MERGE ref accepted")
+	}
+}
+
 func TestExactColdStartRecoveryRejectsIdentityAndBudgetDrift(t *testing.T) {
 	row := exactTestColdStartRecovery()
 	if !exactColdStartRecovery(row) {

@@ -196,6 +196,55 @@ func (q *Queries) CompleteDCPCard12ColdStartRecoveryAction(ctx context.Context, 
 	return result.RowsAffected()
 }
 
+const countExactDCPCard12ColdStartAutoMergeRecovery = `-- name: CountExactDCPCard12ColdStartAutoMergeRecovery :one
+SELECT count(*)
+FROM dcp_card12_cold_start_auto_merge_recovery audit
+JOIN dcp_card12_cold_start_tool_path_recovery tool
+  ON tool.recovery_id = audit.recovery_id
+JOIN dcp_review_lab_card12_cold_start_recovery recovery
+  ON recovery.recovery_id = audit.recovery_id
+WHERE audit.correction_id = 'dcp-card12-cold-start-auto-merge-recovery-e29a07a0b1aaddee25324e025ec23ab53b63007f78d76155ea79cef1bda52e79'
+  AND audit.recovery_id = 'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f'
+  AND audit.recovery_generation = 1
+  AND audit.recovery_identity_digest = '087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f'
+  AND audit.prior_status = 'failed'
+  AND audit.prior_error_code = 'preflight_or_backup_failed'
+  AND audit.prior_revision = 3
+  AND audit.prior_worker_calls = 0 AND audit.prior_arbiter_calls = 0
+  AND audit.prior_action_count = 0 AND audit.prior_reviewer_calls = 0
+  AND audit.prior_backup_path = '' AND audit.prior_backup_digest = ''
+  AND audit.prior_local_ref_after = '' AND audit.prior_new_head = ''
+  AND audit.prior_review_run_id = '' AND audit.prior_merge_commit_sha = ''
+  AND audit.failed_source_sha = '798e9bfb8f75846d846f2ec2d4dfc9ec0076573b'
+  AND audit.failed_source_tree = 'e5668c51fbc3c7aae872cafbe4759fc405fa0677'
+  AND audit.residue_path = 'AUTO_MERGE'
+  AND audit.auto_merge_tree = '3eba7b0dec18c759875b2b33a8d7d2379caaa6a1'
+  AND audit.auto_merge_file_digest = 'dac6e5a895aed94e8cd5a0f1a39b1c23f0201393e621c635ed228070710c13ed'
+  AND audit.auto_merge_conflict_blob = '1af18aad20e3aab90ea7f1c617d330abc3b08de9'
+  AND audit.marker_digest = '5850bba009db75bf47ff88aef2d2cecbdba89c68967f51a8cdb60f48e968dc1a'
+  AND audit.quarantine_rows = 2 AND audit.quarantine_verifications = 4
+  AND audit.recovery_reason = 'exact_preserved_git_auto_merge_tree_was_misclassified_as_active_mutator'
+  AND tool.correction_id = 'dcp-card12-cold-start-tool-path-recovery-a10a121ce3cf41afeeeda32396a190d6de725592570ae02d0d136f1d1cbba9e1'
+  AND tool.prior_revision = 1
+  AND tool.physical_tool_path = '/opt/homebrew/Cellar/gh/2.87.2/bin/gh'
+  AND recovery.status = 'authorized' AND recovery.revision = 4
+  AND recovery.worker_model_call_count = 0
+  AND recovery.arbiter_model_call_count = 0
+  AND recovery.model_free_action_count = 0
+  AND recovery.reviewer_model_call_count = 0
+  AND recovery.backup_path = '' AND recovery.backup_digest = ''
+  AND recovery.local_ref_after = '' AND recovery.new_head = ''
+  AND recovery.recovery_review_run_id = ''
+  AND recovery.merge_commit_sha = '' AND recovery.error_code = ''
+`
+
+func (q *Queries) CountExactDCPCard12ColdStartAutoMergeRecovery(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countExactDCPCard12ColdStartAutoMergeRecovery)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countExactDCPCard12ColdStartToolPathRecovery = `-- name: CountExactDCPCard12ColdStartToolPathRecovery :one
 SELECT count(*)
 FROM dcp_card12_cold_start_tool_path_recovery audit
