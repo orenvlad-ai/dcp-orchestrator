@@ -135,6 +135,10 @@ type sessionLifecycle interface {
 // service is mounted at httpd APIDeps.Sessions. It also returns the manager so
 // the caller can wire Reconcile into the boot sequence.
 func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, log *slog.Logger) (*sessionsvc.Service, *reviewsvc.Service, sessionLifecycle, error) {
+	return startSessionWithQuarantine(cfg, runtime, store, nil, lcm, messenger, telemetry, agents, previewLifecycle, browserLifecycle, browserCapabilities, log)
+}
+
+func startSessionWithQuarantine(cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, restoreQuarantine map[domain.SessionID]struct{}, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, log *slog.Logger) (*sessionsvc.Service, *reviewsvc.Service, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -170,6 +174,7 @@ func startSession(cfg config.Config, runtime runtimeselect.Runtime, store *sqlit
 		BrowserCapabilities: browserCapabilities,
 		DataDir:             cfg.DataDir,
 		RunFilePath:         cfg.RunFilePath,
+		RestoreQuarantine:   restoreQuarantine,
 		Logger:              log,
 	})
 	scmProvider, err := newGitHubSCMProvider(log)

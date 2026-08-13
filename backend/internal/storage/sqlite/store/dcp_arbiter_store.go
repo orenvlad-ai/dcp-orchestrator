@@ -226,6 +226,28 @@ func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission 
 		return err
 	}
 	incident := dcpArbiterFromRow(row)
+	coldStartRow, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
+	if coldStartErr == nil {
+		coldStart := dcpCard12ColdStartRecoveryFromRow(coldStartRow)
+		if coldStart.AdmissionID == admission.ID && coldStart.IncidentID == incident.IncidentID &&
+			coldStart.Status == domain.DCPColdStartRecoveryRecoveryReviewed &&
+			coldStart.RecoveryReviewRunID == admission.ReviewRunID && coldStart.NewHead == admission.TargetSHA {
+			if coldStart.ModelFreeActionCount != 1 || coldStart.ReviewerModelCallCount != 1 ||
+				coldStart.WorkerModelCallCount != 0 || coldStart.ArbiterModelCallCount != 0 {
+				return errors.New("card-12 cold-start terminal identity is not exact")
+			}
+			n, completeErr := q.CompleteDCPCard12ColdStartRecovery(ctx, gen.CompleteDCPCard12ColdStartRecoveryParams{
+				MergeCommitSha: mergeSHA, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				RecoveryID: coldStart.RecoveryID, ReviewRunID: admission.ReviewRunID, TargetSha: admission.TargetSHA,
+			})
+			if completeErr != nil || n != 1 {
+				return errors.Join(completeErr, errors.New("card-12 cold-start terminal completion was unavailable"))
+			}
+			return nil
+		}
+	} else if !errors.Is(coldStartErr, sql.ErrNoRows) {
+		return coldStartErr
+	}
 	continuationRow, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
 	if continuationErr == nil {
 		continuation := dcpCard12ModelFreeRebaseContinuationFromRow(continuationRow)

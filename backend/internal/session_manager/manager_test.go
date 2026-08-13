@@ -174,6 +174,7 @@ type fakeRuntime struct {
 	createErr          error
 	destroyErr         error
 	created, destroyed int
+	aliveChecks        int
 	lastCfg            ports.RuntimeConfig
 	outputs            []string
 	outputCalls        int
@@ -252,6 +253,7 @@ func (r *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) err
 	return r.destroyErr
 }
 func (r *fakeRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
+	r.aliveChecks++
 	if r.aliveErr != nil {
 		return false, r.aliveErr
 	}
@@ -4438,6 +4440,44 @@ func newLifecycleManager() (*Manager, *fakeStore, *fakeRuntime, *fakeWorkspace) 
 		LookPath:  lookPath,
 	})
 	return m, st, rt, ws
+}
+
+func TestGovernedStartupQuarantinePreventsCard11And12RuntimeTouchAcrossRestart(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	now := time.Now().UTC()
+	rt.aliveByHandle = make(map[string]bool)
+	for _, id := range []domain.SessionID{"dcp-review-lab-11", "dcp-review-lab-12"} {
+		st.sessions[id] = domain.SessionRecord{
+			ID: id, ProjectID: "dcp-review-lab", Kind: domain.KindWorker,
+			Harness: domain.HarnessCodex, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+			Metadata:  domain.SessionMetadata{Branch: "ao/" + string(id) + "/root", WorkspacePath: "/ws/" + string(id), RuntimeHandleID: string(id)},
+			CreatedAt: now, UpdatedAt: now,
+		}
+		rt.aliveByHandle[string(id)] = true
+	}
+	quarantine := map[domain.SessionID]struct{}{"dcp-review-lab-11": {}, "dcp-review-lab-12": {}}
+	m.restoreQuarantine = quarantine
+	if err := m.Reconcile(ctx); err != nil {
+		t.Fatalf("first governed reconcile: %v", err)
+	}
+	// Simulate a crash boundary by constructing a fresh manager over the same
+	// durable records and the newly established immutable boot fence.
+	restarted := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st},
+		RestoreQuarantine: quarantine, LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	if err := restarted.Reconcile(ctx); err != nil {
+		t.Fatalf("restart governed reconcile: %v", err)
+	}
+	if rt.created != 0 || rt.destroyed != 0 || rt.aliveChecks != 0 {
+		t.Fatalf("governed sessions reached runtime across cold starts: create=%d destroy=%d probes=%d", rt.created, rt.destroyed, rt.aliveChecks)
+	}
+	for _, id := range []domain.SessionID{"dcp-review-lab-11", "dcp-review-lab-12"} {
+		if _, err := restarted.ResumeAgentWithMode(ctx, id); !errors.Is(err, ErrNotRestorable) {
+			t.Fatalf("explicit resume %s bypassed quarantine: %v", id, err)
+		}
+	}
 }
 
 // TestSaveAndTeardownAll_CaptureOrderAndMarker verifies (a): for a live session

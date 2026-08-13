@@ -109,6 +109,14 @@ func Run() error {
 	if err := dcpTaskSvc.ValidateSchema(context.Background()); err != nil {
 		return fmt.Errorf("validate DCP task schema: %w", err)
 	}
+	// This durable fence must precede construction of runtimeselect, lifecycle,
+	// session manager, tmux reconciliation, or any native restore command. A
+	// governed live state whose exact classification cannot be read/established
+	// aborts cold start rather than degrading to stock best-effort restoration.
+	restoreQuarantine, err := store.EstablishDCPGovernedStartupQuarantine(context.Background(), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("establish DCP governed startup quarantine: %w", err)
+	}
 
 	// Refresh the embedded using-ao skill into the data dir so worker sessions
 	// in any project can read the ao CLI catalog from a stable absolute path.
@@ -189,7 +197,7 @@ func Run() error {
 	// selected runtime, routed git/scratch workspaces, the per-session agent
 	// resolver (AO_AGENT validated here for compatibility), and the agent
 	// messenger, then mount it on the API.
-	sessionSvc, reviewSvc, sessMgr, err := startSession(cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, agents, managedPreview, browserBroker, browserAuthority, log)
+	sessionSvc, reviewSvc, sessMgr, err := startSessionWithQuarantine(cfg, runtimeAdapter, store, restoreQuarantine, lcStack.LCM, messenger, telemetrySink, agents, managedPreview, browserBroker, browserAuthority, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -219,6 +227,7 @@ func Run() error {
 		terminalMerger.SetArbiterLauncher(dcpterminalmerge.NewArbiterLauncher(runtimeAdapter, cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetFreshWorkerLauncher(dcpterminalmerge.NewFreshWorkerLauncher(runtimeAdapter, codex.New(), cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetModelFreeRebaseExecutor(dcpterminalmerge.NewModelFreeRebaseExecutor(runtimeAdapter))
+		terminalMerger.SetColdStartRecoveryExecutor(dcpterminalmerge.NewColdStartRecoveryExecutor(runtimeAdapter, cfg.DataDir))
 		terminalMerger.SetModelFreeReviewTrigger(func(triggerCtx context.Context, id domain.SessionID) error {
 			_, triggerErr := reviewSvc.AutoTrigger(triggerCtx, id)
 			return triggerErr
