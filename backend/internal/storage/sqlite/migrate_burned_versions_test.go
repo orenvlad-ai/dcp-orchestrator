@@ -79,6 +79,7 @@ var shippedMigrations = map[int64]string{
 	61: "0061_dcp_card12_cold_start_quarantined_recovery.sql",
 	62: "0062_dcp_card12_cold_start_tool_path_recovery.sql",
 	63: "0063_dcp_card12_cold_start_auto_merge_recovery.sql",
+	64: "0064_dcp_card12_rebase_head_finalization.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

@@ -226,6 +226,28 @@ func requireDCPArbiterCompletion(q *gen.Queries, ctx context.Context, admission 
 		return err
 	}
 	incident := dcpArbiterFromRow(row)
+	finalizationRow, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+	if finalizationErr == nil {
+		finalization := dcpCard12RebaseHeadFinalizationFromRow(finalizationRow)
+		if finalization.AdmissionID == admission.ID && finalization.IncidentID == incident.IncidentID &&
+			finalization.Status == domain.DCPRebaseHeadFinalizationRecoveryReviewed &&
+			finalization.ReviewRunID == admission.ReviewRunID && finalization.CandidateHead == admission.TargetSHA {
+			if finalization.ModelFreeActionCount != 1 || finalization.ReviewerModelCallCount != 1 ||
+				finalization.WorkerModelCallCount != 0 || finalization.ArbiterModelCallCount != 0 {
+				return errors.New("card-12 REBASE_HEAD terminal identity is not exact")
+			}
+			n, completeErr := q.CompleteDCPCard12RebaseHeadFinalization(ctx, gen.CompleteDCPCard12RebaseHeadFinalizationParams{
+				MergeCommitSha: mergeSHA, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				FinalizationID: finalization.FinalizationID, ReviewRunID: admission.ReviewRunID, TargetSha: admission.TargetSHA,
+			})
+			if completeErr != nil || n != 1 {
+				return errors.Join(completeErr, errors.New("card-12 REBASE_HEAD terminal completion was unavailable"))
+			}
+			return nil
+		}
+	} else if !errors.Is(finalizationErr, sql.ErrNoRows) {
+		return finalizationErr
+	}
 	coldStartRow, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
 	if coldStartErr == nil {
 		coldStart := dcpCard12ColdStartRecoveryFromRow(coldStartRow)

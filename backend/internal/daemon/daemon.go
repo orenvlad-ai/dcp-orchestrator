@@ -228,6 +228,7 @@ func Run() error {
 		terminalMerger.SetFreshWorkerLauncher(dcpterminalmerge.NewFreshWorkerLauncher(runtimeAdapter, codex.New(), cfg.DataDir, cfg.RunFilePath))
 		terminalMerger.SetModelFreeRebaseExecutor(dcpterminalmerge.NewModelFreeRebaseExecutor(runtimeAdapter))
 		terminalMerger.SetColdStartRecoveryExecutor(dcpterminalmerge.NewColdStartRecoveryExecutor(runtimeAdapter, cfg.DataDir))
+		terminalMerger.SetRebaseHeadFinalizationExecutor(dcpterminalmerge.NewRebaseHeadFinalizationExecutor(runtimeAdapter))
 		terminalMerger.SetModelFreeReviewTrigger(func(triggerCtx context.Context, id domain.SessionID) error {
 			_, triggerErr := reviewSvc.AutoTrigger(triggerCtx, id)
 			return triggerErr

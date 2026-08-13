@@ -86,6 +86,7 @@ type Engine struct {
 	freshWorker            FreshWorkerLauncher
 	modelFreeRebase        ModelFreeRebaseExecutor
 	coldStartRecovery      ColdStartRecoveryExecutor
+	rebaseHeadFinalization RebaseHeadFinalizationExecutor
 	modelFreeReviewTrigger func(context.Context, domain.SessionID) error
 	clock                  func() time.Time
 }
@@ -133,6 +134,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		return err
 	}
 	if err := e.reconcileCard12ColdStartRecovery(ctx); err != nil {
+		return err
+	}
+	if err := e.reconcileCard12RebaseHeadFinalization(ctx); err != nil {
 		return err
 	}
 
@@ -257,6 +261,9 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		return nil
 	}
 	now := e.clock()
+	if handled, recoveryErr := e.tryRebindRebaseHeadFinalization(ctx, candidate, observation, now); handled {
+		return recoveryErr
+	}
 	if handled, recoveryErr := e.tryRebindColdStartRecovery(ctx, candidate, observation, now); handled {
 		return recoveryErr
 	}

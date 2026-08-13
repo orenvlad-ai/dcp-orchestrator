@@ -56,6 +56,23 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		}); err != nil {
 			return err
 		}
+		finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+		if finalizationErr == nil && finalization.SessionID == string(r.SessionID) && finalization.PRURL == r.PRURL && finalization.CandidateHead == r.TargetSHA {
+			if finalization.Status != string(domain.DCPRebaseHeadFinalizationCandidateReady) || finalization.ReviewerModelCallCount != 0 {
+				return errors.New("card-12 REBASE_HEAD finalization reviewer fence is already consumed")
+			}
+			n, fenceErr := q.FenceDCPCard12RebaseHeadFinalizationReview(ctx, gen.FenceDCPCard12RebaseHeadFinalizationReviewParams{
+				ReviewRunID: r.ID, ReviewID: r.ReviewID, BatchID: r.BatchID,
+				UpdatedAt: r.CreatedAt, SessionID: string(r.SessionID), PRURL: r.PRURL, TargetSha: r.TargetSHA,
+			})
+			if fenceErr != nil || n != 1 {
+				return errors.Join(fenceErr, errors.New("card-12 REBASE_HEAD finalization reviewer fence was unavailable"))
+			}
+			return nil
+		}
+		if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
+			return finalizationErr
+		}
 		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
 		if coldStartErr == nil && coldStart.SessionID == string(r.SessionID) && coldStart.PRURL == r.PRURL && coldStart.NewHead == r.TargetSHA {
 			if coldStart.Status != string(domain.DCPColdStartRecoveryCandidateReady) || coldStart.ReviewerModelCallCount != 0 {
@@ -139,6 +156,21 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 		if runErr != nil {
 			return runErr
 		}
+		finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+		if finalizationErr == nil && finalization.Status == string(domain.DCPRebaseHeadFinalizationReviewRunning) && finalization.ReviewRunID == run.ID && finalization.CandidateHead == run.TargetSha {
+			now := time.Now().UTC()
+			n, failErr := q.FailDCPCard12RebaseHeadFinalizationReview(ctx, gen.FailDCPCard12RebaseHeadFinalizationReviewParams{
+				ErrorCode: "reviewer_failed", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				FinalizationID: finalization.FinalizationID, ReviewRunID: run.ID, TargetSha: run.TargetSha,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 REBASE_HEAD failed reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
+			return finalizationErr
+		}
 		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
 		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryReviewRunning) && coldStart.RecoveryReviewRunID == run.ID && coldStart.NewHead == run.TargetSha {
 			now := time.Now().UTC()
@@ -210,6 +242,21 @@ func (s *Store) UpdateBoundReviewRunResult(ctx context.Context, expected reviewc
 		updated = true
 		if verdict != domain.VerdictChangesRequested {
 			return nil
+		}
+		finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+		if finalizationErr == nil && finalization.Status == string(domain.DCPRebaseHeadFinalizationReviewRunning) && finalization.ReviewRunID == expected.RunID && finalization.CandidateHead == expected.TargetSHA {
+			now := time.Now().UTC()
+			n, failErr := q.FailDCPCard12RebaseHeadFinalizationReview(ctx, gen.FailDCPCard12RebaseHeadFinalizationReviewParams{
+				ErrorCode: "review_changes_requested", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				FinalizationID: finalization.FinalizationID, ReviewRunID: expected.RunID, TargetSha: expected.TargetSHA,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 REBASE_HEAD changes-requested reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
+			return finalizationErr
 		}
 		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
 		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryReviewRunning) && coldStart.RecoveryReviewRunID == expected.RunID && coldStart.NewHead == expected.TargetSHA {
