@@ -223,6 +223,19 @@ func (s *Store) RecordDCPReviewLabIncident(ctx context.Context, a domain.DCPRevi
 		if n != 1 {
 			return errors.New("exact admission incident transition was unavailable")
 		}
+		finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+		if finalizationErr == nil && finalization.Status == string(domain.DCPRebaseHeadFinalizationRecoveryReviewed) &&
+			finalization.ReviewRunID == a.ReviewRunID && finalization.CandidateHead == a.TargetSHA {
+			n, failErr := q.FailDCPCard12RebaseHeadFinalizationTerminal(ctx, gen.FailDCPCard12RebaseHeadFinalizationTerminalParams{
+				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 REBASE_HEAD terminal failure was unavailable"))
+			}
+		} else if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
+			return finalizationErr
+		}
 		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
 		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryRecoveryReviewed) &&
 			coldStart.RecoveryReviewRunID == a.ReviewRunID && coldStart.NewHead == a.TargetSHA {

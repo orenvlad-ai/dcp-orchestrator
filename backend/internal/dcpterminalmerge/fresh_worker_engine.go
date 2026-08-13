@@ -514,6 +514,9 @@ func (e *Engine) HandleFreshRecoveryReview(ctx context.Context, workerID domain.
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if handled, err := e.handleRebaseHeadFinalizationReview(ctx, workerID, run); handled || err != nil {
+		return handled, err
+	}
 	if handled, err := e.handleColdStartRecoveryReview(ctx, workerID, run); handled || err != nil {
 		return handled, err
 	}

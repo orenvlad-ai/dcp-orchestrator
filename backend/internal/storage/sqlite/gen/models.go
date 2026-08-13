@@ -483,6 +483,57 @@ type DcpReviewLabCard12ModelFreeRebaseContinuation struct {
 	FinishedAt               sql.NullTime
 }
 
+type DcpReviewLabCard12RebaseHeadFinalization struct {
+	FinalizationID             string
+	Generation                 int64
+	IdentityDigest             string
+	ContractCommit             string
+	PredecessorRecoveryID      string
+	IncidentID                 string
+	AdmissionID                string
+	SessionID                  string
+	TaskID                     string
+	ProjectID                  string
+	Repository                 string
+	WorktreePath               string
+	SourceBranch               string
+	PRURL                      string
+	PRNumber                   int64
+	OldHead                    string
+	CandidateHead              string
+	CurrentMain                string
+	ProviderBase               string
+	ConflictPath               string
+	ResolvedBytesDigest        string
+	ResolvedBlob               string
+	CandidateDiffDigest        string
+	CleanStatusDigest          string
+	RebaseHeadDigest           string
+	OrigHeadDigest             string
+	BackupPath                 string
+	BackupDigest               string
+	PushRef                    string
+	PushLeaseOldHead           string
+	ProviderNewHead            string
+	UnauthorizedWorkerTokens11 int64
+	UnauthorizedWorkerTokens12 int64
+	WorkerModelCallCount       int64
+	ArbiterModelCallCount      int64
+	ModelFreeActionCount       int64
+	ReviewerModelCallCount     int64
+	ReviewRunID                string
+	ReviewID                   string
+	ReviewBatchID              string
+	CheckID                    string
+	MergeCommitSha             string
+	Status                     string
+	Revision                   int64
+	ErrorCode                  string
+	AuthorizedAt               time.Time
+	UpdatedAt                  time.Time
+	FinishedAt                 sql.NullTime
+}
+
 type DcpTask struct {
 	TaskID               domain.DCPTaskID
 	IdempotencyKey       string

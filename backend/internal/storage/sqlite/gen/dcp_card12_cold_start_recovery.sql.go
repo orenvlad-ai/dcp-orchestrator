@@ -339,7 +339,18 @@ WHERE q.recovery_id = 'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a9
         SELECT 1 FROM dcp_review_lab_admission a
         WHERE a.sequence = 4 AND a.id = recovery.admission_id
           AND a.session_id = recovery.session_id AND a.pr_number = recovery.pr_number
-          AND a.pr_url = recovery.pr_url AND a.merge_commit_sha = recovery.merge_commit_sha
+          AND a.pr_url = recovery.pr_url
+          AND (a.merge_commit_sha = recovery.merge_commit_sha OR EXISTS (
+            SELECT 1 FROM dcp_review_lab_card12_rebase_head_finalization finalization
+            WHERE finalization.predecessor_recovery_id = recovery.recovery_id
+              AND finalization.admission_id = a.id
+              AND finalization.status = 'succeeded'
+              AND finalization.merge_commit_sha = a.merge_commit_sha
+              AND finalization.model_free_action_count = 1
+              AND finalization.reviewer_model_call_count = 1
+              AND finalization.worker_model_call_count = 0
+              AND finalization.arbiter_model_call_count = 0
+          ))
       )
   )
 `

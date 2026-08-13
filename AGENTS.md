@@ -9,19 +9,21 @@ independent source of DCP architecture policy.
 Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
 or editing this repository:
 
-1. [root repository rules at `623c3896a50d410e5b305ed08cf29abdc40b5b23`](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/AGENTS.md)
-2. [current operating contract revision `2026-08-13.6`](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 cold-start quarantined recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_CARD12_COLD_START_QUARANTINED_RECOVERY_CONTRACT.md)
-4. [terminal startup-order failure evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_TERMINAL_EVIDENCE.md)
-5. [I13 Stage 2 exact provider-base correction contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_CARD12_MODEL_FREE_PROVIDER_BASE_CORRECTION_CONTRACT.md)
-6. [I13 Stage 2 exact card-12 model-free rebase continuation contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_CONTRACT.md)
-7. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
-8. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
-9. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
-10. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
-11. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-12. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/docs/TARGET_ARCHITECTURE_V1.md)
-13. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/623c3896a50d410e5b305ed08cf29abdc40b5b23/upstream/dcp-orchestrator.lock)
+1. [root repository rules at `9465a84ec44f72f6b7c245ebddeac22d722108ae`](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/AGENTS.md)
+2. [current operating contract revision `2026-08-13.8`](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [I13 Stage 2 exact REBASE_HEAD finalization contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_REBASE_HEAD_FINALIZATION_CONTRACT.md)
+4. [cold-start terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_COLD_START_QUARANTINED_RECOVERY_TERMINAL_EVIDENCE.md)
+5. [I13 Stage 2 cold-start quarantined recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_COLD_START_QUARANTINED_RECOVERY_CONTRACT.md)
+6. [terminal startup-order failure evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_TERMINAL_EVIDENCE.md)
+7. [I13 Stage 2 exact provider-base correction contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_PROVIDER_BASE_CORRECTION_CONTRACT.md)
+8. [I13 Stage 2 exact card-12 model-free rebase continuation contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_CONTRACT.md)
+9. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
+10. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
+11. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
+12. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
+13. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
+14. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/TARGET_ARCHITECTURE_V1.md)
+15. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/upstream/dcp-orchestrator.lock)
 
 Those pinned documents are the implementation authority for the I11 baseline.
 The owner-delegated I12 change adds only the bounded automatic reviewer contour
@@ -258,6 +260,20 @@ revision 4. The daemon must include the exact ref in its immutable backup, then
 normal `reset --hard` removes it before reconstruction. Any missing, foreign or
 changed ref remains terminal; no identity, model call, action, reviewer, retry
 policy or authority is added.
+
+The exact source-0063 terminal start preserved that quarantine, consumed its
+one model-free action and produced clean local commit
+`4de6ff1a0b80223a9b32a05ba68cf0b665296081`, but normal regular
+`REBASE_HEAD` remained and the broad postcondition rejected it before push.
+Migration 0064 creates one new finalization row only from the exact immutable
+failed revision-7 predecessor, sealed backup and quarantine 4/4 state. The
+trusted daemon may accept the byte-exact regular `REBASE_HEAD`/`ORIG_HEAD`
+pair only together with the exact clean candidate and absence of every active
+operation residue, consume one action fence and perform one old-head force-
+with-lease push. It makes no local Git write, starts no worker or arbiter and
+may fence at most one fresh exact-head reviewer before existing admission and
+merge gates. The predecessor executor and general residue guard remain
+unchanged; every mismatch or second action/reviewer fails closed.
 
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or
