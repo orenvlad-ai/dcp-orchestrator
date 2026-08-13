@@ -178,6 +178,41 @@ type DcpCard12RebaseHeadFinalizationAuditRecovery struct {
 	RearmedAt               time.Time
 }
 
+type DcpCard12RebaseHeadFinalizationProviderBaseRecovery struct {
+	CorrectionID               string
+	FinalizationID             string
+	FinalizationGeneration     int64
+	FinalizationIdentity       string
+	PriorStatus                string
+	PriorErrorCode             string
+	PriorRevision              int64
+	PriorWorkerCalls           int64
+	PriorArbiterCalls          int64
+	PriorActionCount           int64
+	PriorReviewerCalls         int64
+	PriorProviderNewHead       string
+	PriorReviewRunID           string
+	PriorMergeCommitSha        string
+	OldHead                    string
+	CandidateHead              string
+	HistoricalProviderBase     string
+	PostPushProviderBase       string
+	FailedSourceSha            string
+	FailedSourceTree           string
+	FirstCheckName             string
+	FirstCheckID               string
+	FirstCheckStatus           string
+	FirstCheckConclusion       string
+	ObservedProviderMergeable  string
+	ObservedProviderMergeState string
+	QuarantineRows             int64
+	QuarantineVerifications    int64
+	RecoveryReason             string
+	PriorUpdatedAt             time.Time
+	PriorFinishedAt            time.Time
+	RearmedAt                  time.Time
+}
+
 type DcpGovernedStartupQuarantine struct {
 	SessionID         string
 	RecoveryID        string

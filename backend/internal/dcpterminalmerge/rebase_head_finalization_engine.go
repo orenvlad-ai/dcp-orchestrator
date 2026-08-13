@@ -22,6 +22,7 @@ type RebaseHeadFinalizationStore interface {
 	ListDCPCard12RebaseHeadFinalizations(context.Context) ([]domain.DCPCard12RebaseHeadFinalization, error)
 	HasExactDCPFinalizationQuarantine(context.Context) (bool, error)
 	HasExactDCPRebaseHeadFinalizationAuditRecovery(context.Context) (bool, error)
+	HasExactDCPRebaseHeadFinalizationProviderBaseRecovery(context.Context) (bool, error)
 	StartDCPCard12RebaseHeadFinalization(context.Context, domain.DCPCard12RebaseHeadFinalization, time.Time) (bool, error)
 	CompleteDCPCard12RebaseHeadFinalizationAction(context.Context, domain.DCPCard12RebaseHeadFinalization, time.Time) (bool, error)
 	FailDCPCard12RebaseHeadFinalization(context.Context, string, string, time.Time) (bool, error)
@@ -135,6 +136,12 @@ func (e *Engine) advanceCard12RebaseHeadFinalizationLocked(ctx context.Context, 
 		if e.rebaseHeadFinalization == nil {
 			return fail("executor_unavailable", errors.New("card-12 REBASE_HEAD finalization: executor unavailable"))
 		}
+		if row.Revision == 5 {
+			exactRecovery, recoveryErr := store.HasExactDCPRebaseHeadFinalizationProviderBaseRecovery(ctx)
+			if recoveryErr != nil || !exactRecovery {
+				return fail("identity_drift", errors.Join(recoveryErr, errors.New("card-12 REBASE_HEAD finalization: post-push provider-base recovery drifted")))
+			}
+		}
 		if err := e.rebaseHeadFinalization.InspectCompleted(ctx, row); err != nil {
 			return fail("incomplete_action", err)
 		}
@@ -221,13 +228,17 @@ func (e *Engine) validateRebaseHeadFinalizationPredecessor(ctx context.Context, 
 }
 
 func (e *Engine) validateRebaseHeadFinalizationProvider(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization, wantHead string, pre bool) error {
+	wantBase := row.CurrentMain
+	if pre {
+		wantBase = row.ProviderBase
+	}
 	prs, err := e.store.ListPRsBySession(ctx, row.SessionID)
 	if err != nil || len(prs) != 1 {
 		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: stored PR identity drifted"))
 	}
 	stored := prs[0]
 	if stored.URL != row.PRURL || stored.Number != int(row.PRNumber) || stored.Repo != row.Repository || stored.SourceBranch != row.SourceBranch ||
-		stored.TargetBranch != TargetBranch || stored.Author != "orenvlad-ai" || !strings.EqualFold(stored.BaseSHA, row.ProviderBase) {
+		stored.TargetBranch != TargetBranch || stored.Author != "orenvlad-ai" || !strings.EqualFold(stored.BaseSHA, wantBase) {
 		return errors.New("card-12 REBASE_HEAD finalization: stored PR is foreign")
 	}
 	ref := ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName}, Number: int(row.PRNumber), URL: row.PRURL}
@@ -238,7 +249,7 @@ func (e *Engine) validateRebaseHeadFinalizationProvider(ctx context.Context, row
 	observation, pr := observations[0], observations[0].PR
 	if observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != row.Repository || pr.Number != int(row.PRNumber) ||
 		pr.URL != row.PRURL || pr.HeadRepo != row.Repository || pr.SourceBranch != row.SourceBranch || pr.TargetBranch != TargetBranch ||
-		!strings.EqualFold(pr.HeadSHA, wantHead) || !strings.EqualFold(pr.BaseSHA, row.ProviderBase) || pr.State != string(domain.PRStateOpen) ||
+		!strings.EqualFold(pr.HeadSHA, wantHead) || !strings.EqualFold(pr.BaseSHA, wantBase) || pr.State != string(domain.PRStateOpen) ||
 		pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL || pr.Draft || pr.Merged || pr.Closed {
 		return errors.New("card-12 REBASE_HEAD finalization: provider identity/head drifted")
 	}

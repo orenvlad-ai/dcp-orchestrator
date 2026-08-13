@@ -159,6 +159,79 @@ func (q *Queries) CountExactDCPRebaseHeadFinalizationAuditRecovery(ctx context.C
 	return count, err
 }
 
+const countExactDCPRebaseHeadFinalizationProviderBaseRecovery = `-- name: CountExactDCPRebaseHeadFinalizationProviderBaseRecovery :one
+SELECT count(*)
+FROM dcp_card12_rebase_head_finalization_provider_base_recovery recovery
+JOIN dcp_review_lab_card12_rebase_head_finalization finalization
+  ON finalization.finalization_id = recovery.finalization_id
+JOIN dcp_card12_rebase_head_finalization_audit_recovery first_recovery
+  ON first_recovery.finalization_id = finalization.finalization_id
+JOIN dcp_review_lab_card12_cold_start_recovery predecessor
+  ON predecessor.recovery_id = finalization.predecessor_recovery_id
+WHERE recovery.correction_id = 'dcp-card12-rebase-head-finalization-provider-base-recovery-d140ac8daec5f311a278050c6e1e0b33011e28b0ee2ee9b52bb357f3b34ac923'
+  AND recovery.finalization_generation = 1
+  AND recovery.finalization_identity = 'a073fb250a5343cffa210614247c76a080bb9e7db6a6cd8d052909611a75e50b'
+  AND recovery.prior_status = 'failed'
+  AND recovery.prior_error_code = 'provider_identity_drift'
+  AND recovery.prior_revision = 4 AND recovery.prior_worker_calls = 0
+  AND recovery.prior_arbiter_calls = 0 AND recovery.prior_action_count = 1
+  AND recovery.prior_reviewer_calls = 0
+  AND recovery.prior_provider_new_head = ''
+  AND recovery.prior_review_run_id = ''
+  AND recovery.prior_merge_commit_sha = ''
+  AND recovery.old_head = finalization.old_head
+  AND recovery.candidate_head = finalization.candidate_head
+  AND recovery.historical_provider_base = finalization.provider_base
+  AND recovery.post_push_provider_base = finalization.current_main
+  AND recovery.failed_source_sha = '1f1e8cedf44d30773568f8801710f1371b14a47b'
+  AND recovery.failed_source_tree = '4523bfacf690c15f75c155ccfc2f14831db7b2f2'
+  AND recovery.first_check_name = 'dcp-review-lab'
+  AND recovery.first_check_id = '94509683728'
+  AND recovery.first_check_status = 'failed'
+  AND recovery.first_check_conclusion = 'failure'
+  AND recovery.observed_provider_mergeable = 'MERGEABLE'
+  AND recovery.observed_provider_merge_state = 'UNSTABLE'
+  AND recovery.quarantine_rows = 2
+  AND recovery.quarantine_verifications = 12
+  AND recovery.recovery_reason = 'post_push_provider_base_advanced_from_historical_base_to_current_main'
+  AND finalization.status = 'running' AND finalization.revision = 5
+  AND finalization.worker_model_call_count = 0
+  AND finalization.arbiter_model_call_count = 0
+  AND finalization.model_free_action_count = 1
+  AND finalization.reviewer_model_call_count = 0
+  AND finalization.provider_new_head = '' AND finalization.review_run_id = ''
+  AND finalization.merge_commit_sha = '' AND finalization.error_code = ''
+  AND first_recovery.correction_id = 'dcp-card12-rebase-head-finalization-audit-recovery-52490d8c01eccc8f02984ec4d863895c0215950590cfc5309d00a1525eb8f11b'
+  AND predecessor.status = 'failed'
+  AND predecessor.error_code = 'model_free_action_failed'
+  AND predecessor.revision = 7
+  AND predecessor.worker_model_call_count = 0
+  AND predecessor.arbiter_model_call_count = 0
+  AND predecessor.model_free_action_count = 1
+  AND predecessor.reviewer_model_call_count = 0
+  AND predecessor.backup_digest = finalization.backup_digest
+  AND predecessor.local_ref_before = finalization.old_head
+  AND predecessor.local_ref_after = '' AND predecessor.new_head = ''
+  AND predecessor.provider_new_head = ''
+  AND predecessor.recovery_review_run_id = ''
+  AND predecessor.merge_commit_sha = '' AND predecessor.finished_at IS NOT NULL
+  AND (SELECT count(*) FROM dcp_governed_startup_quarantine q
+       WHERE q.recovery_id = predecessor.recovery_id
+         AND q.contract_commit = predecessor.contract_commit
+         AND q.verification_count >= 7
+         AND ((q.session_id = 'dcp-review-lab-11' AND q.classification = 'governed_terminal')
+           OR (q.session_id = 'dcp-review-lab-12' AND q.classification = 'governed_recovery'))) = 2
+  AND (SELECT min(verification_count) FROM dcp_governed_startup_quarantine) =
+      (SELECT max(verification_count) FROM dcp_governed_startup_quarantine)
+`
+
+func (q *Queries) CountExactDCPRebaseHeadFinalizationProviderBaseRecovery(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countExactDCPRebaseHeadFinalizationProviderBaseRecovery)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const failDCPCard12RebaseHeadFinalization = `-- name: FailDCPCard12RebaseHeadFinalization :execrows
 UPDATE dcp_review_lab_card12_rebase_head_finalization
 SET status = 'failed', error_code = ?1,
