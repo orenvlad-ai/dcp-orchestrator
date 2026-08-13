@@ -96,6 +96,69 @@ func (q *Queries) CountExactDCPFinalizationQuarantine(ctx context.Context) (int6
 	return count, err
 }
 
+const countExactDCPRebaseHeadFinalizationAuditRecovery = `-- name: CountExactDCPRebaseHeadFinalizationAuditRecovery :one
+SELECT count(*)
+FROM dcp_card12_rebase_head_finalization_audit_recovery audit
+JOIN dcp_review_lab_card12_rebase_head_finalization finalization
+  ON finalization.finalization_id = audit.finalization_id
+JOIN dcp_review_lab_card12_cold_start_recovery predecessor
+  ON predecessor.recovery_id = audit.predecessor_recovery_id
+JOIN dcp_card12_cold_start_tool_path_recovery tool
+  ON tool.recovery_id = predecessor.recovery_id
+JOIN dcp_card12_cold_start_auto_merge_recovery auto
+  ON auto.recovery_id = predecessor.recovery_id
+WHERE audit.correction_id = 'dcp-card12-rebase-head-finalization-audit-recovery-52490d8c01eccc8f02984ec4d863895c0215950590cfc5309d00a1525eb8f11b'
+  AND audit.finalization_generation = 1
+  AND audit.finalization_identity = 'a073fb250a5343cffa210614247c76a080bb9e7db6a6cd8d052909611a75e50b'
+  AND audit.prior_status = 'failed' AND audit.prior_error_code = 'identity_drift'
+  AND audit.prior_revision = 1 AND audit.prior_worker_calls = 0
+  AND audit.prior_arbiter_calls = 0 AND audit.prior_action_count = 0
+  AND audit.prior_reviewer_calls = 0 AND audit.prior_provider_new_head = ''
+  AND audit.prior_review_run_id = '' AND audit.prior_merge_commit_sha = ''
+  AND audit.failed_source_sha = '6f53f74f456b869c98bb82d928f671b54672808a'
+  AND audit.failed_source_tree = '0fab2ee443d8bf20a0efcc524851e8c9589e6dd9'
+  AND audit.tool_audit_rows = 1 AND audit.auto_audit_rows = 1
+  AND audit.stale_tool_query_matches = 0 AND audit.stale_auto_query_matches = 0
+  AND audit.quarantine_rows = 2 AND audit.quarantine_verifications = 10
+  AND audit.recovery_reason = 'terminal_predecessor_was_checked_with_historical_authorized_state_audit_queries'
+  AND finalization.status = 'authorized' AND finalization.revision = 2
+  AND finalization.worker_model_call_count = 0
+  AND finalization.arbiter_model_call_count = 0
+  AND finalization.model_free_action_count = 0
+  AND finalization.reviewer_model_call_count = 0
+  AND finalization.provider_new_head = '' AND finalization.review_run_id = ''
+  AND finalization.merge_commit_sha = '' AND finalization.error_code = ''
+  AND predecessor.status = 'failed'
+  AND predecessor.error_code = 'model_free_action_failed'
+  AND predecessor.revision = 7 AND predecessor.worker_model_call_count = 0
+  AND predecessor.arbiter_model_call_count = 0
+  AND predecessor.model_free_action_count = 1
+  AND predecessor.reviewer_model_call_count = 0
+  AND predecessor.backup_digest = finalization.backup_digest
+  AND predecessor.local_ref_before = finalization.old_head
+  AND predecessor.local_ref_after = '' AND predecessor.new_head = ''
+  AND predecessor.provider_new_head = ''
+  AND predecessor.recovery_review_run_id = ''
+  AND predecessor.merge_commit_sha = '' AND predecessor.finished_at IS NOT NULL
+  AND tool.correction_id = audit.tool_audit_correction_id
+  AND auto.correction_id = audit.auto_audit_correction_id
+  AND (SELECT count(*) FROM dcp_governed_startup_quarantine q
+       WHERE q.recovery_id = predecessor.recovery_id
+         AND q.contract_commit = predecessor.contract_commit
+         AND q.verification_count >= 6
+         AND ((q.session_id = 'dcp-review-lab-11' AND q.classification = 'governed_terminal')
+           OR (q.session_id = 'dcp-review-lab-12' AND q.classification = 'governed_recovery'))) = 2
+  AND (SELECT min(verification_count) FROM dcp_governed_startup_quarantine) =
+      (SELECT max(verification_count) FROM dcp_governed_startup_quarantine)
+`
+
+func (q *Queries) CountExactDCPRebaseHeadFinalizationAuditRecovery(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countExactDCPRebaseHeadFinalizationAuditRecovery)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const failDCPCard12RebaseHeadFinalization = `-- name: FailDCPCard12RebaseHeadFinalization :execrows
 UPDATE dcp_review_lab_card12_rebase_head_finalization
 SET status = 'failed', error_code = ?1,

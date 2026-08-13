@@ -28,7 +28,7 @@ func exactTestRebaseHeadFinalization() domain.DCPCard12RebaseHeadFinalization {
 		BackupDigest:      "82d0e5834375c380069e7d48a7fdb2066371670d92733ce59545718469a4f3dd",
 		PushRef:           "refs/heads/ao/dcp-review-lab-12/root", PushLeaseOldHead: "d4fcb68051ae113ed497d02151a759800ee85633",
 		UnauthorizedWorkerTokens11: 33238, UnauthorizedWorkerTokens12: 33573,
-		Status: domain.DCPRebaseHeadFinalizationAuthorized,
+		Status: domain.DCPRebaseHeadFinalizationAuthorized, Revision: 2,
 	}
 }
 

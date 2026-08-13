@@ -275,6 +275,19 @@ may fence at most one fresh exact-head reviewer before existing admission and
 merge gates. The predecessor executor and general residue guard remain
 unchanged; every mismatch or second action/reviewer fails closed.
 
+The first source-0064 finalization start held the quarantine at 5/5 and failed
+before its action fence with `identity_drift`, revision 1 and counters
+`0/0/0/0`. The exact defect is model-free: finalization predecessor validation
+reused the historical tool-path and `AUTO_MERGE` queries whose state predicates
+describe the earlier rev2/rev4 authorized recovery, so both returned zero for
+the required immutable failed rev7 predecessor even though both exact audit
+rows remain present once. Migration 0065 preserves that failure in one
+immutable correction audit and may re-arm only the same finalization row at
+revision 2. The validator then binds that audit, both original audit identities,
+the unchanged terminal predecessor and quarantine 6/6+ without weakening either
+historical query. This direct-path correction adds no identity, action, worker,
+arbiter, reviewer, push or retry authority.
+
 The active Codex reviewer success path is deterministic after model exit. The
 model receives no network, daemon connection variables, GitHub credentials, or
 control-plane command channel and emits exactly one bounded JSON result through

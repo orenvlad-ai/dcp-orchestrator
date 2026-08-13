@@ -39,8 +39,12 @@ CREATE TABLE dcp_governed_startup_quarantine (
   classification TEXT NOT NULL, contract_commit TEXT NOT NULL,
   verification_count INTEGER NOT NULL
 );
-CREATE TABLE dcp_card12_cold_start_tool_path_recovery (recovery_id TEXT PRIMARY KEY);
-CREATE TABLE dcp_card12_cold_start_auto_merge_recovery (recovery_id TEXT PRIMARY KEY);
+CREATE TABLE dcp_card12_cold_start_tool_path_recovery (
+  correction_id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE dcp_card12_cold_start_auto_merge_recovery (
+  correction_id TEXT PRIMARY KEY, recovery_id TEXT NOT NULL UNIQUE
+);
 INSERT INTO dcp_review_lab_card12_cold_start_recovery VALUES (
   'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f',
   1, '087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f',
@@ -71,9 +75,11 @@ INSERT INTO dcp_governed_startup_quarantine VALUES
    'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f',
    'governed_recovery', '623c3896a50d410e5b305ed08cf29abdc40b5b23', 4);
 INSERT INTO dcp_card12_cold_start_tool_path_recovery VALUES
-  ('dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f');
+  ('dcp-card12-cold-start-tool-path-recovery-a10a121ce3cf41afeeeda32396a190d6de725592570ae02d0d136f1d1cbba9e1',
+   'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f');
 INSERT INTO dcp_card12_cold_start_auto_merge_recovery VALUES
-  ('dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f');
+  ('dcp-card12-cold-start-auto-merge-recovery-e29a07a0b1aaddee25324e025ec23ab53b63007f78d76155ea79cef1bda52e79',
+   'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a94daa4687c41b15c14a08de21db2c6c602f0f2f');
 `); err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +122,56 @@ FROM dcp_review_lab_card12_cold_start_recovery
 	if predecessorStatus != "failed" || predecessorError != "model_free_action_failed" || predecessorRevision != 7 || predecessorActions != 1 {
 		t.Fatal("terminal predecessor was rewritten")
 	}
-	if _, err := db.Exec(`UPDATE dcp_review_lab_card12_rebase_head_finalization
-SET status='running', model_free_action_count=1, revision=1`); err != nil {
+	if _, err := db.Exec(`
+UPDATE dcp_review_lab_card12_rebase_head_finalization
+SET status='failed', error_code='identity_drift', revision=1,
+    updated_at=CURRENT_TIMESTAMP, finished_at=CURRENT_TIMESTAMP;
+UPDATE dcp_governed_startup_quarantine SET verification_count=5;
+`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(parts[1]); err == nil {
+	correction, err := migrationsFS.ReadFile("migrations/0065_dcp_card12_rebase_head_finalization_audit_recovery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	correctionParts := strings.Split(string(correction), "-- +goose Down")
+	if len(correctionParts) != 2 {
+		t.Fatal("correction migration lacks one exact down boundary")
+	}
+	if _, err := db.Exec(correctionParts[0]); err != nil {
+		t.Fatalf("apply correction up: %v", err)
+	}
+	var correctionRows int
+	if err := db.QueryRow(`SELECT count(*) FROM dcp_card12_rebase_head_finalization_audit_recovery`).Scan(&correctionRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`
+SELECT status, revision, worker_model_call_count, arbiter_model_call_count,
+       model_free_action_count, reviewer_model_call_count
+FROM dcp_review_lab_card12_rebase_head_finalization
+`).Scan(&status, &revision, &workers, &arbiters, &actions, &reviewers); err != nil {
+		t.Fatal(err)
+	}
+	if correctionRows != 1 || status != "authorized" || revision != 2 || workers != 0 || arbiters != 0 || actions != 0 || reviewers != 0 {
+		t.Fatalf("correction drifted: rows=%d status=%s rev=%d counters=%d/%d/%d/%d", correctionRows, status, revision, workers, arbiters, actions, reviewers)
+	}
+	if _, err := db.Exec(`UPDATE dcp_card12_rebase_head_finalization_audit_recovery SET recovery_reason='changed'`); err == nil {
+		t.Fatal("immutable correction audit accepted update")
+	}
+	if err := db.QueryRow(`
+SELECT status, error_code, revision, model_free_action_count
+FROM dcp_review_lab_card12_cold_start_recovery
+`).Scan(&predecessorStatus, &predecessorError, &predecessorRevision, &predecessorActions); err != nil {
+		t.Fatal(err)
+	}
+	if predecessorStatus != "failed" || predecessorError != "model_free_action_failed" || predecessorRevision != 7 || predecessorActions != 1 {
+		t.Fatal("correction rewrote terminal predecessor")
+	}
+	if _, err := db.Exec(`UPDATE dcp_review_lab_card12_rebase_head_finalization
+SET status='running', model_free_action_count=1, revision=3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(correctionParts[1]); err == nil {
 		t.Fatal("rollback accepted a consumed finalization action fence")
 	}
 }

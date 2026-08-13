@@ -40,6 +40,11 @@ func (s *Store) HasExactDCPFinalizationQuarantine(ctx context.Context) (bool, er
 	return count == 2, err
 }
 
+func (s *Store) HasExactDCPRebaseHeadFinalizationAuditRecovery(ctx context.Context) (bool, error) {
+	count, err := s.qr.CountExactDCPRebaseHeadFinalizationAuditRecovery(ctx)
+	return count == 1, err
+}
+
 func (s *Store) StartDCPCard12RebaseHeadFinalization(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

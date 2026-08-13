@@ -20,6 +20,7 @@ type RebaseHeadFinalizationStore interface {
 	GetDCPCard12RebaseHeadFinalization(context.Context, string) (domain.DCPCard12RebaseHeadFinalization, bool, error)
 	ListDCPCard12RebaseHeadFinalizations(context.Context) ([]domain.DCPCard12RebaseHeadFinalization, error)
 	HasExactDCPFinalizationQuarantine(context.Context) (bool, error)
+	HasExactDCPRebaseHeadFinalizationAuditRecovery(context.Context) (bool, error)
 	StartDCPCard12RebaseHeadFinalization(context.Context, domain.DCPCard12RebaseHeadFinalization, time.Time) (bool, error)
 	CompleteDCPCard12RebaseHeadFinalizationAction(context.Context, domain.DCPCard12RebaseHeadFinalization, time.Time) (bool, error)
 	FailDCPCard12RebaseHeadFinalization(context.Context, string, string, time.Time) (bool, error)
@@ -162,7 +163,7 @@ func (e *Engine) advanceCard12RebaseHeadFinalizationLocked(ctx context.Context, 
 }
 
 func (e *Engine) validateRebaseHeadFinalizationPredecessor(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization) error {
-	if !exactRebaseHeadFinalization(row) || row.Status != domain.DCPRebaseHeadFinalizationAuthorized || row.Revision != 0 ||
+	if !exactRebaseHeadFinalization(row) || row.Status != domain.DCPRebaseHeadFinalizationAuthorized || row.Revision != 2 ||
 		row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.ProviderNewHead != "" || row.ReviewRunID != "" || row.MergeCommitSHA != "" {
 		return errors.New("card-12 REBASE_HEAD finalization: authorization row is not pristine")
 	}
@@ -173,6 +174,10 @@ func (e *Engine) validateRebaseHeadFinalizationPredecessor(ctx context.Context, 
 	exactQuarantine, err := quarantine.HasExactDCPFinalizationQuarantine(ctx)
 	if err != nil || !exactQuarantine {
 		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: startup quarantine drifted"))
+	}
+	exactAuditRecovery, err := quarantine.HasExactDCPRebaseHeadFinalizationAuditRecovery(ctx)
+	if err != nil || !exactAuditRecovery {
+		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: direct-path audit recovery drifted"))
 	}
 	coldStore, ok := e.store.(ColdStartRecoveryStore)
 	if !ok {
@@ -186,12 +191,6 @@ func (e *Engine) validateRebaseHeadFinalizationPredecessor(ctx context.Context, 
 		predecessor.LocalRefAfter != "" || predecessor.NewHead != "" || predecessor.ProviderNewHead != "" ||
 		predecessor.RecoveryReviewRunID != "" || predecessor.MergeCommitSHA != "" || predecessor.FinishedAt == nil {
 		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: terminal predecessor drifted"))
-	}
-	if exact, err := coldStore.HasExactDCPCard12ColdStartToolPathRecovery(ctx); err != nil || !exact {
-		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: tool-path audit drifted"))
-	}
-	if exact, err := coldStore.HasExactDCPCard12ColdStartAutoMergeRecovery(ctx); err != nil || !exact {
-		return errors.Join(err, errors.New("card-12 REBASE_HEAD finalization: AUTO_MERGE audit drifted"))
 	}
 	session, found, err := e.store.GetSession(ctx, row.SessionID)
 	taskID, taskText, taskExact := arbiterTask(session)
