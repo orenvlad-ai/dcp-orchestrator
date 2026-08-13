@@ -14,6 +14,7 @@ const (
 	RebaseHeadFinalizationDigest = "a073fb250a5343cffa210614247c76a080bb9e7db6a6cd8d052909611a75e50b"
 	RebaseHeadFinalizationID     = "dcp-card12-rebase-head-finalization-" + RebaseHeadFinalizationDigest
 	rebaseHeadContractCommit     = "9465a84ec44f72f6b7c245ebddeac22d722108ae"
+	rebaseHeadAuthorizedRevision = int64(2)
 )
 
 type RebaseHeadFinalizationStore interface {
@@ -163,7 +164,7 @@ func (e *Engine) advanceCard12RebaseHeadFinalizationLocked(ctx context.Context, 
 }
 
 func (e *Engine) validateRebaseHeadFinalizationPredecessor(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization) error {
-	if !exactRebaseHeadFinalization(row) || row.Status != domain.DCPRebaseHeadFinalizationAuthorized || row.Revision != 2 ||
+	if !exactRebaseHeadFinalization(row) || row.Status != domain.DCPRebaseHeadFinalizationAuthorized || row.Revision != rebaseHeadAuthorizedRevision ||
 		row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.ProviderNewHead != "" || row.ReviewRunID != "" || row.MergeCommitSHA != "" {
 		return errors.New("card-12 REBASE_HEAD finalization: authorization row is not pristine")
 	}

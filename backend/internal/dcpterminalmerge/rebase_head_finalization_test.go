@@ -1,6 +1,7 @@
 package dcpterminalmerge
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,18 @@ func exactTestRebaseHeadFinalization() domain.DCPCard12RebaseHeadFinalization {
 		PushRef:           "refs/heads/ao/dcp-review-lab-12/root", PushLeaseOldHead: "d4fcb68051ae113ed497d02151a759800ee85633",
 		UnauthorizedWorkerTokens11: 33238, UnauthorizedWorkerTokens12: 33573,
 		Status: domain.DCPRebaseHeadFinalizationAuthorized, Revision: 2,
+	}
+}
+
+func TestRebaseHeadFinalizationPreflightUsesRearmedRevision(t *testing.T) {
+	row := exactTestRebaseHeadFinalization()
+	x := &rebaseHeadFinalizationExecutor{runtime: &fakeArbiterRuntime{}}
+	if err := x.Preflight(context.Background(), row); err == nil || strings.Contains(err.Error(), "pristine preflight identity is invalid") {
+		t.Fatalf("rearmed revision was rejected by the preflight identity gate: %v", err)
+	}
+	row.Revision = 0
+	if err := x.Preflight(context.Background(), row); err == nil || !strings.Contains(err.Error(), "pristine preflight identity is invalid") {
+		t.Fatalf("obsolete pristine revision was accepted by the preflight identity gate: %v", err)
 	}
 }
 

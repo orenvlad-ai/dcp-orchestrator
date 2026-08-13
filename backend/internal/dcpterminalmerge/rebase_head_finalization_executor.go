@@ -22,7 +22,7 @@ func NewRebaseHeadFinalizationExecutor(runtime arbiterRuntime) RebaseHeadFinaliz
 
 func (x *rebaseHeadFinalizationExecutor) Preflight(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization) error {
 	if x == nil || x.runtime == nil || !exactRebaseHeadFinalization(row) || row.Status != domain.DCPRebaseHeadFinalizationAuthorized ||
-		row.Revision != 0 || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.ProviderNewHead != "" {
+		row.Revision != rebaseHeadAuthorizedRevision || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.ProviderNewHead != "" {
 		return errors.New("card-12 REBASE_HEAD finalization: pristine preflight identity is invalid")
 	}
 	return x.validate(ctx, row, row.OldHead)
