@@ -233,6 +233,11 @@ type Manager struct {
 	// under lock rather than through the constructor.
 	shellTerminalsMu sync.Mutex
 	shellTerminals   ShellTerminalCloser
+	// restoreQuarantine is established transactionally by the daemon before
+	// this manager or any runtime restoration component is constructed. Exact
+	// governed sessions are never adopted, reaped, restored, or explicitly
+	// resumed through the stock worker path.
+	restoreQuarantine map[domain.SessionID]struct{}
 }
 
 // SetShellTerminalCloser wires every worktree-releasing path to gate the
@@ -335,6 +340,9 @@ type Deps struct {
 	Executable func() (string, error)
 	// NewLaunchID overrides supervised-process generation for deterministic tests.
 	NewLaunchID func() string
+	// RestoreQuarantine is the already-established boot fence. New makes a
+	// private copy so callers cannot weaken it after construction.
+	RestoreQuarantine map[domain.SessionID]struct{}
 	// Logger receives spawn-time diagnostics (e.g. when the session PATH
 	// cannot be pinned to the daemon binary). Nil defaults to slog.Default().
 	Logger *slog.Logger
@@ -364,7 +372,11 @@ func New(d Deps) *Manager {
 			attemptDeadline: sendConfirmAttemptDeadline,
 			maxAttempts:     sendConfirmMaxAttempts,
 		},
-		logger: d.Logger,
+		logger:            d.Logger,
+		restoreQuarantine: make(map[domain.SessionID]struct{}, len(d.RestoreQuarantine)),
+	}
+	for id := range d.RestoreQuarantine {
+		m.restoreQuarantine[id] = struct{}{}
 	}
 	if m.clock == nil {
 		// UTC so spawn-stamped CreatedAt/UpdatedAt match every other session
@@ -388,6 +400,11 @@ func New(d Deps) *Manager {
 	// is built after the logger default).
 	m.messenger = sessionguard.New(d.Store, d.Messenger, m.logger)
 	return m
+}
+
+func (m *Manager) isRestoreQuarantined(id domain.SessionID) bool {
+	_, quarantined := m.restoreQuarantine[id]
+	return quarantined
 }
 
 // Spawn creates the session row (which assigns the "{project}-{n}" id), then the
@@ -1161,6 +1178,9 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 // runs before any durable session write, so a failure never resurrects the row
 // or destroys the worktree (it may hold the agent's prior work).
 func (m *Manager) RestoreWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+	if m.isRestoreQuarantined(id) {
+		return RestoreResult{}, fmt.Errorf("restore %s: governed startup quarantine: %w", id, ErrNotRestorable)
+	}
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", id, err)
@@ -1205,6 +1225,9 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 // identity and never changes the durable terminated flag as an intermediate
 // step.
 func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+	if m.isRestoreQuarantined(id) {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: governed startup quarantine: %w", id, ErrNotRestorable)
+	}
 	if !m.beginAgentResume(id) {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
 	}
@@ -1246,6 +1269,9 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 // an idle I13 synthetic worker. It is intentionally narrower than the normal
 // exited-agent resume API and is not exposed by the HTTP service.
 func (m *Manager) ResumeDCPReviewLabIdleAgent(ctx context.Context, id domain.SessionID, prompt string) (RestoreResult, error) {
+	if m.isRestoreQuarantined(id) {
+		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: governed startup quarantine: %w", id, ErrNotRestorable)
+	}
 	if !m.beginAgentResume(id) {
 		return RestoreResult{}, fmt.Errorf("resume DCP review-lab agent %s: %w", id, ErrResumeInProgress)
 	}
@@ -1448,6 +1474,9 @@ func (m *Manager) SaveAndTeardownAll(ctx context.Context) error {
 		return fmt.Errorf("save-teardown-all: list sessions: %w", err)
 	}
 	for _, rec := range recs {
+		if m.isRestoreQuarantined(rec.ID) {
+			continue
+		}
 		if rec.IsTerminated {
 			continue
 		}
@@ -1626,6 +1655,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("reconcile: list sessions: %w", err)
 	}
 	for _, rec := range recs {
+		if m.isRestoreQuarantined(rec.ID) {
+			continue
+		}
 		if rec.IsTerminated {
 			continue
 		}
@@ -1634,6 +1666,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 	for _, rec := range recs {
+		if m.isRestoreQuarantined(rec.ID) {
+			continue
+		}
 		if !rec.IsTerminated {
 			continue
 		}
@@ -1662,6 +1697,9 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 		return fmt.Errorf("restore-all: list sessions: %w", err)
 	}
 	for _, rec := range recs {
+		if m.isRestoreQuarantined(rec.ID) {
+			continue
+		}
 		if !rec.IsTerminated {
 			continue
 		}

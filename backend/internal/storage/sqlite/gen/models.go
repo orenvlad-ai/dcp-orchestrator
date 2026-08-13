@@ -82,6 +82,16 @@ type DcpCard12FreshWorkerPreflightRecovery struct {
 	RearmedAt              time.Time
 }
 
+type DcpGovernedStartupQuarantine struct {
+	SessionID         string
+	RecoveryID        string
+	Classification    string
+	ContractCommit    string
+	VerificationCount int64
+	EstablishedAt     time.Time
+	LastVerifiedAt    time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string
@@ -225,6 +235,63 @@ type DcpReviewLabArbiterV1SuccessorAttempt struct {
 	UpdatedAt                    time.Time
 	DecisionAt                   sql.NullTime
 	FinishedAt                   sql.NullTime
+}
+
+type DcpReviewLabCard12ColdStartRecovery struct {
+	RecoveryID                 string
+	Generation                 int64
+	IdentityDigest             string
+	ContractCommit             string
+	PredecessorContinuationID  string
+	IncidentID                 string
+	AdmissionID                string
+	SessionID                  string
+	TaskID                     string
+	ProjectID                  string
+	Repository                 string
+	WorktreePath               string
+	SourceBranch               string
+	PRURL                      string
+	PRNumber                   int64
+	OldHead                    string
+	CurrentMain                string
+	ProviderBase               string
+	ConflictPath               string
+	MarkerDigest               string
+	StatusDigest               string
+	Stage1Blob                 string
+	Stage2Blob                 string
+	Stage3Blob                 string
+	ResolvedBytesDigest        string
+	ResolvedBlob               string
+	PushRef                    string
+	PushLeaseOldHead           string
+	UnauthorizedWorkerThread11 string
+	UnauthorizedWorkerThread12 string
+	UnauthorizedWorkerTokens11 int64
+	UnauthorizedWorkerTokens12 int64
+	WorkerModelCallCount       int64
+	ArbiterModelCallCount      int64
+	ModelFreeActionCount       int64
+	ReviewerModelCallCount     int64
+	BackupPath                 string
+	BackupDigest               string
+	LocalRefBefore             string
+	LocalRefAfter              string
+	NewHead                    string
+	NewCommit                  string
+	ProviderNewHead            string
+	RecoveryReviewRunID        string
+	RecoveryReviewID           string
+	RecoveryReviewBatchID      string
+	RecoveryCheckID            string
+	MergeCommitSha             string
+	Status                     string
+	Revision                   int64
+	ErrorCode                  string
+	AuthorizedAt               time.Time
+	UpdatedAt                  time.Time
+	FinishedAt                 sql.NullTime
 }
 
 type DcpReviewLabCard12FreshWorkerRecovery struct {

@@ -76,6 +76,7 @@ var shippedMigrations = map[int64]string{
 	58: "0058_dcp_review_lab_card12_fresh_worker_preflight_recovery.sql",
 	59: "0059_dcp_review_lab_card12_model_free_rebase_continuation.sql",
 	60: "0060_dcp_review_lab_card12_model_free_provider_base_correction.sql",
+	61: "0061_dcp_card12_cold_start_quarantined_recovery.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

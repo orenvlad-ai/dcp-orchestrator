@@ -56,6 +56,23 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 		}); err != nil {
 			return err
 		}
+		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
+		if coldStartErr == nil && coldStart.SessionID == string(r.SessionID) && coldStart.PRURL == r.PRURL && coldStart.NewHead == r.TargetSHA {
+			if coldStart.Status != string(domain.DCPColdStartRecoveryCandidateReady) || coldStart.ReviewerModelCallCount != 0 {
+				return errors.New("card-12 cold-start reviewer fence is already consumed")
+			}
+			n, fenceErr := q.FenceDCPCard12ColdStartRecoveryReview(ctx, gen.FenceDCPCard12ColdStartRecoveryReviewParams{
+				ReviewRunID: r.ID, ReviewID: r.ReviewID, BatchID: r.BatchID,
+				UpdatedAt: r.CreatedAt, SessionID: string(r.SessionID), PRURL: r.PRURL, TargetSha: r.TargetSHA,
+			})
+			if fenceErr != nil || n != 1 {
+				return errors.Join(fenceErr, errors.New("card-12 cold-start reviewer fence was unavailable"))
+			}
+			return nil
+		}
+		if coldStartErr != nil && !errors.Is(coldStartErr, sql.ErrNoRows) {
+			return coldStartErr
+		}
 		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
 		if continuationErr == nil && continuation.SessionID == string(r.SessionID) && continuation.PRURL == r.PRURL && continuation.NewHead == r.TargetSHA {
 			if continuation.Status != string(domain.DCPModelFreeRebaseCandidateReady) || continuation.ReviewerModelCallCount != 0 {
@@ -122,6 +139,21 @@ func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status dom
 		if runErr != nil {
 			return runErr
 		}
+		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
+		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryReviewRunning) && coldStart.RecoveryReviewRunID == run.ID && coldStart.NewHead == run.TargetSha {
+			now := time.Now().UTC()
+			n, failErr := q.FailDCPCard12ColdStartRecoveryReview(ctx, gen.FailDCPCard12ColdStartRecoveryReviewParams{
+				ErrorCode: "reviewer_failed", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				RecoveryID: coldStart.RecoveryID, ReviewRunID: run.ID, TargetSha: run.TargetSha,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 cold-start failed reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if coldStartErr != nil && !errors.Is(coldStartErr, sql.ErrNoRows) {
+			return coldStartErr
+		}
 		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
 		if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseReviewRunning) && continuation.RecoveryReviewRunID == run.ID && continuation.NewHead == run.TargetSha {
 			n, failErr := q.FailDCPCard12ModelFreeRebaseReview(ctx, gen.FailDCPCard12ModelFreeRebaseReviewParams{
@@ -178,6 +210,21 @@ func (s *Store) UpdateBoundReviewRunResult(ctx context.Context, expected reviewc
 		updated = true
 		if verdict != domain.VerdictChangesRequested {
 			return nil
+		}
+		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
+		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryReviewRunning) && coldStart.RecoveryReviewRunID == expected.RunID && coldStart.NewHead == expected.TargetSHA {
+			now := time.Now().UTC()
+			n, failErr := q.FailDCPCard12ColdStartRecoveryReview(ctx, gen.FailDCPCard12ColdStartRecoveryReviewParams{
+				ErrorCode: "review_changes_requested", UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+				RecoveryID: coldStart.RecoveryID, ReviewRunID: expected.RunID, TargetSha: expected.TargetSHA,
+			})
+			if failErr != nil || n != 1 {
+				return errors.Join(failErr, errors.New("card-12 cold-start changes-requested reviewer fence could not be closed"))
+			}
+			return nil
+		}
+		if coldStartErr != nil && !errors.Is(coldStartErr, sql.ErrNoRows) {
+			return coldStartErr
 		}
 		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
 		if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseReviewRunning) && continuation.RecoveryReviewRunID == expected.RunID && continuation.NewHead == expected.TargetSHA {
