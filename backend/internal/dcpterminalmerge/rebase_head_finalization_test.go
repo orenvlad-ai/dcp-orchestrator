@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func exactTestRebaseHeadFinalization() domain.DCPCard12RebaseHeadFinalization {
@@ -30,6 +31,45 @@ func exactTestRebaseHeadFinalization() domain.DCPCard12RebaseHeadFinalization {
 		PushRef:           "refs/heads/ao/dcp-review-lab-12/root", PushLeaseOldHead: "d4fcb68051ae113ed497d02151a759800ee85633",
 		UnauthorizedWorkerTokens11: 33238, UnauthorizedWorkerTokens12: 33573,
 		Status: domain.DCPRebaseHeadFinalizationAuthorized, Revision: 2,
+	}
+}
+
+func TestRebaseHeadFinalizationUsesHistoricalBaseBeforePushAndCurrentMainAfterPush(t *testing.T) {
+	row := exactTestRebaseHeadFinalization()
+	store := &fakeStore{pr: domain.PullRequest{
+		URL: row.PRURL, SessionID: row.SessionID, Number: int(row.PRNumber),
+		Provider: "github", Host: "github.com", Repo: row.Repository,
+		SourceBranch: row.SourceBranch, TargetBranch: TargetBranch,
+		HeadSHA: row.OldHead, BaseSHA: row.ProviderBase, Author: "orenvlad-ai",
+		ProviderState: "OPEN", HTMLURL: row.PRURL,
+	}}
+	scm := &fakeSCM{observation: ports.SCMObservation{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: row.Repository,
+		PR: ports.SCMPRObservation{
+			URL: row.PRURL, Number: int(row.PRNumber), HeadRepo: row.Repository,
+			SourceBranch: row.SourceBranch, TargetBranch: TargetBranch,
+			HeadSHA: row.OldHead, BaseSHA: row.ProviderBase,
+			State: string(domain.PRStateOpen), ProviderState: "OPEN",
+			Author: "orenvlad-ai", HTMLURL: row.PRURL,
+			ProviderMergeable: "CONFLICTING", ProviderMergeStateStatus: "DIRTY",
+		},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting)},
+	}}
+	engine := New(store, scm, t.TempDir())
+	if err := engine.validateRebaseHeadFinalizationProvider(context.Background(), row, row.OldHead, true); err != nil {
+		t.Fatalf("historical pre-push base rejected: %v", err)
+	}
+	store.pr.HeadSHA, store.pr.BaseSHA = row.CandidateHead, row.CurrentMain
+	scm.observation.PR.HeadSHA, scm.observation.PR.BaseSHA = row.CandidateHead, row.CurrentMain
+	scm.observation.PR.ProviderMergeable = "MERGEABLE"
+	scm.observation.PR.ProviderMergeStateStatus = "UNSTABLE"
+	scm.observation.Mergeability = ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true}
+	if err := engine.validateRebaseHeadFinalizationProvider(context.Background(), row, row.CandidateHead, false); err != nil {
+		t.Fatalf("current-main post-push base rejected: %v", err)
+	}
+	store.pr.BaseSHA, scm.observation.PR.BaseSHA = row.ProviderBase, row.ProviderBase
+	if err := engine.validateRebaseHeadFinalizationProvider(context.Background(), row, row.CandidateHead, false); err == nil {
+		t.Fatal("historical base was accepted after the guarded push")
 	}
 }
 

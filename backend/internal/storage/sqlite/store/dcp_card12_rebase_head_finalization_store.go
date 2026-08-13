@@ -45,6 +45,11 @@ func (s *Store) HasExactDCPRebaseHeadFinalizationAuditRecovery(ctx context.Conte
 	return count == 1, err
 }
 
+func (s *Store) HasExactDCPRebaseHeadFinalizationProviderBaseRecovery(ctx context.Context) (bool, error) {
+	count, err := s.qr.CountExactDCPRebaseHeadFinalizationProviderBaseRecovery(ctx)
+	return count == 1, err
+}
+
 func (s *Store) StartDCPCard12RebaseHeadFinalization(ctx context.Context, row domain.DCPCard12RebaseHeadFinalization, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
