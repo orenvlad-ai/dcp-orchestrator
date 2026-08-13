@@ -20,7 +20,7 @@ import (
 
 const (
 	modelFreeGitPath      = "/usr/bin/git"
-	modelFreeGHPath       = "/opt/homebrew/bin/gh"
+	modelFreeGHPath       = "/opt/homebrew/Cellar/gh/2.87.2/bin/gh"
 	modelFreeGHDigest     = "f392d9ad8d2260c671566936b127f5436772ce16e25b091cf1fa7b301987f27e"
 	modelFreeResolvedBlob = "80a658c4cfc3ffda5786da316bc0bd10ffb1834f"
 	modelFreeStatusDigest = "0c7f653e181d09cdbbc96d3bcff1ca63851fcaf3a3db0236a0896d88f0f6be84"

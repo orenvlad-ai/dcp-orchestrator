@@ -29,7 +29,7 @@ func NewColdStartRecoveryExecutor(runtime arbiterRuntime, dataDir string) ColdSt
 
 func (x *coldStartRecoveryExecutor) PrepareBackup(ctx context.Context, row domain.DCPCard12ColdStartRecovery) (string, string, error) {
 	if x == nil || x.runtime == nil || !exactColdStartRecovery(row) || row.Status != domain.DCPColdStartRecoveryAuthorized ||
-		row.Revision != 0 || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.BackupPath != "" || row.BackupDigest != "" {
+		(row.Revision != 0 && row.Revision != 2) || row.ModelFreeActionCount != 0 || row.ReviewerModelCallCount != 0 || row.BackupPath != "" || row.BackupDigest != "" {
 		return "", "", errors.New("card-12 cold-start recovery: backup identity is invalid")
 	}
 	if err := x.requireQuiescence(ctx); err != nil {

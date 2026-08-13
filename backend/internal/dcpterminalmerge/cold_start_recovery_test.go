@@ -1,6 +1,8 @@
 package dcpterminalmerge
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,6 +28,28 @@ func exactTestColdStartRecovery() domain.DCPCard12ColdStartRecovery {
 		UnauthorizedWorkerThread11: "019ff9f3-cad3-73c1-bcee-293efe857349", UnauthorizedWorkerTokens11: 33238,
 		UnauthorizedWorkerThread12: "019ff9f3-cbe6-71e2-8636-ea6259a7e7d1", UnauthorizedWorkerTokens12: 33573,
 		Status: domain.DCPColdStartRecoveryAuthorized,
+	}
+}
+
+func TestColdStartTrustedGHPathIsPhysicalAndSymlinkFailsClosed(t *testing.T) {
+	if modelFreeGHPath != "/opt/homebrew/Cellar/gh/2.87.2/bin/gh" {
+		t.Fatalf("trusted gh path = %q", modelFreeGHPath)
+	}
+	root := t.TempDir()
+	physical := filepath.Join(root, "gh-physical")
+	if err := os.WriteFile(physical, []byte("exact-gh"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	digest := digestBytes([]byte("exact-gh"))
+	if err := requireRegularDigest(physical, digest); err != nil {
+		t.Fatalf("physical regular file rejected: %v", err)
+	}
+	link := filepath.Join(root, "gh")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireRegularDigest(link, digest); err == nil {
+		t.Fatal("trusted verifier accepted a symlink")
 	}
 }
 

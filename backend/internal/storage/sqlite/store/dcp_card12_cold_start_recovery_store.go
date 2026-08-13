@@ -94,6 +94,11 @@ func (s *Store) ListDCPCard12ColdStartRecoveries(ctx context.Context) ([]domain.
 	return out, nil
 }
 
+func (s *Store) HasExactDCPCard12ColdStartToolPathRecovery(ctx context.Context) (bool, error) {
+	count, err := s.qr.CountExactDCPCard12ColdStartToolPathRecovery(ctx)
+	return count == 1, err
+}
+
 func (s *Store) PersistDCPCard12ColdStartBackup(ctx context.Context, row domain.DCPCard12ColdStartRecovery, path, digest string, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
