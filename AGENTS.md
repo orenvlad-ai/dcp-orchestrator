@@ -7,15 +7,15 @@ independent source of DCP architecture policy.
 ## Required authority before any change
 
 Read these immutable `orenvlad-ai/dev-control-plane` sources at merged commit
-`e636eb18006f464a8da3b09cd9e88709910a73cb` before designing or editing this
+`c7fb250224ae7f70159119531db1b4f4e2ff5c28` before designing or editing this
 repository:
 
-1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/AGENTS.md)
-2. [current operating contract revision `2026-08-15.2`](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
-4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
-5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
-6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/upstream/dcp-orchestrator.lock)
+1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/AGENTS.md)
+2. [current operating contract revision `2026-08-15.3`](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
+4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
+5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
+6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/upstream/dcp-orchestrator.lock)
 
 The happy-path v1 contract is the sole current rule for future synthetic
 review-lab tasks. The I11-I13 qualification and recovery contracts remain
@@ -89,6 +89,16 @@ one already-recorded `night-ui-b` false incident may be re-armed only by exact
 migration 0068 after its immutable task/session/worker/PR/head/base/named-check
 conjunction is preserved in one audit row; the migration itself launches no
 model action, push, review, admission or merge.
+
+The same controlled start proved a separate cleanup/restart boundary before
+any reviewer launch: stock UI Terminate had correctly archived already-merged
+cards 13-17 as terminated/exited native shells, but policy startup rejected the
+first terminal shell and returned before draining card 20's single queued
+reviewer. An exact terminated/exited shell is valid only for an already-terminal
+policy task and must retain the same session/card/branch/worktree/prompt
+identity. A terminated nonterminal task or any metadata drift remains a hard
+startup failure. This is presentation cleanup compatibility, not task recovery
+or model authority.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display

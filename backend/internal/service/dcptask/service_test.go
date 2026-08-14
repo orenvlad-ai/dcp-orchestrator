@@ -122,6 +122,47 @@ func TestValidateExactPolicyPRWaitsForEnrichmentAndRejectsContradiction(t *testi
 	}
 }
 
+func TestExactPolicyNativeIdentityAcceptsOnlyTerminalArchivedShell(t *testing.T) {
+	task := domain.DCPReviewLabPolicyTask{
+		TaskID: "archived-1", Target: PolicyTarget, Profile: PolicyProfile,
+		Repository: PolicyRepositoryName, PolicyVersion: domain.DCPReviewLabPolicyVersion,
+		SessionID: "dcp-review-lab-21", CardNumber: 21,
+		WorktreePath: "/lab/data/worktrees/dcp-review-lab/dcp-review-lab-21",
+		SourceBranch: "ao/dcp-review-lab-21/root", Prompt: "add one fixture",
+		State: domain.DCPPolicyMerged,
+	}
+	session := domain.SessionRecord{
+		ID: task.SessionID, ProjectID: PolicyTarget, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, DisplayName: "DCP:" + task.TaskID,
+		IsTerminated: true, Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{
+			Branch: task.SourceBranch, WorkspacePath: task.WorktreePath,
+			Prompt: "DCP synthetic task " + task.TaskID + ": " + task.Prompt,
+		},
+	}
+	if !exactPolicyNativeIdentity(task, session) {
+		t.Fatal("exact terminal archived shell was rejected")
+	}
+
+	nonterminal := task
+	nonterminal.State = domain.DCPPolicyReviewQueued
+	if exactPolicyNativeIdentity(nonterminal, session) {
+		t.Fatal("terminated nonterminal shell was accepted")
+	}
+
+	notExited := session
+	notExited.Activity.State = domain.ActivityIdle
+	if exactPolicyNativeIdentity(task, notExited) {
+		t.Fatal("terminated terminal shell without exited activity was accepted")
+	}
+
+	drifted := session
+	drifted.Metadata.Branch = "ao/foreign/root"
+	if exactPolicyNativeIdentity(task, drifted) {
+		t.Fatal("archived shell with metadata drift was accepted")
+	}
+}
+
 func TestSubmitPolicyReplayCompletesOnlyTheReservedNativeIdentity(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(t.TempDir())

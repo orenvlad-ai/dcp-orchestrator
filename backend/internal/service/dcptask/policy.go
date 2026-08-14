@@ -620,8 +620,15 @@ func exactPolicyNativeIdentity(task domain.DCPReviewLabPolicyTask, session domai
 	base := task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.Target == PolicyTarget && task.Profile == PolicyProfile &&
 		task.Repository == PolicyRepositoryName && task.CardNumber > 12 && task.SessionID == session.ID &&
 		session.ProjectID == PolicyTarget && session.Kind == domain.KindWorker && session.Harness == domain.HarnessCodex &&
-		session.DisplayName == "DCP:"+task.TaskID && !session.IsTerminated
+		session.DisplayName == "DCP:"+task.TaskID
 	if !base {
+		return false
+	}
+	// Stock Terminate is the supported UI archive operation. It preserves the
+	// native identity and history while marking the shell terminated/exited.
+	// Only an already-terminal policy task may own that exact archived shell;
+	// any nonterminal terminated session remains identity drift.
+	if session.IsTerminated && (!task.State.Terminal() || session.Activity.State != domain.ActivityExited) {
 		return false
 	}
 	if task.State == domain.DCPPolicyReserved {
