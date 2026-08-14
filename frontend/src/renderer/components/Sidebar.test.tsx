@@ -1048,6 +1048,22 @@ describe("Sidebar", () => {
 						},
 						{
 							...session,
+							id: "proj-1-ci",
+							title: "PR open task",
+							status: "pr_open",
+							dcpPolicyState: "ci_waiting",
+							dcpPolicyActionActive: false,
+						},
+						{
+							...session,
+							id: "proj-1-reserved",
+							title: "reserved task",
+							status: "idle",
+							dcpPolicyState: "reserved",
+							dcpPolicyActionActive: false,
+						},
+						{
+							...session,
 							id: "proj-1-admission",
 							title: "admission task",
 							dcpPolicyState: "admission_waiting",
@@ -1080,7 +1096,9 @@ describe("Sidebar", () => {
 		expect(sessionDot("review active task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
 		expect(sessionDot("review queued task")).toHaveClass("bg-status-in-review");
 		expect(sessionDot("review queued task")).not.toHaveClass("animate-status-pulse");
-		expect(sessionDot("admission task")).toHaveClass("bg-status-needs-you");
+		expect(sessionDot("PR open task")).toHaveClass("bg-status-working");
+		expect(sessionDot("reserved task")).toHaveClass("bg-status-working");
+		expect(sessionDot("admission task")).toHaveClass("bg-status-ready");
 		expect(sessionDot("merged task")).toHaveClass("bg-status-merged");
 		expect(sessionDot("incident task")).toHaveClass("bg-status-exited");
 	});

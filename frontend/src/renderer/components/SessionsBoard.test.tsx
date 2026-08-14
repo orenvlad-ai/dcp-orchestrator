@@ -3,12 +3,14 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
+import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { appI18n } from "../i18n";
 
-const { navigateMock, notificationShowMock, postMock, workspaceQueryMock, boardActionsInPanelMock } = vi.hoisted(() => ({
+const { navigateMock, notificationShowMock, postMock, scmSummaryMock, workspaceQueryMock, boardActionsInPanelMock } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
 	notificationShowMock: vi.fn(),
 	postMock: vi.fn(),
+	scmSummaryMock: vi.fn(),
 	workspaceQueryMock: vi.fn(),
 	boardActionsInPanelMock: vi.fn(() => false),
 }));
@@ -20,6 +22,10 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKey: ["workspaces"],
 	useWorkspaceQuery: workspaceQueryMock,
+}));
+
+vi.mock("../hooks/useSessionScmSummary", () => ({
+	useSessionScmSummary: (...args: unknown[]) => scmSummaryMock(...args),
 }));
 
 vi.mock("../lib/api-client", () => ({
@@ -70,6 +76,7 @@ beforeEach(() => {
 	navigateMock.mockReset();
 	notificationShowMock.mockReset().mockResolvedValue(undefined);
 	postMock.mockReset().mockResolvedValue({ data: {} });
+	scmSummaryMock.mockReset().mockReturnValue({ data: [] });
 	workspaceQueryMock.mockReset().mockReturnValue({ data: [], isError: false });
 	window.localStorage.removeItem("ao.board.archive.layout");
 	boardActionsInPanelMock.mockReset().mockReturnValue(false);
@@ -326,9 +333,106 @@ describe("SessionsBoard", () => {
 		expect(dot("policy reviewer active")).toHaveClass("bg-status-in-review", "animate-status-pulse");
 		expect(dot("policy review queued")).toHaveClass("bg-status-in-review");
 		expect(dot("policy review queued")).toHaveAttribute("data-session-status-active", "false");
-		expect(dot("policy admission waiting")).toHaveClass("bg-status-needs-you");
+		expect(dot("policy admission waiting")).toHaveClass("bg-status-ready");
 		expect(dot("policy merged")).toHaveClass("bg-status-merged");
 		expect(dot("policy incident")).toHaveClass("bg-status-exited");
+	});
+
+	it("places every durable policy phase in its forward-only lane despite stale stock status", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "s-reserved", title: "policy reserved", status: "idle", dcpPolicyState: "reserved" }),
+					boardSession({ id: "s-ci", title: "policy PR open", status: "pr_open", dcpPolicyState: "ci_waiting" }),
+					boardSession({
+						id: "s-review",
+						title: "policy review",
+						status: "pr_open",
+						dcpPolicyState: "review_queued",
+					}),
+					boardSession({
+						id: "s-ready",
+						title: "policy ready",
+						status: "review_pending",
+						dcpPolicyState: "admission_waiting",
+					}),
+					boardSession({
+						id: "s-terminal",
+						title: "policy terminal",
+						status: "pr_open",
+						dcpPolicyState: "merged",
+					}),
+					boardSession({
+						id: "s-needs-you",
+						title: "policy needs you",
+						status: "working",
+						dcpPolicyState: "incident",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		const workLane = screen.getByRole("region", { name: "Idle / Working sessions" });
+		const working = within(workLane).getByRole("region", { name: "Working sessions" });
+		const review = screen.getByRole("region", { name: "In review sessions" });
+		const ready = screen.getByRole("region", { name: "Ready to merge sessions" });
+		const merged = screen.getByRole("region", { name: "Merged sessions" });
+		const needsYou = screen.getByRole("region", { name: "Needs you sessions" });
+
+		expect(within(working).getByText("policy reserved")).toBeInTheDocument();
+		expect(within(working).getByText("policy PR open")).toBeInTheDocument();
+		expect(within(review).getByText("policy review")).toBeInTheDocument();
+		expect(within(ready).getByText("policy ready")).toBeInTheDocument();
+		expect(within(merged).getByText("policy terminal")).toBeInTheDocument();
+		expect(within(needsYou).getByText("policy needs you")).toBeInTheDocument();
+		expect(within(review).queryByText("policy PR open")).not.toBeInTheDocument();
+
+		const cardFor = (title: string) => screen.getByText(title).closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(cardFor("policy reserved")).getByText("Working")).toHaveClass("text-status-working");
+		expect(within(cardFor("policy PR open")).getByText("PR open")).toHaveClass("text-status-working");
+		expect(within(cardFor("policy review")).getByText("Review pending")).toHaveClass("text-status-in-review");
+		expect(within(cardFor("policy ready")).getByText("Ready")).toHaveClass("text-status-ready");
+		expect(within(cardFor("policy terminal")).getByText("Merged")).toHaveClass("text-status-merged");
+		expect(within(cardFor("policy needs you")).getByText("Review failed")).toHaveClass("text-status-exited");
+	});
+
+	it("does not show a stale secondary open PR after the durable policy merges", () => {
+		scmSummaryMock.mockReturnValue({ data: [scmSummary({ state: "open" })] });
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-terminal-pr",
+						title: "policy terminal PR",
+						status: "pr_open",
+						dcpPolicyState: "merged",
+						prs: [
+							{
+								url: "https://github.com/acme/repo/pull/42",
+								number: 42,
+								state: "merged",
+								ci: "passing",
+								review: "approved",
+								mergeability: "mergeable",
+								reviewComments: false,
+								updatedAt: "2026-01-01T00:00:00Z",
+							},
+						],
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+
+		expect(screen.getByLabelText("#42 merged")).toBeInTheDocument();
+		expect(screen.queryByLabelText("#42 open")).not.toBeInTheDocument();
 	});
 
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
@@ -1245,6 +1349,33 @@ function boardSession(
 		branch: `ao/${overrides.id}`,
 		updatedAt: "2026-01-01T00:00:00Z",
 		prs: [],
+		...overrides,
+	};
+}
+
+function scmSummary(overrides: Partial<SessionPRSummary> = {}): SessionPRSummary {
+	return {
+		url: "https://github.com/acme/repo/pull/42",
+		htmlUrl: "https://github.com/acme/repo/pull/42",
+		number: 42,
+		title: "Policy terminal PR",
+		state: "open",
+		provider: "github",
+		repo: "acme/repo",
+		author: "codex",
+		sourceBranch: "ao/dcp-review-lab-42/root",
+		targetBranch: "main",
+		headSha: "abc123",
+		additions: 1,
+		deletions: 0,
+		changedFiles: 1,
+		ci: { state: "passing", failingChecks: [] },
+		review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+		mergeability: { state: "mergeable", reasons: [], prUrl: "https://github.com/acme/repo/pull/42" },
+		updatedAt: "2026-01-01T00:00:00Z",
+		observedAt: "2026-01-01T00:00:00Z",
+		ciObservedAt: "2026-01-01T00:00:00Z",
+		reviewObservedAt: "2026-01-01T00:00:00Z",
 		...overrides,
 	};
 }
