@@ -316,6 +316,9 @@ source_gates() {
 	! grep -ERq 'time\.(NewTicker|Tick)|for[[:space:]]*\{[[:space:]]*time\.Sleep' backend/internal/dcpterminalmerge || fail 'I13 admission/arbiter introduced a poll or heartbeat loop'
 	grep -Fq 'ApplySCMEligibilityObservation' backend/internal/observe/scm/observer.go || fail 'happy-path admission catch-up is not driven by the stock SCM event'
 	grep -Fq 'admission.Status != domain.DCPAdmissionWaiting' backend/internal/lifecycle/reactions.go || fail 'SCM admission catch-up is not fenced to one durable waiting identity'
+	grep -Fq 'set(&base.DiffBaseSHA, in.DiffBaseSHA)' backend/internal/lifecycle/manager.go || fail 'native provisioning still drops the durable task creation base SHA'
+	grep -Fq 'repairDCPReviewLabCard13CreationBase' backend/internal/storage/sqlite/db.go || fail 'exact live card-13 creation-base repair is absent'
+	grep -Fq 'AND 0 = (' backend/internal/storage/sqlite/db.go || fail 'card-13 base repair is not fenced to zero active model actions'
 	grep -Fq 'getSessionVisualStatus(session)' frontend/src/renderer/components/SessionsBoard.tsx || fail 'native card does not use the shared policy status dot'
 	grep -Fq 'getSessionVisualStatus(session)' frontend/src/renderer/components/Sidebar.tsx || fail 'sidebar does not use the shared policy status dot'
 	grep -A5 -F '@media (prefers-reduced-motion: reduce)' frontend/src/renderer/styles.css | grep -Fq '.animate-status-pulse,' || fail 'status pulse is not disabled for reduced motion'
@@ -325,6 +328,7 @@ unexpected_paths="$( { printf '%s\n' "$unexpected_paths"; git ls-files --others 
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/cold_start_auto_merge_migration_test\.go|backend/internal/storage/sqlite/migrations/0063_dcp_card12_cold_start_auto_merge_recovery\.sql|backend/internal/dcpterminalmerge/rebase_head_finalization_(engine|executor|test)\.go|backend/internal/domain/dcp_card12_rebase_head_finalization\.go|backend/internal/storage/sqlite/(rebase_head_finalization(_provider_base)?_migration_test\.go|migrations/006(4_dcp_card12_rebase_head_finalization|5_dcp_card12_rebase_head_finalization_audit_recovery|6_dcp_card12_rebase_head_finalization_provider_base_recovery)\.sql|queries/dcp_card12_rebase_head_finalization\.sql|gen/dcp_card12_rebase_head_finalization\.sql\.go|store/dcp_card12_rebase_head_finalization_store(_test)?\.go))$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/cli/dcp\.go|backend/internal/domain/dcp_lab_policy\.go|backend/internal/service/dcptask/(policy|review_repository)\.go|backend/internal/storage/sqlite/gen/dcp_lab_policy\.sql\.go|backend/internal/storage/sqlite/migrations/0067_dcp_review_lab_happy_path_v1\.sql|backend/internal/storage/sqlite/queries/dcp_lab_policy\.sql|backend/internal/storage/sqlite/store/dcp_lab_policy_store(_test)?\.go)$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/gen/dcp_terminal_quarantine_test\.go$' || true)"
+unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/db\.go|backend/internal/storage/sqlite/card13_creation_base_migration_test\.go)$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src/renderer/hooks/useWorkspaceQuery(\.test)?\.tsx?|frontend/src/renderer/styles\.css)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 

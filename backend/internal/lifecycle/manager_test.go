@@ -2452,3 +2452,21 @@ func TestRuntimeObservation_WorkloadDeathAloneDoesNotReap(t *testing.T) {
 		t.Fatalf("expected no reap call for a non-terminal transition, got %v", cr.sessions)
 	}
 }
+
+func TestMergeMetadataPersistsProvisionedDiffBase(t *testing.T) {
+	base := domain.SessionMetadata{Prompt: "existing prompt"}
+	in := domain.SessionMetadata{
+		WorkspacePath: "/managed/dcp-review-lab-13",
+		Branch:        "ao/dcp-review-lab-13/root",
+		DiffBaseSHA:   "5bfd20d3b3f5b7d9d9ccb02500b742a917e6ea01",
+		DiffBaseRef:   "origin/main",
+	}
+
+	got := mergeMetadata(base, in)
+	if got.DiffBaseSHA != in.DiffBaseSHA || got.DiffBaseRef != in.DiffBaseRef {
+		t.Fatalf("provisioned diff base was dropped: sha=%q ref=%q", got.DiffBaseSHA, got.DiffBaseRef)
+	}
+	if got.Prompt != base.Prompt {
+		t.Fatalf("unrelated metadata drifted: prompt=%q", got.Prompt)
+	}
+}
