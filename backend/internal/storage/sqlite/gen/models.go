@@ -239,6 +239,30 @@ type DcpModelAction struct {
 	UpdatedAt    time.Time
 }
 
+type DcpPolicyProviderPendingRecovery struct {
+	RecoveryID       string
+	TaskID           string
+	PayloadDigest    string
+	SessionID        string
+	CardNumber       int64
+	SourceBranch     string
+	PriorState       string
+	PriorRevision    int64
+	PriorErrorCode   string
+	PriorIncident    string
+	WorkerActionID   string
+	WorkerLaunchID   string
+	PRURL            string
+	PRNumber         int64
+	PRHead           string
+	PRBase           string
+	CheckURL         string
+	FailedSourceSha  string
+	FailedSourceTree string
+	PriorUpdatedAt   time.Time
+	RearmedAt        time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string

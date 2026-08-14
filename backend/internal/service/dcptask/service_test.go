@@ -91,6 +91,37 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 	}
 }
 
+func TestValidateExactPolicyPRWaitsForEnrichmentAndRejectsContradiction(t *testing.T) {
+	task := domain.DCPReviewLabPolicyTask{SourceBranch: "ao/dcp-review-lab-20/root"}
+	url := "https://github.com/orenvlad-ai/dcp-review-lab/pull/17"
+	head := "6211c80a4b9e8b6ab30a38a64c4bca3ec38ef621"
+	partial := domain.PullRequest{URL: url, Number: 17, HeadSHA: head}
+	if err := validateExactPolicyPR(task, partial, url, head); !errors.Is(err, errPolicyPRFactsPending) {
+		t.Fatalf("partial provider snapshot = %v, want pending", err)
+	}
+
+	exact := domain.PullRequest{
+		URL: url, HTMLURL: url, Number: 17, Provider: "github", Host: "github.com",
+		Repo: PolicyRepositoryName, SourceBranch: task.SourceBranch, TargetBranch: "main",
+		Author: "orenvlad-ai", ProviderState: "OPEN", HeadSHA: head,
+	}
+	if err := validateExactPolicyPR(task, exact, url, head); err != nil {
+		t.Fatalf("exact enriched provider snapshot: %v", err)
+	}
+
+	contradictory := exact
+	contradictory.SourceBranch = "ao/foreign/root"
+	if err := validateExactPolicyPR(task, contradictory, url, head); err == nil || errors.Is(err, errPolicyPRFactsPending) {
+		t.Fatalf("contradictory provider snapshot = %v, want terminal drift", err)
+	}
+
+	closed := exact
+	closed.Closed, closed.ProviderState = true, "CLOSED"
+	if err := validateExactPolicyPR(task, closed, url, head); err == nil || errors.Is(err, errPolicyPRFactsPending) {
+		t.Fatalf("closed provider snapshot = %v, want terminal drift", err)
+	}
+}
+
 func TestSubmitPolicyReplayCompletesOnlyTheReservedNativeIdentity(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(t.TempDir())

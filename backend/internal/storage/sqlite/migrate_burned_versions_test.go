@@ -83,6 +83,7 @@ var shippedMigrations = map[int64]string{
 	65: "0065_dcp_card12_rebase_head_finalization_audit_recovery.sql",
 	66: "0066_dcp_card12_rebase_head_finalization_provider_base_recovery.sql",
 	67: "0067_dcp_review_lab_happy_path_v1.sql",
+	68: "0068_dcp_policy_provider_pending_recovery.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
