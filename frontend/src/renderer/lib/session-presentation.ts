@@ -1,4 +1,10 @@
-import type { SessionActivity, SessionActivityState, SessionStatus, WorkspaceSession } from "../types/workspace";
+import type {
+	DCPPolicyState,
+	SessionActivity,
+	SessionActivityState,
+	SessionStatus,
+	WorkspaceSession,
+} from "../types/workspace";
 import { appI18n, type MessageKey } from "../i18n";
 import type { TFunction } from "i18next";
 
@@ -74,14 +80,35 @@ export function isAgentActivityWorking(activity?: SessionActivity | null): boole
 }
 
 export type SessionVisualStatus = {
-	tone: "working" | "review" | "attention" | "merged" | "failed" | "idle";
+	policyPhase?: DCPPolicyPhase;
+	zone: AttentionZone;
+	displayStatus: SessionStatus;
+	statusClassName?: string;
+	tone: "working" | "review" | "ready" | "attention" | "merged" | "failed" | "idle";
 	dotClassName: string;
 	indicatorClassName: string;
 	active: boolean;
 };
 
-function visualStatus(tone: SessionVisualStatus["tone"], dotClassName: string, active = false): SessionVisualStatus {
+export type DCPPolicyPhase = "working" | "in_review" | "ready_to_merge" | "merged" | "needs_you";
+
+const policyPhaseStatusClassNames: Record<DCPPolicyPhase, string> = {
+	working: "text-status-working",
+	in_review: "text-status-in-review",
+	ready_to_merge: "text-status-ready",
+	merged: "text-status-merged",
+	needs_you: "text-status-exited",
+};
+
+function visualStatus(
+	tone: SessionVisualStatus["tone"],
+	dotClassName: string,
+	options: Pick<SessionVisualStatus, "zone" | "displayStatus"> &
+		Partial<Pick<SessionVisualStatus, "policyPhase" | "statusClassName" | "active">>,
+): SessionVisualStatus {
+	const active = options.active === true;
 	return {
+		...options,
 		tone,
 		dotClassName,
 		indicatorClassName: `${dotClassName}${active ? " animate-status-pulse" : ""}`,
@@ -89,45 +116,89 @@ function visualStatus(tone: SessionVisualStatus["tone"], dotClassName: string, a
 	};
 }
 
-// One shared status-dot projection serves both the stock board card and the
-// sidebar. Durable policy lifecycle wins over a retained idle terminal shell;
+function policyVisualStatus(
+	state: DCPPolicyState,
+	session: WorkspaceSession,
+	policyActive: boolean,
+): SessionVisualStatus {
+	const policy = (
+		policyPhase: DCPPolicyPhase,
+		zone: AttentionZone,
+		displayStatus: SessionStatus,
+		tone: SessionVisualStatus["tone"],
+		dotClassName: string,
+		active = false,
+	) =>
+		visualStatus(tone, dotClassName, {
+			policyPhase,
+			zone,
+			displayStatus,
+			statusClassName: policyPhaseStatusClassNames[policyPhase],
+			active,
+		});
+
+	switch (state) {
+		case "reserved":
+		case "worker_queued":
+		case "repair_queued":
+			return policy("working", "working", "working", "working", "bg-status-working");
+		case "worker_running":
+		case "repair_running":
+			return policy("working", "working", "working", "working", "bg-status-working", policyActive);
+		case "ci_waiting":
+			return policy(
+				"working",
+				"working",
+				session.status === "pr_open" || session.status === "draft" ? session.status : "working",
+				"working",
+				"bg-status-working",
+			);
+		case "review_queued":
+			return policy("in_review", "pending", "review_pending", "review", "bg-status-in-review");
+		case "review_running":
+			return policy(
+				"in_review",
+				"pending",
+				"review_pending",
+				"review",
+				"bg-status-in-review",
+				policyActive,
+			);
+		case "admission_waiting":
+			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready");
+		case "merged":
+			return policy("merged", "merge", "merged", "merged", "bg-status-merged");
+		case "failed":
+		case "incident":
+			return policy("needs_you", "action", "review_failed", "failed", "bg-status-exited");
+	}
+}
+
+// One typed projection serves board placement, board card status and sidebar
+// dot. Durable policy lifecycle wins over retained shells and stale stock SCM;
 // motion is reserved for a model action whose durable action row is running.
 export function getSessionVisualStatus(session: WorkspaceSession): SessionVisualStatus {
 	const policyActive = session.dcpPolicyActionActive === true;
-	switch (session.dcpPolicyState) {
-		case "worker_queued":
-		case "repair_queued":
-			return visualStatus("working", "bg-status-working");
-		case "worker_running":
-		case "repair_running":
-			return visualStatus("working", "bg-status-working", policyActive);
-		case "review_queued":
-			return visualStatus("review", "bg-status-in-review");
-		case "review_running":
-			return policyActive
-				? visualStatus("review", "bg-status-in-review", true)
-				: visualStatus("attention", "bg-status-needs-you");
-		case "ci_waiting":
-		case "admission_waiting":
-			return visualStatus("attention", "bg-status-needs-you");
-		case "merged":
-			return visualStatus("merged", "bg-status-merged");
-		case "failed":
-		case "incident":
-			return visualStatus("failed", "bg-status-exited");
-		case "reserved":
-			return visualStatus("idle", "bg-status-idle");
+	if (session.dcpPolicyState) {
+		return policyVisualStatus(session.dcpPolicyState, session, policyActive);
 	}
 
 	if (session.activity?.state === "active") {
-		return visualStatus("working", "bg-status-working", true);
+		return visualStatus("working", "bg-status-working", {
+			zone: "working",
+			displayStatus: session.status,
+			active: true,
+		});
 	}
 	if (session.activity?.state === "waiting_input" || session.activity?.state === "blocked") {
-		return visualStatus("attention", "bg-status-needs-you");
+		return visualStatus("attention", "bg-status-needs-you", {
+			zone: "action",
+			displayStatus: session.status,
+		});
 	}
 	switch (session.status) {
 		case "working":
-			return visualStatus("working", "bg-status-working");
+			return visualStatus("working", "bg-status-working", { zone: "working", displayStatus: session.status });
 		case "needs_input":
 		case "review_pending":
 		case "changes_requested":
@@ -135,16 +206,25 @@ export function getSessionVisualStatus(session: WorkspaceSession): SessionVisual
 		case "pr_open":
 		case "approved":
 		case "mergeable":
-			return visualStatus("attention", "bg-status-needs-you");
+			return visualStatus("attention", "bg-status-needs-you", {
+				zone: stockAttentionZone(session.status),
+				displayStatus: session.status,
+			});
 		case "merged":
-			return visualStatus("merged", "bg-status-merged");
+			return visualStatus("merged", "bg-status-merged", { zone: "merge", displayStatus: session.status });
 		case "ci_failed":
 		case "review_failed":
 		case "exited":
 		case "terminated":
-			return visualStatus("failed", "bg-status-exited");
+			return visualStatus("failed", "bg-status-exited", {
+				zone: stockAttentionZone(session.status),
+				displayStatus: session.status,
+			});
 		default:
-			return visualStatus("idle", "bg-status-idle");
+			return visualStatus("idle", "bg-status-idle", {
+				zone: stockAttentionZone(session.status),
+				displayStatus: session.status,
+			});
 	}
 }
 
@@ -199,6 +279,15 @@ export function getSessionStatusView(status: SessionStatus, t: TFunction = appI1
 	const key = sessionStatusLabelKeys[status] ?? sessionStatusLabelKeys.unknown;
 	const style = sessionStatusStyles[status] ?? sessionStatusStyles.unknown;
 	return { ...style, label: t(key) };
+}
+
+export function getSessionStatusViewForSession(
+	session: WorkspaceSession,
+	t: TFunction = appI18n.t,
+): SessionStatusView {
+	const projection = getSessionVisualStatus(session);
+	const view = getSessionStatusView(projection.displayStatus, t);
+	return projection.statusClassName ? { ...view, className: projection.statusClassName } : view;
 }
 
 export type AttentionZone = "merge" | "action" | "pending" | "working" | "done";
@@ -285,8 +374,7 @@ export const attentionZoneLabel: Record<AttentionZone, string> = {
 	},
 };
 
-export function attentionZone(input: SessionStatus | Pick<WorkspaceSession, "status">): AttentionZone {
-	const status = typeof input === "string" ? input : input.status;
+function stockAttentionZone(status: SessionStatus): AttentionZone {
 	switch (status) {
 		case "merged":
 		case "approved":
@@ -311,6 +399,11 @@ export function attentionZone(input: SessionStatus | Pick<WorkspaceSession, "sta
 		default:
 			return "working";
 	}
+}
+
+export function attentionZone(input: SessionStatus | WorkspaceSession): AttentionZone {
+	if (typeof input === "string") return stockAttentionZone(input);
+	return input.dcpPolicyState ? getSessionVisualStatus(input).zone : stockAttentionZone(input.status);
 }
 
 export function getAttentionZoneView(status: SessionStatus, t: TFunction = appI18n.t): AttentionZoneView {
@@ -352,6 +445,6 @@ export function getSessionTimelinePillView(
 	return { label: t(base.labelKey), tone: base.tone, breathe: base.breathe };
 }
 
-export function isSessionIdle(session: Pick<WorkspaceSession, "status">): boolean {
-	return session.status === "idle";
+export function isSessionIdle(session: WorkspaceSession): boolean {
+	return getSessionVisualStatus(session).policyPhase === undefined && session.status === "idle";
 }

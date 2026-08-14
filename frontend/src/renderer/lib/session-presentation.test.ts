@@ -5,6 +5,7 @@ import {
 	getAgentActivityView,
 	getAttentionZoneView,
 	getSessionStatusView,
+	getSessionStatusViewForSession,
 	getSessionVisualStatus,
 	getSessionTimelinePillView,
 	isAgentActivityWorking,
@@ -131,24 +132,78 @@ describe("session presentation", () => {
 		expect(idle.indicatorClassName).toBe("bg-status-idle");
 	});
 
+	it("does not change stock board placement from raw activity alone", () => {
+		expect(
+			attentionZone(
+				sessionWith({
+					status: "merged",
+					activity: { state: "active", lastActivityAt: "" },
+				}),
+			),
+		).toBe("merge");
+	});
+
 	it.each([
-		["worker active", "worker_running", true, "working", "bg-status-working", true],
-		["worker queued", "worker_queued", false, "working", "bg-status-working", false],
-		["review active", "review_running", true, "review", "bg-status-in-review", true],
-		["review queued", "review_queued", false, "review", "bg-status-in-review", false],
-		["review inactive", "review_running", false, "attention", "bg-status-needs-you", false],
-		["CI waiting", "ci_waiting", false, "attention", "bg-status-needs-you", false],
-		["admission waiting", "admission_waiting", false, "attention", "bg-status-needs-you", false],
-		["merged", "merged", false, "merged", "bg-status-merged", false],
-		["failed", "failed", false, "failed", "bg-status-exited", false],
-		["incident", "incident", false, "failed", "bg-status-exited", false],
-		["reserved", "reserved", false, "idle", "bg-status-idle", false],
-	] as const)("maps policy %s to one shared dot", (_name, state, actionActive, tone, dotClassName, active) => {
-		const visual = getSessionVisualStatus(
-			sessionWith({ dcpPolicyState: state, dcpPolicyActionActive: actionActive, activity: { state: "idle", lastActivityAt: "" } }),
-		);
-		expect(visual).toMatchObject({ tone, dotClassName, active });
-		expect(visual.indicatorClassName).toBe(`${dotClassName}${active ? " animate-status-pulse" : ""}`);
+		["worker active", "worker_running", true, "working", "working", "working", "bg-status-working", true],
+		["worker queued", "worker_queued", false, "working", "working", "working", "bg-status-working", false],
+		["review active", "review_running", true, "in_review", "pending", "review", "bg-status-in-review", true],
+		["review queued", "review_queued", false, "in_review", "pending", "review", "bg-status-in-review", false],
+		["review inactive", "review_running", false, "in_review", "pending", "review", "bg-status-in-review", false],
+		["CI waiting", "ci_waiting", false, "working", "working", "working", "bg-status-working", false],
+		["admission waiting", "admission_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", false],
+		["merged", "merged", false, "merged", "merge", "merged", "bg-status-merged", false],
+		["failed", "failed", false, "needs_you", "action", "failed", "bg-status-exited", false],
+		["incident", "incident", false, "needs_you", "action", "failed", "bg-status-exited", false],
+		["reserved", "reserved", false, "working", "working", "working", "bg-status-working", false],
+	] as const)(
+		"maps policy %s to one shared projection",
+		(_name, state, actionActive, policyPhase, zone, tone, dotClassName, active) => {
+			const visual = getSessionVisualStatus(
+				sessionWith({
+					dcpPolicyState: state,
+					dcpPolicyActionActive: actionActive,
+					activity: { state: "idle", lastActivityAt: "" },
+				}),
+			);
+			expect(visual).toMatchObject({ policyPhase, zone, tone, dotClassName, active });
+			expect(visual.indicatorClassName).toBe(`${dotClassName}${active ? " animate-status-pulse" : ""}`);
+		},
+	);
+
+	it("keeps the normal policy sequence forward when stock status frames are stale", () => {
+		const frames = [
+			sessionWith({ status: "idle", dcpPolicyState: "reserved" }),
+			sessionWith({ status: "idle", dcpPolicyState: "worker_queued" }),
+			sessionWith({ status: "working", dcpPolicyState: "worker_running", dcpPolicyActionActive: true }),
+			sessionWith({ status: "pr_open", dcpPolicyState: "ci_waiting" }),
+			sessionWith({ status: "pr_open", dcpPolicyState: "review_queued" }),
+			sessionWith({ status: "review_pending", dcpPolicyState: "review_running", dcpPolicyActionActive: true }),
+			sessionWith({ status: "review_pending", dcpPolicyState: "admission_waiting" }),
+			sessionWith({ status: "pr_open", dcpPolicyState: "merged" }),
+		];
+		const phaseRank = { working: 0, in_review: 1, ready_to_merge: 2, merged: 3, needs_you: 4 } as const;
+		const projections = frames.map(getSessionVisualStatus);
+		const ranks = projections.map((projection) => phaseRank[projection.policyPhase!]);
+
+		expect(ranks).toEqual([...ranks].sort((left, right) => left - right));
+		expect(projections.map((projection) => projection.zone)).toEqual([
+			"working",
+			"working",
+			"working",
+			"working",
+			"pending",
+			"pending",
+			"merge",
+			"merge",
+		]);
+		expect(getSessionStatusViewForSession(frames[3])).toMatchObject({
+			label: "PR open",
+			className: "text-status-working",
+		});
+		expect(getSessionStatusViewForSession(frames[7])).toMatchObject({
+			label: "Merged",
+			className: "text-status-merged",
+		});
 	});
 
 	it("keeps non-policy human and merge readiness steady orange", () => {

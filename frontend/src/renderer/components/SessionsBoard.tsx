@@ -28,7 +28,7 @@ import {
 	boardAttentionZoneOrder,
 	getAgentActivityView,
 	getAttentionZoneViewForZone,
-	getSessionStatusView,
+	getSessionStatusViewForSession,
 	getSessionVisualStatus,
 	isSessionIdle,
 	type AttentionZone,
@@ -610,10 +610,10 @@ function MergeLaneColumn({
 	const { t } = useTranslation();
 	const tones = splitLaneTones(t);
 	const mergedSessions = sessions
-		.filter((session) => session.status === "merged")
+		.filter((session) => getSessionVisualStatus(session).displayStatus === "merged")
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const readySessions = sessions
-		.filter((session) => session.status !== "merged")
+		.filter((session) => getSessionVisualStatus(session).displayStatus !== "merged")
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 
 	return (
@@ -837,15 +837,15 @@ function SessionCard({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
-	const badge = getSessionStatusView(session.status, t);
 	const visual = getSessionVisualStatus(session);
+	const badge = getSessionStatusViewForSession(session, t);
 	const issueId = canonicalTrackerIssueId(session.issueId);
 	const branch = session.branch || "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const prSummaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
 	const termination = useTerminateSessionState(session.id);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
-	const keepTerminateVisible = session.status === "merged";
+	const keepTerminateVisible = visual.displayStatus === "merged";
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		if (!interactive || !onOpen) return;
 		if (event.currentTarget !== event.target) return;

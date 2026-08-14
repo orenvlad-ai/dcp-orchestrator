@@ -125,7 +125,7 @@ export function sessionPRDisplaySummaries(
 			}
 			consumedSummaries.add(summary);
 		}
-		fromFacts.push(summary ?? sessionPRFactToSummary(session, pr));
+		fromFacts.push(summary ? reconcileSummaryLifecycle(session, pr, summary) : sessionPRFactToSummary(session, pr));
 	}
 	const summaryOnly: SessionPRSummary[] = [];
 	for (const summary of dedupedSummaries) {
@@ -135,9 +135,40 @@ export function sessionPRDisplaySummaries(
 		for (const key of keys) {
 			seen.add(key);
 		}
-		summaryOnly.push(summary);
+		summaryOnly.push(reconcilePolicyTerminalLifecycle(session, summary));
 	}
 	return [...fromFacts, ...summaryOnly].sort(comparePRDisplaySummaries);
+}
+
+function reconcileSummaryLifecycle(
+	session: WorkspaceSession,
+	fact: PullRequestFacts,
+	summary: SessionPRSummary,
+): SessionPRSummary {
+	const state = session.dcpPolicyState === "merged" ? "merged" : fact.state;
+	if (state !== "merged" && state !== "closed") return summary;
+	if (summary.state === state) return summary;
+	return {
+		...summary,
+		state,
+		updatedAt: fact.updatedAt || session.updatedAt,
+		stateChangedAt: fact.updatedAt || session.updatedAt,
+	};
+}
+
+function reconcilePolicyTerminalLifecycle(
+	session: WorkspaceSession,
+	summary: SessionPRSummary,
+): SessionPRSummary {
+	// A happy-path policy task owns one exact PR. Once its durable task is
+	// merged, a lagging per-session provider summary cannot reopen it visually.
+	if (session.dcpPolicyState !== "merged" || summary.state === "merged") return summary;
+	return {
+		...summary,
+		state: "merged",
+		updatedAt: session.updatedAt,
+		stateChangedAt: session.updatedAt,
+	};
 }
 
 function deduplicateSummaries(summaries: SessionPRSummary[]): SessionPRSummary[] {

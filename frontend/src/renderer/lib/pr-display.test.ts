@@ -35,7 +35,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 	...overrides,
 });
 
-const session = (prs: WorkspaceSession["prs"]): WorkspaceSession => ({
+const session = (prs: WorkspaceSession["prs"], overrides: Partial<WorkspaceSession> = {}): WorkspaceSession => ({
 	id: "sess-1",
 	workspaceId: "ws-1",
 	workspaceName: "repo",
@@ -45,6 +45,7 @@ const session = (prs: WorkspaceSession["prs"]): WorkspaceSession => ({
 	status: "review_pending",
 	updatedAt: "2026-06-15T12:00:00Z",
 	prs,
+	...overrides,
 });
 
 describe("prStatusRows", () => {
@@ -437,6 +438,45 @@ describe("sessionPRDisplaySummaries", () => {
 
 		expect(firstSelection.map((pr) => pr.number)).toEqual([7]);
 		expect(nextSelection.map((pr) => pr.number)).toEqual([9]);
+	});
+
+	it("lets a terminal native PR fact override an older enriched open summary", () => {
+		const got = sessionPRDisplaySummaries(
+			session([
+				{
+					url: "https://github.com/acme/repo/pull/7",
+					number: 7,
+					state: "merged",
+					ci: "passing",
+					review: "approved",
+					mergeability: "mergeable",
+					reviewComments: false,
+					updatedAt: "2026-06-15T12:00:00Z",
+				},
+			]),
+			[summary({ state: "open", title: "stale enriched PR #7" })],
+		);
+
+		expect(got).toHaveLength(1);
+		expect(got[0]).toMatchObject({
+			state: "merged",
+			title: "stale enriched PR #7",
+			stateChangedAt: "2026-06-15T12:00:00Z",
+		});
+	});
+
+	it("never renders a summary-only PR as open after the durable policy is merged", () => {
+		const got = sessionPRDisplaySummaries(
+			session([], { status: "pr_open", dcpPolicyState: "merged" }),
+			[summary({ state: "open", title: "lagging summary" })],
+		);
+
+		expect(got).toHaveLength(1);
+		expect(got[0]).toMatchObject({
+			state: "merged",
+			title: "lagging summary",
+			stateChangedAt: "2026-06-15T12:00:00Z",
+		});
 	});
 });
 
