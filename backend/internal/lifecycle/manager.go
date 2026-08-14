@@ -883,5 +883,7 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	base.RuntimeLaunchID = in.RuntimeLaunchID
 	set(&base.AgentSessionID, in.AgentSessionID)
 	set(&base.Prompt, in.Prompt)
+	set(&base.DiffBaseSHA, in.DiffBaseSHA)
+	set(&base.DiffBaseRef, in.DiffBaseRef)
 	return base
 }
