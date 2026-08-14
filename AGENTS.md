@@ -7,13 +7,15 @@ independent source of DCP architecture policy.
 ## Required authority before any change
 
 Read these immutable `orenvlad-ai/dev-control-plane` sources at merged commit
-`b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19` before designing or editing this
+`e636eb18006f464a8da3b09cd9e88709910a73cb` before designing or editing this
 repository:
 
-1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/AGENTS.md)
-2. [current operating contract revision `2026-08-14.1`](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
-4. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/upstream/dcp-orchestrator.lock)
+1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/AGENTS.md)
+2. [current operating contract revision `2026-08-15.2`](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
+4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
+5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
+6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/e636eb18006f464a8da3b09cd9e88709910a73cb/upstream/dcp-orchestrator.lock)
 
 The happy-path v1 contract is the sole current rule for future synthetic
 review-lab tasks. The I11-I13 qualification and recovery contracts remain
@@ -78,6 +80,15 @@ daemon-owned expected-head terminal merge. Any other identity, stale head,
 second findings cycle, conflict or ambiguity fails closed without arbiter,
 HumanGate, manual bypass or replacement card. Historical rows below remain
 implemented immutable evidence, not an alternative future policy.
+
+Phase 2 cards 18-20 proved one transient provider-enrichment bug: the stock SCM
+observer may persist a structural PR row before its provider identity fields.
+That incomplete snapshot is a passive model-free `ci_waiting` fact, not an
+identity contradiction. Complete conflicting identity still fails closed. The
+one already-recorded `night-ui-b` false incident may be re-armed only by exact
+migration 0068 after its immutable task/session/worker/PR/head/base/named-check
+conjunction is preserved in one audit row; the migration itself launches no
+model action, push, review, admission or merge.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display

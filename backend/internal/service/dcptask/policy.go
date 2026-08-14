@@ -12,6 +12,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+var errPolicyPRFactsPending = errors.New("policy PR provider facts are incomplete")
+
 // DrainModelActions performs one event-driven FIFO drain. It owns no goroutine,
 // timer, heartbeat, or poll loop; callers invoke it only after submission,
 // action release, a lifecycle/SCM event, or startup reconciliation.
@@ -227,6 +229,13 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 	head = strings.ToLower(head)
 	pr, err := s.exactPolicyPR(ctx, task, prURL, head)
 	if err != nil {
+		if errors.Is(err, errPolicyPRFactsPending) {
+			// The stock SCM observer persists a structural PR row before its
+			// provider enrichment. That partial snapshot is not contradictory
+			// evidence and must remain a model-free CI wait until the next stock
+			// state-change event completes the exact identity.
+			return true, false, nil
+		}
 		_ = s.failPolicyTask(ctx, task, "provider_identity_drift", err.Error())
 		return true, false, err
 	}
@@ -529,17 +538,35 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 
 func (s *Service) exactPolicyPR(ctx context.Context, task domain.DCPReviewLabPolicyTask, prURL, head string) (domain.PullRequest, error) {
 	prs, err := s.policyStore.ListPRsBySession(ctx, task.SessionID)
-	if err != nil || len(prs) != 1 {
-		return domain.PullRequest{}, errors.Join(err, errors.New("policy task must own exactly one PR"))
+	if err != nil {
+		return domain.PullRequest{}, err
+	}
+	if len(prs) == 0 {
+		return domain.PullRequest{}, errPolicyPRFactsPending
+	}
+	if len(prs) != 1 {
+		return domain.PullRequest{}, errors.New("policy task must own exactly one PR")
 	}
 	pr := prs[0]
+	if err := validateExactPolicyPR(task, pr, prURL, head); err != nil {
+		return domain.PullRequest{}, err
+	}
+	return pr, nil
+}
+
+func validateExactPolicyPR(task domain.DCPReviewLabPolicyTask, pr domain.PullRequest, prURL, head string) error {
+	if prURL == "" || head == "" || pr.URL == "" || pr.HTMLURL == "" || pr.Number == 0 ||
+		pr.Provider == "" || pr.Host == "" || pr.Repo == "" || pr.SourceBranch == "" ||
+		pr.TargetBranch == "" || pr.Author == "" || pr.ProviderState == "" || pr.HeadSHA == "" {
+		return errPolicyPRFactsPending
+	}
 	if pr.URL != prURL || pr.HTMLURL != pr.URL || pr.Provider != "github" || pr.Host != "github.com" ||
 		pr.Repo != PolicyRepositoryName || pr.SourceBranch != task.SourceBranch || pr.TargetBranch != "main" ||
 		pr.Author != "orenvlad-ai" || pr.Draft || pr.Merged || pr.Closed || pr.ProviderState != "OPEN" ||
 		!strings.EqualFold(pr.HeadSHA, head) || !validPolicyPRURL(pr.URL, pr.Number) || !validPolicySHA(head) {
-		return domain.PullRequest{}, errors.New("policy PR provider identity is not exact")
+		return errors.New("policy PR provider identity is not exact")
 	}
-	return pr, nil
+	return nil
 }
 
 func (s *Service) exactPolicyNamedCI(ctx context.Context, pr domain.PullRequest, head string) (ready, terminal bool, err error) {
