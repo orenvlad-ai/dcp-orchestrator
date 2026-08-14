@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -14,8 +15,10 @@ const dcpCard12ColdStartRecoveryID = "dcp-card12-cold-start-recovery-087176dbe56
 
 // EstablishDCPGovernedStartupQuarantine atomically validates and touches the
 // durable classification before daemon wiring may construct a runtime. An
-// exact live lab with missing/unknown rows fails closed; ordinary databases
-// with no governed card-11/card-12 state retain stock behavior.
+// exact live lab with missing/unknown rows fails closed. Historical cards
+// 11/12 retain their immutable quarantine rows; future policy sessions are
+// also held out of stock restoration and are classified only by their exact
+// additive policy rows.
 func (s *Store) EstablishDCPGovernedStartupQuarantine(ctx context.Context, now time.Time) (map[domain.SessionID]struct{}, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -29,35 +32,46 @@ func (s *Store) EstablishDCPGovernedStartupQuarantine(ctx context.Context, now t
 		if err != nil {
 			return err
 		}
-		if !card11Found && !card12Found {
-			return nil
+		if card11Found || card12Found {
+			if !card11Found || !card12Found || card11.ProjectID != "dcp-review-lab" || card12.ProjectID != "dcp-review-lab" {
+				return errors.New("governed DCP sessions are incomplete or foreign")
+			}
+			if _, err := q.BootstrapDCPCard12ColdStartRecovery(ctx, now); err != nil {
+				return err
+			}
+			if _, err := q.BootstrapDCPCard11StartupQuarantine(ctx, now); err != nil {
+				return err
+			}
+			if _, err := q.BootstrapDCPCard12StartupQuarantine(ctx, now); err != nil {
+				return err
+			}
+			count, err := q.CountExactDCPGovernedStartupQuarantine(ctx)
+			if err != nil || count != 2 {
+				return errors.Join(err, errors.New("exact governed startup quarantine is unavailable"))
+			}
+			touched, err := q.TouchDCPGovernedStartupQuarantine(ctx, now)
+			if err != nil || touched != 2 {
+				return errors.Join(err, errors.New("governed startup quarantine fence was not atomically established"))
+			}
+			rows, err := q.ListDCPGovernedStartupQuarantine(ctx)
+			if err != nil || len(rows) != 2 || rows[0] != "dcp-review-lab-11" || rows[1] != "dcp-review-lab-12" {
+				return errors.Join(err, errors.New("governed startup quarantine identity drifted"))
+			}
+			quarantine[domain.SessionID(rows[0])] = struct{}{}
+			quarantine[domain.SessionID(rows[1])] = struct{}{}
 		}
-		if !card11Found || !card12Found || card11.ProjectID != "dcp-review-lab" || card12.ProjectID != "dcp-review-lab" {
-			return errors.New("governed DCP sessions are incomplete or foreign")
-		}
-		if _, err := q.BootstrapDCPCard12ColdStartRecovery(ctx, now); err != nil {
+		policyTasks, err := q.ListDCPReviewLabPolicyTasks(ctx)
+		if err != nil {
 			return err
 		}
-		if _, err := q.BootstrapDCPCard11StartupQuarantine(ctx, now); err != nil {
-			return err
+		for _, task := range policyTasks {
+			session, found, getErr := getSessionForStartupQuarantine(ctx, q, task.SessionID)
+			if getErr != nil || !found || session.ProjectID != "dcp-review-lab" || session.Num != task.CardNumber ||
+				task.CardNumber <= 12 || task.SessionID != "dcp-review-lab-"+fmt.Sprint(task.CardNumber) {
+				return errors.Join(getErr, errors.New("future DCP policy session classification drifted"))
+			}
+			quarantine[domain.SessionID(task.SessionID)] = struct{}{}
 		}
-		if _, err := q.BootstrapDCPCard12StartupQuarantine(ctx, now); err != nil {
-			return err
-		}
-		count, err := q.CountExactDCPGovernedStartupQuarantine(ctx)
-		if err != nil || count != 2 {
-			return errors.Join(err, errors.New("exact governed startup quarantine is unavailable"))
-		}
-		touched, err := q.TouchDCPGovernedStartupQuarantine(ctx, now)
-		if err != nil || touched != 2 {
-			return errors.Join(err, errors.New("governed startup quarantine fence was not atomically established"))
-		}
-		rows, err := q.ListDCPGovernedStartupQuarantine(ctx)
-		if err != nil || len(rows) != 2 || rows[0] != "dcp-review-lab-11" || rows[1] != "dcp-review-lab-12" {
-			return errors.Join(err, errors.New("governed startup quarantine identity drifted"))
-		}
-		quarantine[domain.SessionID(rows[0])] = struct{}{}
-		quarantine[domain.SessionID(rows[1])] = struct{}{}
 		return nil
 	})
 	return quarantine, err

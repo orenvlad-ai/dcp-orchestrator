@@ -175,6 +175,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dcp/tasks/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit one durable future DCP review-lab policy task */
+        post: operations["submitDCPReviewLabPolicyTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dev/import-projects": {
         parameters: {
             query?: never;
@@ -1126,6 +1143,10 @@ export interface components {
         ContainerReapConfig: {
             disabled?: boolean;
         };
+        ControllersDCPPolicyTaskResponse: {
+            duplicate: boolean;
+            task: components["schemas"]["DomainDCPReviewLabPolicyTask"];
+        };
         ControllersSessionView: {
             activity: components["schemas"]["DomainActivity"];
             branch?: string;
@@ -1159,6 +1180,16 @@ export interface components {
         ControllersSpawnAttachmentInput: {
             data: string;
             mimeType?: string;
+        };
+        ControllersSubmitDCPPolicyTaskRequest: {
+            /** @enum {string} */
+            profile: "synthetic-pr";
+            prompt: string;
+            /** @enum {string} */
+            repository: "orenvlad-ai/dcp-review-lab";
+            /** @enum {string} */
+            target: "dcp-review-lab";
+            taskId: string;
         };
         DCPApprovedScope: {
             /** @enum {string} */
@@ -1279,6 +1310,39 @@ export interface components {
             /** Format: date-time */
             lastActivityAt: string;
             state: string;
+        };
+        DomainDCPReviewLabPolicyTask: {
+            admissionId?: string;
+            /** Format: int64 */
+            cardNumber: number;
+            /** Format: date-time */
+            createdAt: string;
+            currentHeadSha?: string;
+            errorCode?: string;
+            incidentPacket?: string;
+            mergeCommitSha?: string;
+            payloadDigest: string;
+            policyVersion: string;
+            /** Format: int64 */
+            prNumber?: number;
+            prUrl?: string;
+            previousHeadSha?: string;
+            profile: string;
+            prompt: string;
+            /** Format: int64 */
+            repairCount: number;
+            repository: string;
+            reviewRunId?: string;
+            /** Format: int64 */
+            revision: number;
+            sessionId: string;
+            sourceBranch: string;
+            state: string;
+            target: string;
+            taskId: string;
+            /** Format: date-time */
+            updatedAt: string;
+            worktreePath: string;
         };
         DomainReviewerConfig: {
             harness: string;
@@ -2530,6 +2594,75 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    submitDCPReviewLabPolicyTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersSubmitDCPPolicyTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersDCPPolicyTaskResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersDCPPolicyTaskResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -116,7 +116,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.WorkspacePath); err != nil {
 		return nil, err
 	}
-	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DataDir, cfg.SessionID, cfg.Kind, cfg.Permissions, cfg.WorkspacePath); err != nil {
+	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DCPReviewLabPolicyAuthorized, cfg.DataDir, cfg.SessionID, cfg.Kind, cfg.Permissions, cfg.WorkspacePath); err != nil {
 		return nil, err
 	}
 	appendWorkspaceTrustFlag(&cmd, cfg.WorkspacePath)
@@ -164,7 +164,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if err := appendWorkspaceGitMetadataFlags(ctx, &cmd, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
 		return nil, false, err
 	}
-	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DataDir, cfg.Session.ID, cfg.Kind, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
+	if err := appendDCPReviewLabNetworkFlag(ctx, &cmd, cfg.Config.DCPReviewLabNetwork, cfg.DCPReviewLabPolicyAuthorized, cfg.DataDir, cfg.Session.ID, cfg.Kind, cfg.Permissions, cfg.Session.WorkspacePath); err != nil {
 		return nil, false, err
 	}
 	appendWorkspaceTrustFlag(&cmd, cfg.Session.WorkspacePath)
@@ -451,7 +451,7 @@ const dcpReviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
 // exact-looking session with a foreign worktree, branch, Git common directory,
 // or fetch/push remote fails before a model process starts. All ordinary DCP
 // workers and every reviewer retain the stock network-disabled sandbox.
-func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEnabled bool, dataDir, sessionID string, kind domain.SessionKind, permissions ports.PermissionMode, workspacePath string) error {
+func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEnabled, policyAuthorized bool, dataDir, sessionID string, kind domain.SessionKind, permissions ports.PermissionMode, workspacePath string) error {
 	if !strings.HasPrefix(sessionID, "dcp-review-lab-") {
 		return nil
 	}
@@ -461,7 +461,7 @@ func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEn
 	// Cards 1-5 are immutable pre-profile evidence and card 6 is the preserved
 	// network-denied qualification attempt. Never retroactively grant any of
 	// them network on restore/resume.
-	if !dcpReviewLabNetworkSession(sessionID) {
+	if !dcpReviewLabNetworkSession(sessionID, policyAuthorized) {
 		return nil
 	}
 	if !profileEnabled || kind != domain.KindWorker || permissions != ports.PermissionModeAcceptEdits {
@@ -525,8 +525,18 @@ func isPositiveSessionSuffix(value, prefix string) bool {
 	return true
 }
 
-func dcpReviewLabNetworkSession(value string) bool {
-	return value == "dcp-review-lab-7" || value == "dcp-review-lab-9" || value == "dcp-review-lab-10" || value == "dcp-review-lab-11" || value == "dcp-review-lab-12"
+func dcpReviewLabNetworkSession(value string, policyAuthorized bool) bool {
+	if value == "dcp-review-lab-7" || value == "dcp-review-lab-9" || value == "dcp-review-lab-10" || value == "dcp-review-lab-11" || value == "dcp-review-lab-12" {
+		return true
+	}
+	if !policyAuthorized || !isPositiveSessionSuffix(value, "dcp-review-lab-") {
+		return false
+	}
+	var number int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(value, "dcp-review-lab-"), "%d", &number); err != nil {
+		return false
+	}
+	return number > 12
 }
 
 func workspaceGitMetadataRoots(ctx context.Context, workspacePath string) (string, string, error) {

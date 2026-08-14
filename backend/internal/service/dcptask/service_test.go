@@ -10,6 +10,8 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
@@ -17,6 +19,30 @@ type countingRepositoryValidator struct {
 	calls    int
 	identity domain.DCPRepositoryIdentity
 	err      error
+}
+
+type policyRuntimeFixture struct {
+	provisionCalls int
+	launchCalls    int
+	failProvision  bool
+}
+
+func (f *policyRuntimeFixture) ProvisionDCPReviewLabPolicySession(context.Context, domain.SessionID, ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	f.provisionCalls++
+	if f.failProvision {
+		f.failProvision = false
+		return domain.SessionRecord{}, 0, 0, errors.New("fixture provision interruption")
+	}
+	return domain.SessionRecord{}, 1, 1, nil
+}
+
+func (f *policyRuntimeFixture) LaunchDCPReviewLabPolicyAction(_ context.Context, id domain.SessionID, _ string) (sessionmanager.RestoreResult, error) {
+	f.launchCalls++
+	return sessionmanager.RestoreResult{Session: domain.SessionRecord{ID: id, Metadata: domain.SessionMetadata{RuntimeLaunchID: fmt.Sprintf("fixture-launch-%d", f.launchCalls)}}}, nil
+}
+
+func (f *policyRuntimeFixture) DCPReviewLabPolicyActionAlive(context.Context, domain.SessionID, string) (bool, error) {
+	return true, nil
 }
 
 func (v *countingRepositoryValidator) Validate(context.Context, domain.ProjectRecord) (domain.DCPRepositoryIdentity, error) {
@@ -37,6 +63,79 @@ func validSubmitInput() SubmitInput {
 			SchemaVersion: ApprovedScopeSchema,
 			Statement:     "Model-free I11 storage proof",
 		},
+	}
+}
+
+func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
+	valid := PolicySubmitInput{
+		TaskID: "future-1", Target: PolicyTarget, Profile: PolicyProfile,
+		Repository: PolicyRepositoryName, Prompt: "add one bounded synthetic fixture",
+	}
+	if err := validatePolicySubmit(valid); err != nil {
+		t.Fatalf("valid policy input: %v", err)
+	}
+	for name, mutate := range map[string]func(*PolicySubmitInput){
+		"foreign target":     func(in *PolicySubmitInput) { in.Target = "dcp-lab" },
+		"foreign profile":    func(in *PolicySubmitInput) { in.Profile = "other" },
+		"foreign repository": func(in *PolicySubmitInput) { in.Repository = "orenvlad-ai/other" },
+		"ambiguous id":       func(in *PolicySubmitInput) { in.TaskID = "Future 1" },
+		"multiline prompt":   func(in *PolicySubmitInput) { in.Prompt = "line one\nline two" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := valid
+			mutate(&input)
+			if err := validatePolicySubmit(input); err == nil {
+				t.Fatalf("accepted out-of-policy input: %+v", input)
+			}
+		})
+	}
+}
+
+func TestSubmitPolicyReplayCompletesOnlyTheReservedNativeIdentity(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	project := domain.ProjectRecord{ID: PolicyTarget, Path: t.TempDir(), Kind: domain.ProjectKindSingleRepo, RepoOriginURL: reviewLabOrigin, RegisteredAt: time.Unix(1, 0).UTC()}
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 12; i++ {
+		rec := domain.SessionRecord{ProjectID: PolicyTarget, Kind: domain.KindWorker, Harness: domain.HarnessCodex, DisplayName: fmt.Sprintf("history-%d", i), Activity: domain.Activity{State: domain.ActivityIdle}, CreatedAt: time.Unix(int64(i), 0).UTC(), UpdatedAt: time.Unix(int64(i), 0).UTC()}
+		if created, createErr := store.CreateSession(ctx, rec); createErr != nil || created.ID != domain.SessionID(fmt.Sprintf("dcp-review-lab-%d", i)) {
+			t.Fatalf("seed card %d = %s, %v", i, created.ID, createErr)
+		}
+	}
+	repository := &countingRepositoryValidator{identity: domain.DCPRepositoryIdentity{ProjectID: PolicyTarget, Repository: PolicyRepositoryName}}
+	runtime := &policyRuntimeFixture{failProvision: true}
+	svc := New(Deps{Store: store, PolicyRepository: repository, PolicyWorktreeRoot: filepath.Join(t.TempDir(), "worktrees"), Now: func() time.Time { return time.Unix(100, 0).UTC() }})
+	svc.SetPolicyRuntime(runtime, nil)
+	input := PolicySubmitInput{TaskID: "future-replay", Target: PolicyTarget, Profile: PolicyProfile, Repository: PolicyRepositoryName, Prompt: "add one bounded fixture"}
+	if _, err := svc.SubmitPolicy(ctx, input); err == nil {
+		t.Fatal("interrupted provision unexpectedly succeeded")
+	}
+	reserved, found, err := store.GetDCPReviewLabPolicyTaskByTaskID(ctx, input.TaskID)
+	if err != nil || !found || reserved.State != domain.DCPPolicyReserved || reserved.CardNumber != 13 {
+		t.Fatalf("durable interrupted reservation = %+v, %v, %v", reserved, found, err)
+	}
+	replayed, err := svc.SubmitPolicy(ctx, input)
+	if err != nil || !replayed.Duplicate || replayed.Task.SessionID != reserved.SessionID || replayed.Task.CardNumber != reserved.CardNumber || runtime.launchCalls != 1 {
+		t.Fatalf("reserved replay = %+v, launches=%d, err=%v", replayed, runtime.launchCalls, err)
+	}
+	again, err := svc.SubmitPolicy(ctx, input)
+	if err != nil || !again.Duplicate || again.Task.SessionID != reserved.SessionID || runtime.launchCalls != 1 {
+		t.Fatalf("stable replay = %+v, launches=%d, err=%v", again, runtime.launchCalls, err)
+	}
+	conflict := input
+	conflict.Prompt = "different payload"
+	if _, err := svc.SubmitPolicy(ctx, conflict); err == nil {
+		t.Fatal("conflicting replay was accepted")
+	}
+	sessions, err := store.ListSessions(ctx, PolicyTarget)
+	if err != nil || len(sessions) != 13 {
+		t.Fatalf("replay allocated replacement card: sessions=%d err=%v", len(sessions), err)
 	}
 }
 

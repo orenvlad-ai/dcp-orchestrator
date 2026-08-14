@@ -254,3 +254,28 @@ func TestOverlayReviewStatusUsesLatestExactOpenHead(t *testing.T) {
 		t.Fatalf("approved preserved session did not use stock SCM projection: %q", got)
 	}
 }
+
+func TestOverlayDCPPolicyStatusUsesOnlyStockBoardStates(t *testing.T) {
+	tests := map[domain.DCPReviewLabPolicyState]domain.SessionStatus{
+		domain.DCPPolicyReserved:      domain.StatusIdle,
+		domain.DCPPolicyWorkerQueued:  domain.StatusIdle,
+		domain.DCPPolicyWorkerRunning: domain.StatusWorking,
+		domain.DCPPolicyCIWaiting:     domain.StatusPROpen,
+		domain.DCPPolicyReviewQueued:  domain.StatusReviewPending,
+		domain.DCPPolicyReviewRunning: domain.StatusReviewPending,
+		domain.DCPPolicyRepairQueued:  domain.StatusIdle,
+		domain.DCPPolicyRepairRunning: domain.StatusWorking,
+		domain.DCPPolicyAdmissionWait: domain.StatusMergeable,
+		domain.DCPPolicyMerged:        domain.StatusMerged,
+		domain.DCPPolicyFailed:        domain.StatusReviewFailed,
+		domain.DCPPolicyIncident:      domain.StatusReviewFailed,
+	}
+	for state, want := range tests {
+		if got := overlayDCPPolicyStatus(domain.StatusNoSignal, state); got != want {
+			t.Fatalf("overlayDCPPolicyStatus(%q) = %q, want %q", state, got, want)
+		}
+	}
+	if got := overlayDCPPolicyStatus(domain.StatusCIFailed, domain.DCPPolicyCIWaiting); got != domain.StatusCIFailed {
+		t.Fatalf("CI waiting must preserve exact stock PR failure, got %q", got)
+	}
+}

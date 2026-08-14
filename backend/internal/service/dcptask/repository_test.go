@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,5 +84,42 @@ func TestGitRepositoryValidatorRejectsRegistryPathMismatch(t *testing.T) {
 	validator := GitRepositoryValidator{TargetPath: repo, AllowedWorktreeRoot: t.TempDir()}
 	if _, err := validator.Validate(context.Background(), testProject(other)); err == nil {
 		t.Fatal("validator accepted a registered path mismatch")
+	}
+}
+
+func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorktrees(t *testing.T) {
+	repo := createDCPTestRepository(t)
+	runGitTest(t, repo, "remote", "add", "origin", reviewLabOrigin)
+	head := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
+	root := filepath.Join(filepath.Dir(repo), "worktrees")
+	validator := ReviewRepositoryValidator{TargetPath: repo, AllowedWorktreeRoot: root, RunProvider: func(context.Context, string) (string, error) {
+		return PolicyRepositoryName + "|false|main", nil
+	}}
+	project := domain.ProjectRecord{
+		ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
+		RepoOriginURL: reviewLabOrigin, RegisteredAt: time.Unix(100, 0).UTC(),
+	}
+	identity, err := validator.Validate(context.Background(), project)
+	if err != nil {
+		t.Fatalf("validate exact review lab: %v", err)
+	}
+	if identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName || identity.HeadSHA != head || len(identity.IdentityDigest) != 64 {
+		t.Fatalf("review-lab identity = %+v", identity)
+	}
+
+	foreign := project
+	foreign.RepoOriginURL = "https://github.com/orenvlad-ai/other.git"
+	if _, err := validator.Validate(context.Background(), foreign); err == nil {
+		t.Fatal("validator accepted foreign registered origin")
+	}
+	runGitTest(t, repo, "remote", "set-url", "--push", "origin", "https://example.invalid/foreign.git")
+	if _, err := validator.Validate(context.Background(), project); err == nil {
+		t.Fatal("validator accepted foreign push authority")
+	}
+	runGitTest(t, repo, "remote", "set-url", "--push", "origin", reviewLabOrigin)
+	validator.RunProvider = func(context.Context, string) (string, error) { return PolicyRepositoryName + "|true|main", nil }
+	if _, err := validator.Validate(context.Background(), project); err == nil {
+		t.Fatal("validator accepted private provider repository")
 	}
 }

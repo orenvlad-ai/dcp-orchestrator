@@ -23,13 +23,44 @@ type DCPTaskService interface {
 	Events(ctx context.Context, taskID domain.DCPTaskID) ([]domain.DCPTaskEvent, error)
 }
 
+type dcpPolicyTaskService interface {
+	SubmitPolicy(ctx context.Context, in dcptasksvc.PolicySubmitInput) (dcptasksvc.PolicySubmitResult, error)
+}
+
 type DCPTasksController struct{ Svc DCPTaskService }
 
 func (c *DCPTasksController) Register(r chi.Router) {
 	r.Post("/dcp/tasks", c.submit)
+	r.Post("/dcp/tasks/policy", c.submitPolicy)
 	r.Get("/dcp/tasks", c.list)
 	r.Get("/dcp/tasks/{taskId}", c.get)
 	r.Get("/dcp/tasks/{taskId}/events", c.events)
+}
+
+func (c *DCPTasksController) submitPolicy(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(dcpPolicyTaskService)
+	if c.Svc == nil || !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/dcp/tasks/policy")
+		return
+	}
+	var req SubmitDCPPolicyTaskRequest
+	if err := decodeDCPTaskRequest(r, &req); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be one JSON object with no unknown fields", nil)
+		return
+	}
+	result, err := svc.SubmitPolicy(r.Context(), dcptasksvc.PolicySubmitInput{
+		TaskID: req.TaskID, Target: req.Target, Profile: req.Profile,
+		Repository: req.Repository, Prompt: req.Prompt,
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	envelope.WriteJSON(w, status, DCPPolicyTaskResponse{Task: result.Task, Duplicate: result.Duplicate})
 }
 
 func (c *DCPTasksController) submit(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +140,7 @@ func dcpTaskID(r *http.Request) domain.DCPTaskID {
 	return domain.DCPTaskID(chi.URLParam(r, "taskId"))
 }
 
-func decodeDCPTaskRequest(r *http.Request, out *SubmitDCPTaskRequest) error {
+func decodeDCPTaskRequest(r *http.Request, out any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {

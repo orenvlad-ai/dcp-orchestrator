@@ -105,6 +105,11 @@ func Run() error {
 			TargetPath:          filepath.Join(filepath.Dir(cfg.DataDir), "targets", "dcp-lab"),
 			AllowedWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
 		},
+		PolicyRepository: dcptasksvc.ReviewRepositoryValidator{
+			TargetPath:          filepath.Join(filepath.Dir(cfg.DataDir), "targets", "dcp-review-lab"),
+			AllowedWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
+		},
+		PolicyWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
 	})
 	if err := dcpTaskSvc.ValidateSchema(context.Background()); err != nil {
 		return fmt.Errorf("validate DCP task schema: %w", err)
@@ -207,10 +212,20 @@ func Run() error {
 		return fmt.Errorf("wire session service: %w", err)
 	}
 	lcStack.LCM.SetCompletionTerminator(sessMgr)
+	dcpTaskSvc.SetPolicyRuntime(sessMgr, reviewSvc)
+	reviewSvc.SetPolicyGate(dcpTaskSvc)
+	lcStack.LCM.SetDCPModelActionHandler(func(signalCtx context.Context, id domain.SessionID, launchID string, success bool) {
+		if err := dcpTaskSvc.HandleWorkerProcessExit(signalCtx, id, launchID, success); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("DCP policy worker exit failed closed", "session", id, "launch", launchID, "err", err)
+		}
+	})
 	lcStack.LCM.SetReviewEligibilityHandler(func(_ context.Context, id domain.SessionID) {
 		go func() {
 			if _, triggerErr := reviewSvc.AutoTrigger(ctx, id); triggerErr != nil && !errors.Is(triggerErr, context.Canceled) {
 				log.Warn("automatic review trigger failed", "session", id, "err", triggerErr)
+			}
+			if drainErr := dcpTaskSvc.DrainModelActions(ctx); drainErr != nil && !errors.Is(drainErr, context.Canceled) {
+				log.Warn("DCP policy model-action drain failed closed", "session", id, "err", drainErr)
 			}
 		}()
 	})
@@ -250,7 +265,20 @@ func Run() error {
 			if handleErr != nil && !errors.Is(handleErr, context.Canceled) {
 				log.Warn("DCP card-12 fresh recovery review failed closed", "session", id, "run", run.ID, "err", handleErr)
 			}
-			return handled
+			if handled {
+				return true
+			}
+			policyHandled, policyErr := dcpTaskSvc.HandleStructuredPolicyReview(resultCtx, id, run)
+			if policyErr != nil && !errors.Is(policyErr, context.Canceled) {
+				log.Warn("DCP policy structured review failed closed", "session", id, "run", run.ID, "err", policyErr)
+			}
+			if policyHandled && run.Verdict == domain.VerdictApproved {
+				return false
+			}
+			return policyHandled
+		})
+		reviewSvc.SetPolicyReviewFailureHandler(func(failureCtx context.Context, id domain.SessionID, runID string) error {
+			return dcpTaskSvc.HandlePolicyReviewProcessFailure(failureCtx, id, runID)
 		})
 		lcStack.LCM.SetTerminalMergeEligibilityHandler(triggerTerminalMerge)
 	}
@@ -400,6 +428,9 @@ func Run() error {
 	}
 	if reconcileErr := reviewSvc.ReconcileStartup(ctx); reconcileErr != nil {
 		log.Error("reconcile reviews on boot failed", "err", reconcileErr)
+	}
+	if reconcileErr := dcpTaskSvc.ReconcilePolicyStartup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+		log.Error("reconcile DCP policy tasks on boot failed closed", "err", reconcileErr)
 	}
 	if terminalMerger != nil {
 		if reconcileErr := terminalMerger.ReconcileStartup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {

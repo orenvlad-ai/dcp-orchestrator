@@ -6,45 +6,28 @@ independent source of DCP architecture policy.
 
 ## Required authority before any change
 
-Read these immutable `orenvlad-ai/dev-control-plane` sources before designing
-or editing this repository:
+Read these immutable `orenvlad-ai/dev-control-plane` sources at merged commit
+`b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19` before designing or editing this
+repository:
 
-1. [root repository rules at `9465a84ec44f72f6b7c245ebddeac22d722108ae`](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/AGENTS.md)
-2. [current operating contract revision `2026-08-13.8`](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [I13 Stage 2 exact REBASE_HEAD finalization contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_REBASE_HEAD_FINALIZATION_CONTRACT.md)
-4. [cold-start terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_COLD_START_QUARANTINED_RECOVERY_TERMINAL_EVIDENCE.md)
-5. [I13 Stage 2 cold-start quarantined recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_COLD_START_QUARANTINED_RECOVERY_CONTRACT.md)
-6. [terminal startup-order failure evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_TERMINAL_EVIDENCE.md)
-7. [I13 Stage 2 exact provider-base correction contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_PROVIDER_BASE_CORRECTION_CONTRACT.md)
-8. [I13 Stage 2 exact card-12 model-free rebase continuation contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_MODEL_FREE_REBASE_CONTINUATION_CONTRACT.md)
-9. [I13 Stage 2 card-12 fresh-worker recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_CARD12_FRESH_WORKER_RECOVERY_CONTRACT.md)
-10. [I13 Stage 2 successor terminal evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_SUCCESSOR_TERMINAL_EVIDENCE.md)
-11. [I13 Stage 2 successor validation-recovery contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_SUCCESSOR_VALIDATION_RECOVERY_CONTRACT.md)
-12. [I13 Stage 2 arbiter successor contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_ARBITER_SUCCESSOR_CONTRACT.md)
-13. [I13 Stage 2 arbiter v1 contract revision 3](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/I13_STAGE2_ARBITER_V1_CONTRACT.md)
-14. [DCP v1 target architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/docs/TARGET_ARCHITECTURE_V1.md)
-15. [exact managed-fork lock](https://github.com/orenvlad-ai/dev-control-plane/blob/9465a84ec44f72f6b7c245ebddeac22d722108ae/upstream/dcp-orchestrator.lock)
+1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/AGENTS.md)
+2. [current operating contract revision `2026-08-14.1`](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
+4. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19/upstream/dcp-orchestrator.lock)
 
-Those pinned documents are the implementation authority for the I11 baseline.
-The owner-delegated I12 change adds only the bounded automatic reviewer contour
-described below. The later owner-delegated canonical synthetic-PR lab change
-adds one exact-profile terminal merge only after the same trusted reviewer,
-required check and provider readiness facts succeed. I13 Stage 1 authorized
-exactly two native synthetic tasks and a durable mechanical Admission
-Controller around that same terminal merge. Its independently checked result
-and the owner-approved Stage 2 contract authorize this fresh source change to
-add exactly one bounded global release arbiter v1 for cards 11/12. Its exact
-merged pin and updated integration contract are applied sequentially in
-`dev-control-plane` after this source PR merges. The live
-`dev-control-plane` repository remains the authority for later
-architecture, operating, integration, qualification, and exact-pin changes.
-Do not copy or reinterpret those contracts here as a competing source of
-truth. Before beginning later work, confirm that the checked-out fork revision
-is the exact immutable revision pinned by current `dev-control-plane`.
+The happy-path v1 contract is the sole current rule for future synthetic
+review-lab tasks. The I11-I13 qualification and recovery contracts remain
+immutable evidence for historical cards 1-12 only; their card/cohort ceilings,
+consumed allowances and quarantine rows are not future-task policy. The live
+`dev-control-plane` repository remains the authority for later architecture,
+operating, integration, qualification and exact-pin changes. Do not copy or
+reinterpret its contracts here as a competing source of truth. This source PR
+does not authorize runtime until its separately reviewed exact pin,
+deterministic install and stopped preflight complete.
 
 ## Repository and runtime boundary
 
-- `orenvlad-ai/dcp-orchestrator` is the private application-source repository.
+- `orenvlad-ai/dcp-orchestrator` is the public managed application-source repository.
   Official `Untrivial-ai/agent-orchestrator` is read-only provenance. Integrate
   only an explicitly reviewed immutable upstream commit; never treat a branch,
   tag lookup, feed, installed application, or upstream state as authority.
@@ -64,13 +47,14 @@ is the exact immutable revision pinned by current `dev-control-plane`.
 - Never read, run, discover, import, migrate, or modify installed upstream Agent
   Orchestrator, its home-directory state, or its application data. Never use an
   upstream launcher/bootstrap path for DCP.
-- The DCP adapter target remains the disposable, remote-free `dcp-lab`
-  repository beneath the explicit lab root. I12 additionally permits only the
-  disposable `orenvlad-ai/dcp-review-lab` repository for its separately
-  authorized reviewer canaries. Existing PRs and sessions are immutable audit
+- The normal DCP adapter target remains the disposable, remote-free `dcp-lab`
+  repository beneath the explicit lab root. Only exact target
+  `dcp-review-lab`, profile `synthetic-pr` and public repository
+  `orenvlad-ai/dcp-review-lab` may receive the typed worker network/PR/review/
+  admission/merge contour. Existing PRs and cards 1-12 are immutable audit
   evidence and must not be changed or reused. Real repositories, other remotes,
-  `wb-core`, WBC, production, hosted systems, and public distribution are out
-  of scope.
+  `wb-core`, WBC, production, hosted systems and public distribution are out of
+  scope.
 - The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
   crash collection/upload, release, or external service path. Do not restore
   inherited upstream paths for any of them.
@@ -82,6 +66,18 @@ is the exact immutable revision pinned by current `dev-control-plane`.
   worker. Every ordinary worker and every reviewer remains network-disabled.
 
 ## Current implemented scope
+
+For every future task with an exact additive happy-path policy row, the
+existing daemon and SQLite own one idempotent stock native card/session/
+worktree/branch, a durable FIFO of model actions with at most three active
+slots globally, one initial worker, one fresh context-free review per exact
+head, at most one same-task findings repair and one shared durable FIFO merge
+lease. Queued work, CI and admission own no model or new loop. Only current
+exact public `orenvlad-ai/dcp-review-lab` provider facts may reach an ordinary
+daemon-owned expected-head terminal merge. Any other identity, stale head,
+second findings cycle, conflict or ambiguity fails closed without arbiter,
+HumanGate, manual bypass or replacement card. Historical rows below remain
+implemented immutable evidence, not an alternative future policy.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display
