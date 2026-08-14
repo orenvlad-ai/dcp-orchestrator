@@ -71,6 +71,24 @@ func TestMigrateAllowsEveryShippedHarness(t *testing.T) {
 	}
 }
 
+func TestFutureArbiterSchemaRecoveryIsInertWithoutExactPredecessor(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM dcp_future_card_arbiter_schema_recovery_v1`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("schema recovery authorized a clean database: %d rows", count)
+	}
+}
+
 func TestArbiterPrelaunchConfigRecoveryPreservesAuditAndRearmsSameIncident(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
 	if err != nil {

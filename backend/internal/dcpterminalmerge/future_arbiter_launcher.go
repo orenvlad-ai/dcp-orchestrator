@@ -1,6 +1,7 @@
 package dcpterminalmerge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 // FutureArbiterLauncher owns the isolated one-shot process for an exact incident.
 type FutureArbiterLauncher interface {
 	PreflightFuture(context.Context, domain.DCPFutureArbiterIncident) error
+	PreflightSchemaRecovery(context.Context, domain.DCPFutureArbiterIncident, domain.DCPFutureArbiterSchemaRecovery) error
 	LaunchFuture(context.Context, domain.DCPFutureArbiterIncident) error
 	FutureProcessAlive(context.Context, domain.DCPFutureArbiterIncident) (bool, error)
 	FutureResultPath(domain.DCPFutureArbiterIncident) (string, error)
@@ -91,6 +93,43 @@ func (l *futureArbiterLauncher) PreflightFuture(ctx context.Context, incident do
 	output, probeErr := l.command(ctx, codex, probe...)
 	if probeErr == nil || !strings.Contains(string(output), "Failed to read output schema file "+missing+":") {
 		return fmt.Errorf("DCP future arbiter strict configuration preflight failed: %w: %s", probeErr, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// PreflightSchemaRecovery proves the immutable predecessor artifacts and the
+// pre-inference provider rejection before a separately authorized successor
+// generation can be persisted. It launches no process and consumes no slot.
+func (l *futureArbiterLauncher) PreflightSchemaRecovery(_ context.Context, predecessor domain.DCPFutureArbiterIncident, recovery domain.DCPFutureArbiterSchemaRecovery) error {
+	if recovery.Status != "authorized" || recovery.PredecessorIncidentID != predecessor.IncidentID ||
+		recovery.PredecessorIdentityDigest != predecessor.IdentityDigest || recovery.PredecessorInputDigest != predecessor.InputDigest ||
+		recovery.PredecessorModelActionID != predecessor.ModelActionID || recovery.ProviderInferenceTokens != 0 ||
+		recovery.SuccessorGeneration != predecessor.Generation+1 || predecessor.Status != domain.DCPFutureArbiterFailed ||
+		predecessor.ErrorCode != "launch_failed" || predecessor.ModelCallCount != 1 || predecessor.DecisionJSON != "" {
+		return errors.New("DCP future arbiter schema recovery identity is invalid")
+	}
+	if digestString(recovery.ProviderErrorJSON) != recovery.ProviderErrorDigest ||
+		!strings.Contains(recovery.ProviderErrorJSON, `"code":"invalid_json_schema"`) ||
+		!strings.Contains(recovery.ProviderErrorJSON, `"status":400`) ||
+		!strings.Contains(recovery.ProviderErrorJSON, "uniqueItems") {
+		return errors.New("DCP future arbiter schema recovery provider rejection is invalid")
+	}
+	artifacts, err := l.artifacts(predecessor)
+	if err != nil {
+		return err
+	}
+	input, err := os.ReadFile(artifacts.input)
+	if err != nil || !bytes.Equal(input, append([]byte(predecessor.InputJSON), '\n')) {
+		return errors.Join(err, errors.New("DCP future arbiter schema recovery input artifact drifted"))
+	}
+	schema, err := os.ReadFile(artifacts.schema)
+	if err != nil || digestBytes(schema) != recovery.PredecessorSchemaDigest || !bytes.Contains(schema, []byte(`"uniqueItems":true`)) {
+		return errors.Join(err, errors.New("DCP future arbiter schema recovery rejected schema drifted"))
+	}
+	if _, err := os.Lstat(artifacts.result); err == nil {
+		return errors.New("DCP future arbiter schema recovery predecessor produced a result")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }

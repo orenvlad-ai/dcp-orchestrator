@@ -106,25 +106,69 @@ func FutureArbiterDecisionJSONSchema(incident domain.DCPFutureArbiterIncident) (
 		tasks = append(tasks, member.TaskID)
 	}
 	schema := map[string]any{
-		"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
+		"type": "object", "additionalProperties": false,
 		"required": []string{"schemaVersion", "incidentId", "generation", "identityDigest", "inputDigest", "verdict", "order", "repairTaskId", "repairObjective", "affectedPaths", "humanQuestion", "summary", "evidenceDigests"},
 		"properties": map[string]any{
-			"schemaVersion":   map[string]any{"type": "string", "const": futureArbiterDecisionSchema},
-			"incidentId":      map[string]any{"type": "string", "const": incident.IncidentID},
-			"generation":      map[string]any{"type": "integer", "const": incident.Generation},
-			"identityDigest":  map[string]any{"type": "string", "const": incident.IdentityDigest},
-			"inputDigest":     map[string]any{"type": "string", "const": incident.InputDigest},
+			"schemaVersion":   map[string]any{"type": "string", "enum": []string{futureArbiterDecisionSchema}},
+			"incidentId":      map[string]any{"type": "string", "enum": []string{incident.IncidentID}},
+			"generation":      map[string]any{"type": "integer", "enum": []int64{incident.Generation}},
+			"identityDigest":  map[string]any{"type": "string", "enum": []string{incident.IdentityDigest}},
+			"inputDigest":     map[string]any{"type": "string", "enum": []string{incident.InputDigest}},
 			"verdict":         map[string]any{"type": "string", "enum": []string{string(domain.DCPFutureVerdictOrderHold), string(domain.DCPFutureVerdictRepair), string(domain.DCPFutureVerdictHumanGate)}},
-			"order":           map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": tasks}, "minItems": len(tasks), "maxItems": len(tasks), "uniqueItems": true},
+			"order":           map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": tasks}, "minItems": len(tasks), "maxItems": len(tasks)},
 			"repairTaskId":    map[string]any{"type": "string", "enum": []string{"", incident.TaskID}},
 			"repairObjective": map[string]any{"type": "string", "maxLength": 1024},
-			"affectedPaths":   map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": paths}, "maxItems": len(paths), "uniqueItems": true},
+			"affectedPaths":   map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": paths}, "maxItems": len(paths)},
 			"humanQuestion":   map[string]any{"type": "string", "maxLength": 512},
 			"summary":         map[string]any{"type": "string", "minLength": 1, "maxLength": 1024},
-			"evidenceDigests": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{incident.SourcePacketDigest, incident.CohortDigest, incident.EvidenceDigest}}, "minItems": 3, "maxItems": 3, "uniqueItems": true},
+			"evidenceDigests": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{incident.SourcePacketDigest, incident.CohortDigest, incident.EvidenceDigest}}, "minItems": 3, "maxItems": 3},
 		},
 	}
-	return json.Marshal(schema)
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFutureArbiterResponseSchema(encoded); err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+// validateFutureArbiterResponseSchema is a model-free provider-compatibility
+// fence. Exact identity and set semantics remain enforced by the trusted
+// parser; unsupported response-schema keywords must never cross the one-call
+// fence merely because the generated JSON is syntactically valid.
+func validateFutureArbiterResponseSchema(encoded []byte) error {
+	var document any
+	if json.Unmarshal(encoded, &document) != nil {
+		return errors.New("future arbiter response schema is malformed")
+	}
+	forbidden := map[string]bool{
+		"$schema": true, "oneOf": true, "anyOf": true, "allOf": true,
+		"not": true, "const": true, "uniqueItems": true,
+	}
+	var walk func(any) error
+	walk = func(value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if forbidden[key] {
+					return fmt.Errorf("future arbiter response schema uses unsupported keyword %q", key)
+				}
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(document)
 }
 
 // ParseFutureArbiterDecision validates one structured exact-incident verdict.

@@ -26,6 +26,26 @@ SELECT * FROM dcp_future_card_arbiter_v1 ORDER BY created_at, incident_id;
 -- name: CountDCPFutureArbiterGenerationsForTask :one
 SELECT count(*) FROM dcp_future_card_arbiter_v1 WHERE task_id = ?;
 
+-- name: GetDCPFutureArbiterSchemaRecoveryByPredecessor :one
+SELECT * FROM dcp_future_card_arbiter_schema_recovery_v1
+WHERE predecessor_incident_id = ?;
+
+-- name: ConsumeDCPFutureArbiterSchemaRecovery :execrows
+UPDATE dcp_future_card_arbiter_schema_recovery_v1
+SET status = 'consumed', successor_incident_id = sqlc.arg(successor_incident_id),
+    updated_at = sqlc.arg(consumed_at), consumed_at = sqlc.arg(consumed_at)
+WHERE recovery_id = sqlc.arg(recovery_id)
+  AND predecessor_incident_id = sqlc.arg(predecessor_incident_id)
+  AND predecessor_identity_digest = sqlc.arg(predecessor_identity_digest)
+  AND predecessor_input_digest = sqlc.arg(predecessor_input_digest)
+  AND predecessor_model_action_id = sqlc.arg(predecessor_model_action_id)
+  AND predecessor_schema_digest = sqlc.arg(predecessor_schema_digest)
+  AND provider_error_digest = sqlc.arg(provider_error_digest)
+  AND provider_inference_tokens = 0
+  AND successor_generation = sqlc.arg(successor_generation)
+  AND status = 'authorized'
+  AND successor_incident_id = '';
+
 -- name: ClaimDCPFutureArbiterIncident :execrows
 UPDATE dcp_future_card_arbiter_v1 SET status='claimed', updated_at=?
 WHERE incident_id=? AND model_action_id=? AND status='requested' AND model_call_count=0;
