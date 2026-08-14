@@ -3428,6 +3428,37 @@ components:
         createdAt:
           format: date-time
           type: string
+        dcpArbiterActionStatus:
+          enum:
+          - queued
+          - claimed
+          - running
+          - succeeded
+          - failed
+          type: string
+        dcpArbiterCohort:
+          items:
+            type: string
+          type: array
+        dcpArbiterGeneration:
+          format: int64
+          type: integer
+        dcpArbiterIncidentKind:
+          type: string
+        dcpArbiterStatus:
+          enum:
+          - requested
+          - claimed
+          - running
+          - hold
+          - repair_queued
+          - recovery_reviewed
+          - human_gate
+          - succeeded
+          - failed
+          type: string
+        dcpHumanGateQuestion:
+          type: string
         dcpPolicyActionActive:
           type: boolean
         dcpPolicyState:

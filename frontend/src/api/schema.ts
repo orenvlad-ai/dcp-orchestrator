@@ -1152,6 +1152,15 @@ export interface components {
             branch?: string;
             /** Format: date-time */
             createdAt: string;
+            /** @enum {string} */
+            dcpArbiterActionStatus?: "queued" | "claimed" | "running" | "succeeded" | "failed";
+            dcpArbiterCohort?: string[];
+            /** Format: int64 */
+            dcpArbiterGeneration?: number;
+            dcpArbiterIncidentKind?: string;
+            /** @enum {string} */
+            dcpArbiterStatus?: "requested" | "claimed" | "running" | "hold" | "repair_queued" | "recovery_reviewed" | "human_gate" | "succeeded" | "failed";
+            dcpHumanGateQuestion?: string;
             dcpPolicyActionActive?: boolean;
             /** @enum {string} */
             dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "merged" | "failed" | "incident";

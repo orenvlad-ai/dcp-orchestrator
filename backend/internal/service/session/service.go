@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,6 +47,11 @@ type dcpPolicyTaskReader interface {
 
 type dcpPolicyActionReader interface {
 	GetActiveDCPModelActionBySession(ctx context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error)
+}
+
+type dcpFutureArbiterReader interface {
+	GetDCPFutureArbiterIncidentByTask(ctx context.Context, taskID string) (domain.DCPFutureArbiterIncident, bool, error)
+	GetDCPModelActionByID(ctx context.Context, id string) (domain.DCPModelAction, bool, error)
 }
 
 // ListFilter captures API-facing session list query filters.
@@ -763,6 +769,12 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	status := deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness))
 	var policyState domain.DCPReviewLabPolicyState
 	var policyActionActive bool
+	var arbiterStatus domain.DCPFutureArbiterStatus
+	var arbiterGeneration int64
+	var arbiterIncidentKind string
+	var arbiterCohort []string
+	var arbiterActionStatus domain.DCPModelActionStatus
+	var humanGateQuestion string
 	if reviews, ok := s.store.(reviewRunReader); ok {
 		runs, reviewErr := reviews.ListReviewRunsBySession(ctx, rec.ID)
 		if reviewErr != nil {
@@ -785,16 +797,50 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 				}
 				policyActionActive = active && action.Status == domain.DCPActionRunning
 			}
+			if arbiters, ok := s.store.(dcpFutureArbiterReader); ok {
+				incident, incidentFound, incidentErr := arbiters.GetDCPFutureArbiterIncidentByTask(ctx, task.TaskID)
+				if incidentErr != nil {
+					return domain.Session{}, fmt.Errorf("DCP arbiter facts %s: %w", rec.ID, incidentErr)
+				}
+				if incidentFound {
+					arbiterStatus, arbiterGeneration, humanGateQuestion = incident.Status, incident.Generation, incident.HumanQuestion
+					arbiterIncidentKind = incident.IncidentKind
+					var members []struct {
+						TaskID string `json:"taskId"`
+					}
+					if err := json.Unmarshal([]byte(incident.CohortJSON), &members); err != nil || len(members) == 0 {
+						return domain.Session{}, fmt.Errorf("DCP arbiter cohort %s is malformed", rec.ID)
+					}
+					arbiterCohort = make([]string, 0, len(members))
+					for _, member := range members {
+						if member.TaskID == "" {
+							return domain.Session{}, fmt.Errorf("DCP arbiter cohort %s has an empty task", rec.ID)
+						}
+						arbiterCohort = append(arbiterCohort, member.TaskID)
+					}
+					action, actionFound, actionErr := arbiters.GetDCPModelActionByID(ctx, incident.ModelActionID)
+					if actionErr != nil || !actionFound || action.IncidentID != incident.IncidentID {
+						return domain.Session{}, errors.Join(actionErr, fmt.Errorf("DCP arbiter action %s is unavailable", rec.ID))
+					}
+					arbiterActionStatus = action.Status
+				}
+			}
 		}
 	}
 	return domain.Session{
-		SessionRecord:         rec,
-		Status:                status,
-		SCMStatus:             deriveSCMStatus(prs),
-		TerminalHandleID:      rec.Metadata.RuntimeHandleID,
-		DCPPolicyState:        policyState,
-		DCPPolicyActionActive: policyActionActive,
-		PRs:                   prs,
+		SessionRecord:          rec,
+		Status:                 status,
+		SCMStatus:              deriveSCMStatus(prs),
+		TerminalHandleID:       rec.Metadata.RuntimeHandleID,
+		DCPPolicyState:         policyState,
+		DCPPolicyActionActive:  policyActionActive,
+		DCPArbiterStatus:       arbiterStatus,
+		DCPArbiterGeneration:   arbiterGeneration,
+		DCPArbiterIncidentKind: arbiterIncidentKind,
+		DCPArbiterCohort:       arbiterCohort,
+		DCPArbiterActionStatus: arbiterActionStatus,
+		DCPHumanGateQuestion:   humanGateQuestion,
+		PRs:                    prs,
 	}, nil
 }
 

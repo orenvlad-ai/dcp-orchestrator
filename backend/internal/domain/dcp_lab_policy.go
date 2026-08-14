@@ -66,6 +66,7 @@ const (
 	DCPActionInitialWorker DCPModelActionKind = "initial_worker"
 	DCPActionRepairWorker  DCPModelActionKind = "repair_worker"
 	DCPActionReviewer      DCPModelActionKind = "reviewer"
+	DCPActionArbiter       DCPModelActionKind = "arbiter"
 )
 
 // DCPModelActionStatus is the durable FIFO/slot lifecycle. Only claimed and
@@ -93,6 +94,7 @@ type DCPModelAction struct {
 	Slot         int64
 	LaunchID     string
 	ReviewRunID  string
+	IncidentID   string
 	ErrorCode    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

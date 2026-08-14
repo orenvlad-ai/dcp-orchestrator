@@ -222,6 +222,9 @@ func completeDCPReviewLabAdmissionTx(ctx context.Context, q *gen.Queries, a doma
 	if err := requireDCPArbiterCompletion(q, ctx, a, mergeSHA, now); err != nil {
 		return err
 	}
+	if err := completeDCPFutureArbiterTx(ctx, q, a, mergeSHA, now); err != nil {
+		return err
+	}
 	n, err := q.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{MergeCommitSha: mergeSHA, RunID: a.ReviewRunID})
 	if err != nil {
 		return err
@@ -237,6 +240,29 @@ func completeDCPReviewLabAdmissionTx(ctx context.Context, q *gen.Queries, a doma
 	}
 	if n != 1 {
 		return errors.New("exact admission completion was unavailable")
+	}
+	return nil
+}
+
+func completeDCPFutureArbiterTx(ctx context.Context, q *gen.Queries, a domain.DCPReviewLabAdmission, mergeSHA string, now time.Time) error {
+	row, err := q.GetDCPFutureArbiterIncidentByAdmission(ctx, a.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	incident := futureArbiterFromGen(row)
+	if incident.Status != domain.DCPFutureArbiterRecoveryReviewed || incident.RecoveryHeadSHA != a.TargetSHA ||
+		incident.RecoveryReviewRunID != a.ReviewRunID || incident.AdmissionID != a.ID {
+		return errors.New("ordinary-card arbiter completion identity was unavailable")
+	}
+	rows, err := q.MarkDCPFutureArbiterSucceeded(ctx, gen.MarkDCPFutureArbiterSucceededParams{
+		MergeCommitSha: mergeSHA, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+		IncidentID: incident.IncidentID, RecoveryHeadSha: a.TargetSHA, RecoveryReviewRunID: a.ReviewRunID,
+	})
+	if err != nil || rows != 1 {
+		return errors.Join(err, errors.New("ordinary-card arbiter terminal completion was rejected"))
 	}
 	return nil
 }

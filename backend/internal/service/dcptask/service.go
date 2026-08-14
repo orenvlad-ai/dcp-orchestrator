@@ -75,6 +75,7 @@ type Service struct {
 	policyWorktreeRoot string
 	policyRuntime      PolicyRuntime
 	policyReviewer     PolicyReviewer
+	policyArbiter      PolicyArbiter
 	policyMu           sync.Mutex
 	now                func() time.Time
 	newID              func(prefix string) string
@@ -142,12 +143,23 @@ type PolicyReviewer interface {
 	AutoTrigger(context.Context, domain.SessionID) (reviewcore.TriggerResult, error)
 }
 
+// PolicyArbiter is the existing terminal-merge daemon's narrow ordinary-card
+// incident surface. It shares the same model-action queue and never owns a
+// scheduler, registry, or background loop.
+type PolicyArbiter interface {
+	LaunchPolicyArbiterAction(context.Context, domain.DCPModelAction) error
+	FutureArbiterRepairPrompt(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction) (string, error)
+}
+
 // SetPolicyRuntime late-binds collaborators that are constructed after the
 // task service during daemon startup. It adds no background loop.
 func (s *Service) SetPolicyRuntime(runtime PolicyRuntime, reviewer PolicyReviewer) {
 	s.policyRuntime = runtime
 	s.policyReviewer = reviewer
 }
+
+// SetPolicyArbiter connects ordinary-card arbiter actions to the existing policy queue.
+func (s *Service) SetPolicyArbiter(arbiter PolicyArbiter) { s.policyArbiter = arbiter }
 
 type PolicySubmitInput struct {
 	TaskID     string

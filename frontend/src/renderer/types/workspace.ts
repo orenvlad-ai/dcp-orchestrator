@@ -139,6 +139,13 @@ export type WorkspaceSession = {
 	dcpPolicyState?: DCPPolicyState;
 	/** True only while the current bounded policy action is durably running. */
 	dcpPolicyActionActive?: boolean;
+	/** One durable ordinary-card arbiter generation, shown inside this same native card. */
+	dcpArbiterStatus?: DCPArbiterStatus;
+	dcpArbiterGeneration?: number;
+	dcpArbiterIncidentKind?: string;
+	dcpArbiterCohort?: string[];
+	dcpArbiterActionStatus?: DCPArbiterActionStatus;
+	dcpHumanGateQuestion?: string;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
@@ -187,6 +194,19 @@ export type DCPPolicyState =
 	| "merged"
 	| "failed"
 	| "incident";
+
+export type DCPArbiterStatus =
+	| "requested"
+	| "claimed"
+	| "running"
+	| "hold"
+	| "repair_queued"
+	| "recovery_reviewed"
+	| "human_gate"
+	| "succeeded"
+	| "failed";
+
+export type DCPArbiterActionStatus = "queued" | "claimed" | "running" | "succeeded" | "failed";
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in
 // "<provider>:<native>" form. Adding a provider (Linear, Jira, ...) later is

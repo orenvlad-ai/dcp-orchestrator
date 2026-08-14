@@ -97,6 +97,8 @@ type Engine struct {
 	coldStartRecovery      ColdStartRecoveryExecutor
 	rebaseHeadFinalization RebaseHeadFinalizationExecutor
 	modelFreeReviewTrigger func(context.Context, domain.SessionID) error
+	futureArbiter          FutureArbiterLauncher
+	policyActionDrain      func(context.Context) error
 	clock                  func() time.Time
 }
 
@@ -148,6 +150,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 	if err := e.reconcileCard12RebaseHeadFinalization(ctx); err != nil {
 		return err
 	}
+	if err := e.reconcileFutureArbiters(ctx); err != nil {
+		return err
+	}
 
 	sessions, err := e.store.ListAllSessions(ctx)
 	if err != nil {
@@ -168,7 +173,13 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 			}
 		}
 	}
-	return e.drain(ctx)
+	if err := e.reconcileFutureArbiters(ctx); err != nil {
+		return err
+	}
+	if err := e.drain(ctx); err != nil {
+		return err
+	}
+	return e.reconcileFutureArbiters(ctx)
 }
 
 // recoverCanonicalBaseIncidents is a one-shot startup repair for the exact
@@ -243,7 +254,13 @@ func (e *Engine) Try(ctx context.Context, sessionID domain.SessionID) error {
 	if err := e.enrol(ctx, sessionID); err != nil {
 		return err
 	}
-	return e.drain(ctx)
+	if err := e.reconcileFutureArbiters(ctx); err != nil {
+		return err
+	}
+	if err := e.drain(ctx); err != nil {
+		return err
+	}
+	return e.reconcileFutureArbiters(ctx)
 }
 
 func (e *Engine) configured() error {
@@ -304,6 +321,9 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		return recoveryErr
 	}
 	if handled, recoveryErr := e.tryRebindFreshRecovery(ctx, candidate, observation, now); handled {
+		return recoveryErr
+	}
+	if handled, recoveryErr := e.tryRebindFutureArbiter(ctx, candidate, observation, now); handled {
 		return recoveryErr
 	}
 	if refreshing, ok, err := e.store.GetRefreshingDCPReviewLabAdmissionBySession(ctx, candidate.session.ID); err != nil {
@@ -468,8 +488,30 @@ func (e *Engine) drain(ctx context.Context) error {
 			if terminalErr != nil || !terminalIncident {
 				return terminalErr
 			}
+			if futureIncident, futureErr := e.pendingFutureArbiterIncident(ctx, admission); futureErr != nil || futureIncident {
+				return futureErr
+			}
 		}
 	}
+}
+
+func (e *Engine) pendingFutureArbiterIncident(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	if _, ok := e.store.(FutureArbiterStore); !ok {
+		return false, nil
+	}
+	fresh, found, err := e.store.GetDCPReviewLabAdmissionByRun(ctx, admission.ReviewRunID)
+	if err != nil || !found {
+		return false, err
+	}
+	if fresh.Status != domain.DCPAdmissionIncident || !eligibleFutureArbiterKind(fresh.ErrorCode) {
+		return false, nil
+	}
+	store, ok := e.store.(policyStore)
+	if !ok {
+		return false, nil
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, fresh.SessionID)
+	return found && err == nil && task.State == domain.DCPPolicyIncident && task.AdmissionID == fresh.ID, err
 }
 
 func (e *Engine) nextPending(ctx context.Context) (domain.DCPReviewLabAdmission, bool, error) {
@@ -571,6 +613,9 @@ func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPRevie
 }
 
 func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	if allowed, err := e.futureArbiterAllowsAdmission(ctx, admission); err != nil || !allowed {
+		return false, err
+	}
 	candidate, ok, err := e.candidateForAdmission(ctx, admission)
 	if err != nil {
 		return false, err
@@ -1148,6 +1193,9 @@ func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewL
 	}
 	if reason == "merge_conflict_or_ambiguity" && (admission.SessionID == ArbiterSessionA || admission.SessionID == ArbiterSessionB) {
 		return e.reconcileStage2Arbiter(ctx)
+	}
+	if candidate.policy && eligibleFutureArbiterKind(reason) {
+		return e.reconcileFutureArbiters(ctx)
 	}
 	return nil
 }

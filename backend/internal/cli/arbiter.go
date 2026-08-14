@@ -86,7 +86,9 @@ func newArbiterSuperviseCommand(ctx *commandContext) *cobra.Command {
 func validateArbiterSupervisorOptions(opts arbiterSuperviseOptions) error {
 	original := opts.handle == "dcp-global-release-arbiter-v1" && strings.HasPrefix(opts.incident, "dcp-global-release-") && len(opts.incident) == 83
 	successor := opts.handle == dcpArbiterSuccessorHandle && opts.incident == dcpArbiterSuccessorID && opts.identityDigest == dcpArbiterSuccessorDigest
-	if (!original && !successor) || len(opts.identityDigest) != 64 || len(opts.inputDigest) != 64 || !lowerHex(opts.identityDigest) || !lowerHex(opts.inputDigest) ||
+	future := opts.handle == opts.incident && strings.HasPrefix(opts.incident, "dcp-future-arbiter-") && len(opts.incident) == 83 &&
+		strings.TrimPrefix(opts.incident, "dcp-future-arbiter-") == opts.identityDigest
+	if (!original && !successor && !future) || len(opts.identityDigest) != 64 || len(opts.inputDigest) != 64 || !lowerHex(opts.identityDigest) || !lowerHex(opts.inputDigest) ||
 		!filepath.IsAbs(opts.supervisorDataDir) || filepath.Clean(opts.supervisorDataDir) != opts.supervisorDataDir ||
 		!filepath.IsAbs(opts.supervisorRunFile) || filepath.Clean(opts.supervisorRunFile) != opts.supervisorRunFile {
 		return errors.New("invalid bounded arbiter supervisor identity")
@@ -94,6 +96,8 @@ func validateArbiterSupervisorOptions(opts arbiterSuperviseOptions) error {
 	rootName := "dcp-arbiter"
 	if successor {
 		rootName = "dcp-arbiter-successor"
+	} else if future {
+		rootName = "dcp-future-arbiter"
 	}
 	root := filepath.Join(opts.supervisorDataDir, "runtime", rootName, opts.incident)
 	result, schema := filepath.Clean(opts.resultFile), filepath.Clean(opts.resultSchema)
@@ -143,7 +147,7 @@ func (c *commandContext) runSupervisedArbiter(ctx context.Context, opts arbiterS
 	// The single successor's input/schema/result artifacts are immutable audit
 	// evidence after its fenced call. Durable state makes any restart replay
 	// inert; preserving the files cannot authorize another call.
-	if opts.handle != dcpArbiterSuccessorHandle && resultFailure != "submit_failed" {
+	if opts.handle == "dcp-global-release-arbiter-v1" && resultFailure != "submit_failed" {
 		_ = os.Remove(opts.resultFile)
 		_ = os.Remove(opts.resultSchema)
 	}
