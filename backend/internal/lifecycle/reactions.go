@@ -330,6 +330,60 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	return nil
 }
 
+// dcpAdmissionEligibilityStore is the optional durable policy/admission read
+// surface used only by unchanged stock SCM events. The terminal merger remains
+// the sole claimant and revalidates every trusted provider, Git, review, check,
+// head and lease gate before it can merge.
+type dcpAdmissionEligibilityStore interface {
+	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+	GetDCPReviewLabAdmissionByRun(context.Context, string) (domain.DCPReviewLabAdmission, bool, error)
+}
+
+// ApplySCMEligibilityObservation closes the ordering gap where a terminal
+// admission is created after a CLEAN/MERGEABLE provider snapshot was durably
+// acknowledged. It runs on the existing observer event only, never writes SCM
+// state and emits at most an idempotent eligibility signal for the exact
+// waiting policy identity. Unknown/pending facts remain passive.
+func (m *Manager) ApplySCMEligibilityObservation(ctx context.Context, id domain.SessionID, o ports.SCMObservation) error {
+	store, ok := m.store.(dcpAdmissionEligibilityStore)
+	if !ok || !dcpSCMObservationIsTerminalReady(o) {
+		return nil
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+	if err != nil || !found {
+		return err
+	}
+	if task.State != domain.DCPPolicyAdmissionWait || task.AdmissionID == "" || task.ReviewRunID == "" ||
+		task.PRURL == "" || task.CurrentHeadSHA == "" || !sameSCMIdentity(task.PRURL, task.CurrentHeadSHA, o) {
+		return nil
+	}
+	admission, found, err := store.GetDCPReviewLabAdmissionByRun(ctx, task.ReviewRunID)
+	if err != nil || !found {
+		return err
+	}
+	if admission.Status != domain.DCPAdmissionWaiting || admission.ID != task.AdmissionID || admission.ReviewRunID != task.ReviewRunID ||
+		admission.SessionID != id || admission.PRURL != task.PRURL || !strings.EqualFold(admission.TargetSHA, task.CurrentHeadSHA) {
+		return nil
+	}
+	m.signalTerminalMergeEligibility(ctx, id)
+	return nil
+}
+
+func sameSCMIdentity(prURL, headSHA string, o ports.SCMObservation) bool {
+	return firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL) == prURL && strings.EqualFold(o.PR.HeadSHA, headSHA)
+}
+
+func dcpSCMObservationIsTerminalReady(o ports.SCMObservation) bool {
+	return o.Fetched && o.Provider == "github" && o.Host == "github.com" &&
+		o.Repo == "orenvlad-ai/dcp-review-lab" && o.PR.State == string(domain.PRStateOpen) &&
+		o.PR.ProviderState == "OPEN" && !o.PR.Draft && !o.PR.Merged && !o.PR.Closed &&
+		o.PR.ProviderMergeable == "MERGEABLE" && o.PR.ProviderMergeStateStatus == "CLEAN" &&
+		domain.CIState(o.CI.Summary) == domain.CIPassing &&
+		(domain.ReviewDecision(o.Review.Decision) == domain.ReviewNone || domain.ReviewDecision(o.Review.Decision) == domain.ReviewApproved) &&
+		o.Mergeability.State == string(domain.MergeMergeable) && o.Mergeability.Mergeable && !o.Mergeability.Conflict &&
+		len(o.Mergeability.Blockers) == 0 && !hasUnresolvedSCMComments(o.Review.Threads)
+}
+
 // readyToMergeResolutions reports the ready-to-merge notification this
 // observation made stale. The PR either got merged/closed, or stopped being
 // mergeable — either way the "this is ready for you to merge" ping no longer

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -277,5 +278,49 @@ func TestOverlayDCPPolicyStatusUsesOnlyStockBoardStates(t *testing.T) {
 	}
 	if got := overlayDCPPolicyStatus(domain.StatusCIFailed, domain.DCPPolicyCIWaiting); got != domain.StatusCIFailed {
 		t.Fatalf("CI waiting must preserve exact stock PR failure, got %q", got)
+	}
+}
+
+type policyReadStore struct {
+	*fakeStore
+	task         domain.DCPReviewLabPolicyTask
+	action       domain.DCPModelAction
+	actionActive bool
+}
+
+func (s *policyReadStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	return s.task, s.task.SessionID == id, nil
+}
+
+func (s *policyReadStore) GetActiveDCPModelActionBySession(_ context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error) {
+	return s.action, s.actionActive && s.action.SessionID == id, nil
+}
+
+func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *testing.T) {
+	const id = domain.SessionID("dcp-review-lab-13")
+	base := newFakeStore()
+	store := &policyReadStore{
+		fakeStore:    base,
+		task:         domain.DCPReviewLabPolicyTask{SessionID: id, State: domain.DCPPolicyReviewRunning},
+		action:       domain.DCPModelAction{SessionID: id, Kind: domain.DCPActionReviewer, Status: domain.DCPActionRunning},
+		actionActive: true,
+	}
+	service := NewWithDeps(Deps{Store: store})
+	record := domain.SessionRecord{ID: id, Activity: domain.Activity{State: domain.ActivityIdle}}
+	session, err := service.toSession(context.Background(), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || !session.DCPPolicyActionActive {
+		t.Fatalf("policy read model=%+v", session)
+	}
+
+	store.action.Status = domain.DCPActionClaimed
+	session, err = service.toSession(context.Background(), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || session.DCPPolicyActionActive {
+		t.Fatalf("claimed action must remain visually steady: %+v", session)
 	}
 }

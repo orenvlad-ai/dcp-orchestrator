@@ -94,20 +94,6 @@ const session: WorkspaceSession = {
 	prs: [],
 };
 
-function sidebarPR(overrides: Partial<WorkspaceSession["prs"][number]> = {}): WorkspaceSession["prs"][number] {
-	return {
-		url: "https://github.com/acme/project-one/pull/7",
-		number: 7,
-		state: "open",
-		ci: "unknown",
-		review: "none",
-		mergeability: "unknown",
-		reviewComments: false,
-		updatedAt: "2026-06-30T00:00:00Z",
-		...overrides,
-	};
-}
-
 type CreateProjectInput = {
 	path: string;
 	workerAgent: string;
@@ -1031,7 +1017,7 @@ describe("Sidebar", () => {
 		}
 	});
 
-	it("animates active sidebar dots using their PR context color", async () => {
+	it("renders policy lifecycle dots and pulses only running model actions", async () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -1039,80 +1025,67 @@ describe("Sidebar", () => {
 					sessions: [
 						{
 							...session,
-							id: "proj-1-idle",
-							title: "idle task",
-							status: "idle",
+							id: "proj-1-worker-active",
+							title: "worker active task",
+							dcpPolicyState: "worker_running",
+							dcpPolicyActionActive: true,
 							activity: { state: "idle", lastActivityAt: "2026-06-30T00:00:00Z" },
 						},
 						{
 							...session,
-							id: "proj-1-work",
-							title: "working task",
-							status: "working",
-							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
+							id: "proj-1-review-active",
+							title: "review active task",
+							dcpPolicyState: "review_running",
+							dcpPolicyActionActive: true,
+							activity: { state: "idle", lastActivityAt: "2026-06-30T00:00:00Z" },
 						},
 						{
 							...session,
-							id: "proj-1-ci",
-							title: "ci failed task",
-							status: "working",
-							scmStatus: "ci_failed",
-							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
-							prs: [sidebarPR({ ci: "failing" })],
+							id: "proj-1-review-queued",
+							title: "review queued task",
+							dcpPolicyState: "review_queued",
+							dcpPolicyActionActive: false,
 						},
 						{
 							...session,
-							id: "proj-1-review",
-							title: "review task",
-							status: "working",
-							scmStatus: "pr_open",
-							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
-							prs: [sidebarPR()],
-						},
-						{
-							...session,
-							id: "proj-1-ready",
-							title: "ready task",
-							status: "working",
-							scmStatus: "mergeable",
-							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
-							prs: [sidebarPR({ mergeability: "mergeable" })],
+							id: "proj-1-admission",
+							title: "admission task",
+							dcpPolicyState: "admission_waiting",
+							dcpPolicyActionActive: false,
 						},
 						{
 							...session,
 							id: "proj-1-merged",
 							title: "merged task",
-							status: "working",
-							scmStatus: "merged",
-							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
-							prs: [sidebarPR({ state: "merged" })],
+							dcpPolicyState: "merged",
+							dcpPolicyActionActive: false,
+						},
+						{
+							...session,
+							id: "proj-1-incident",
+							title: "incident task",
+							dcpPolicyState: "incident",
+							dcpPolicyActionActive: false,
 						},
 					],
 				},
 			],
 		});
 
-
 		const sessionDot = (title: string) =>
-			screen.getByLabelText(`Open ${title}`).querySelector<HTMLElement>("span.rounded-full");
+			screen.getByLabelText(`Open ${title}`).querySelector<HTMLElement>("[data-session-status]");
 
-		expect(sessionDot("idle task")).toHaveClass("bg-status-idle");
-		expect(sessionDot("idle task")).not.toHaveClass("animate-status-pulse");
-
-		const workingDot = sessionDot("working task");
-		expect(workingDot).toHaveClass("bg-status-working");
-		expect(workingDot).toHaveClass("animate-status-pulse");
-
-		const ciFailedDot = sessionDot("ci failed task");
-		expect(ciFailedDot).toHaveClass("bg-status-needs-you");
-		expect(ciFailedDot).toHaveClass("animate-status-pulse");
-
-		expect(sessionDot("review task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
-		expect(sessionDot("ready task")).toHaveClass("bg-status-ready", "animate-status-pulse");
-		expect(sessionDot("merged task")).toHaveClass("bg-status-merged", "animate-status-pulse");
+		expect(sessionDot("worker active task")).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(sessionDot("worker active task")).toHaveAttribute("data-session-status-active", "true");
+		expect(sessionDot("review active task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
+		expect(sessionDot("review queued task")).toHaveClass("bg-status-in-review");
+		expect(sessionDot("review queued task")).not.toHaveClass("animate-status-pulse");
+		expect(sessionDot("admission task")).toHaveClass("bg-status-needs-you");
+		expect(sessionDot("merged task")).toHaveClass("bg-status-merged");
+		expect(sessionDot("incident task")).toHaveClass("bg-status-exited");
 	});
 
-	it("renders a static gray dot for idle activity across session statuses", async () => {
+	it("renders steady fallback dots when no model action is active", async () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -1143,8 +1116,8 @@ describe("Sidebar", () => {
 			.querySelector<HTMLElement>("span.rounded-full");
 		const idleDraftDot = screen.getByLabelText("Open idle draft task").querySelector<HTMLElement>("span.rounded-full");
 
-		expect(idleActivityDot).toHaveClass("bg-status-idle");
-		expect(idleDraftDot).toHaveClass("bg-status-idle");
+		expect(idleActivityDot).toHaveClass("bg-status-working");
+		expect(idleDraftDot).toHaveClass("bg-status-needs-you");
 		expect(idleActivityDot).not.toHaveClass("animate-status-pulse");
 		expect(idleDraftDot).not.toHaveClass("animate-status-pulse");
 	});

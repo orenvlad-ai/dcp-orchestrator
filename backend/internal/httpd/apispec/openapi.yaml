@@ -3428,6 +3428,23 @@ components:
         createdAt:
           format: date-time
           type: string
+        dcpPolicyActionActive:
+          type: boolean
+        dcpPolicyState:
+          enum:
+          - reserved
+          - worker_queued
+          - worker_running
+          - ci_waiting
+          - review_queued
+          - review_running
+          - repair_queued
+          - repair_running
+          - admission_waiting
+          - merged
+          - failed
+          - incident
+          type: string
         displayName:
           type: string
         harness:

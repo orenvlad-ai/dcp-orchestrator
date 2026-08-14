@@ -1152,6 +1152,9 @@ export interface components {
             branch?: string;
             /** Format: date-time */
             createdAt: string;
+            dcpPolicyActionActive?: boolean;
+            /** @enum {string} */
+            dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "merged" | "failed" | "incident";
             displayName?: string;
             harness?: string;
             id: string;

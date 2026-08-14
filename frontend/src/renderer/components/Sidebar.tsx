@@ -23,7 +23,7 @@ import {
 	type WorkspaceSummary,
 	workerSessions,
 } from "../types/workspace";
-import { getAgentActivityView } from "../lib/session-presentation";
+import { getSessionVisualStatus } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -135,30 +135,14 @@ function useSelection() {
 	};
 }
 
-// Activity controls motion; live PR context controls an active session's
-// color. Idle activity remains visible as a static gray dot.
-const ACTIVE_SCM_DOT: Partial<Record<WorkspaceSession["scmStatus"] & string, string>> = {
-	working: "bg-status-working",
-	ci_failed: "bg-status-needs-you",
-	changes_requested: "bg-status-needs-you",
-	draft: "bg-status-in-review",
-	review_pending: "bg-status-in-review",
-	pr_open: "bg-status-in-review",
-	approved: "bg-status-ready",
-	mergeable: "bg-status-ready",
-	merged: "bg-status-merged",
-};
-
 function SessionStatusDot({ session }: { session: WorkspaceSession }) {
-	const activity = getAgentActivityView(session.activity);
-	const dotClass =
-		activity.state === "active"
-			? `${ACTIVE_SCM_DOT[session.scmStatus ?? "working"] ?? "bg-status-working"} animate-status-pulse`
-			: activity.indicatorClassName;
+	const visual = getSessionVisualStatus(session);
 	return (
 		<span
 			aria-hidden="true"
-			className={cn("size-2 shrink-0 rounded-full", dotClass)}
+			className={cn("size-2 shrink-0 rounded-full", visual.indicatorClassName)}
+			data-session-status-active={String(visual.active)}
+			data-session-status-tone={visual.tone}
 			data-session-status=""
 		/>
 	);

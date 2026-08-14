@@ -44,6 +44,10 @@ type dcpPolicyTaskReader interface {
 	GetDCPReviewLabPolicyTaskBySession(ctx context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
 }
 
+type dcpPolicyActionReader interface {
+	GetActiveDCPModelActionBySession(ctx context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error)
+}
+
 // ListFilter captures API-facing session list query filters.
 type ListFilter struct {
 	ProjectID        domain.ProjectID
@@ -757,6 +761,8 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	}
 	prs = deduplicatePRFacts(prs)
 	status := deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness))
+	var policyState domain.DCPReviewLabPolicyState
+	var policyActionActive bool
 	if reviews, ok := s.store.(reviewRunReader); ok {
 		runs, reviewErr := reviews.ListReviewRunsBySession(ctx, rec.ID)
 		if reviewErr != nil {
@@ -770,15 +776,25 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 			return domain.Session{}, fmt.Errorf("DCP policy facts %s: %w", rec.ID, policyErr)
 		}
 		if found {
+			policyState = task.State
 			status = overlayDCPPolicyStatus(status, task.State)
+			if actions, ok := s.store.(dcpPolicyActionReader); ok {
+				action, active, actionErr := actions.GetActiveDCPModelActionBySession(ctx, rec.ID)
+				if actionErr != nil {
+					return domain.Session{}, fmt.Errorf("DCP policy action facts %s: %w", rec.ID, actionErr)
+				}
+				policyActionActive = active && action.Status == domain.DCPActionRunning
+			}
 		}
 	}
 	return domain.Session{
-		SessionRecord:    rec,
-		Status:           status,
-		SCMStatus:        deriveSCMStatus(prs),
-		TerminalHandleID: rec.Metadata.RuntimeHandleID,
-		PRs:              prs,
+		SessionRecord:         rec,
+		Status:                status,
+		SCMStatus:             deriveSCMStatus(prs),
+		TerminalHandleID:      rec.Metadata.RuntimeHandleID,
+		DCPPolicyState:        policyState,
+		DCPPolicyActionActive: policyActionActive,
+		PRs:                   prs,
 	}, nil
 }
 

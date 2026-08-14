@@ -29,6 +29,7 @@ import {
 	getAgentActivityView,
 	getAttentionZoneViewForZone,
 	getSessionStatusView,
+	getSessionVisualStatus,
 	isSessionIdle,
 	type AttentionZone,
 	type AttentionZoneView,
@@ -837,8 +838,7 @@ function SessionCard({
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const badge = getSessionStatusView(session.status, t);
-	const activity = getAgentActivityView(session.activity, t);
-	const showLiveActivity = session.status === "working" && activity.state === "active";
+	const visual = getSessionVisualStatus(session);
 	const issueId = canonicalTrackerIssueId(session.issueId);
 	const branch = session.branch || "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
@@ -938,14 +938,13 @@ function SessionCard({
 				<div className="flex items-center justify-between gap-2">
 					<span
 						className={cn("inline-flex min-w-0 items-center gap-1.5 truncate text-2xs font-medium", badge.className)}
-						style={showLiveActivity ? { color: activity.tone } : undefined}
 					>
 						<span
 							aria-hidden="true"
-							className={cn(
-								"size-dot-sm shrink-0 rounded-full",
-								showLiveActivity ? activity.indicatorClassName : "bg-current",
-							)}
+							className={cn("size-dot-sm shrink-0 rounded-full", visual.indicatorClassName)}
+							data-session-status-active={String(visual.active)}
+							data-session-status-tone={visual.tone}
+							data-session-status=""
 						/>
 						{badge.label}
 					</span>
