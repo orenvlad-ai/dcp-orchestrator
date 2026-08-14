@@ -213,6 +213,57 @@ type DcpCard12RebaseHeadFinalizationProviderBaseRecovery struct {
 	RearmedAt                  time.Time
 }
 
+type DcpFutureCardArbiterV1 struct {
+	IncidentID          string
+	Generation          int64
+	IdentityDigest      string
+	TaskID              string
+	SessionID           string
+	AdmissionID         string
+	AdmissionSequence   int64
+	IncidentLeaseID     string
+	IncidentKind        string
+	SourcePacketJson    string
+	SourcePacketDigest  string
+	PRURL               string
+	PRNumber            int64
+	CandidateHeadSha    string
+	ReviewedBaseSha     string
+	CurrentMainSha      string
+	ReviewRunID         string
+	AffectedPathsJson   string
+	CohortJson          string
+	CohortDigest        string
+	EvidenceJson        string
+	EvidenceDigest      string
+	InputJson           string
+	InputDigest         string
+	ModelActionID       string
+	RuntimeHandleID     string
+	Model               string
+	Reasoning           string
+	TokenBudget         int64
+	Status              string
+	ModelCallCount      int64
+	DecisionJson        string
+	DecisionDigest      string
+	Verdict             string
+	OrderJson           string
+	RepairTaskID        string
+	RepairObjective     string
+	RepairPathsJson     string
+	HumanQuestion       string
+	RepairActionID      string
+	RecoveryReviewRunID string
+	RecoveryHeadSha     string
+	MergeCommitSha      string
+	ErrorCode           string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	DecisionAt          sql.NullTime
+	FinishedAt          sql.NullTime
+}
+
 type DcpGovernedStartupQuarantine struct {
 	SessionID         string
 	RecoveryID        string
@@ -234,6 +285,7 @@ type DcpModelAction struct {
 	Slot         int64
 	LaunchID     string
 	ReviewRunID  string
+	IncidentID   string
 	ErrorCode    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

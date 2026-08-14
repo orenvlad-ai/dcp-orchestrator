@@ -57,7 +57,7 @@ func (q *Queries) FinishDCPModelAction(ctx context.Context, arg FinishDCPModelAc
 }
 
 const getActiveDCPModelActionBySession = `-- name: GetActiveDCPModelActionBySession :one
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action
 WHERE session_id = ? AND status IN ('claimed', 'running')
 ORDER BY sequence LIMIT 1
 `
@@ -76,6 +76,7 @@ func (q *Queries) GetActiveDCPModelActionBySession(ctx context.Context, sessionI
 		&i.Slot,
 		&i.LaunchID,
 		&i.ReviewRunID,
+		&i.IncidentID,
 		&i.ErrorCode,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -84,7 +85,7 @@ func (q *Queries) GetActiveDCPModelActionBySession(ctx context.Context, sessionI
 }
 
 const getDCPModelActionByID = `-- name: GetDCPModelActionByID :one
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action WHERE id = ?
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action WHERE id = ?
 `
 
 func (q *Queries) GetDCPModelActionByID(ctx context.Context, id string) (DcpModelAction, error) {
@@ -101,6 +102,7 @@ func (q *Queries) GetDCPModelActionByID(ctx context.Context, id string) (DcpMode
 		&i.Slot,
 		&i.LaunchID,
 		&i.ReviewRunID,
+		&i.IncidentID,
 		&i.ErrorCode,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -109,18 +111,24 @@ func (q *Queries) GetDCPModelActionByID(ctx context.Context, id string) (DcpMode
 }
 
 const getDCPModelActionByIdentity = `-- name: GetDCPModelActionByIdentity :one
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action
-WHERE task_id = ? AND kind = ? AND exact_head_sha = ?
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action
+WHERE task_id = ? AND kind = ? AND exact_head_sha = ? AND incident_id = ?
 `
 
 type GetDCPModelActionByIdentityParams struct {
 	TaskID       string
 	Kind         string
 	ExactHeadSha string
+	IncidentID   string
 }
 
 func (q *Queries) GetDCPModelActionByIdentity(ctx context.Context, arg GetDCPModelActionByIdentityParams) (DcpModelAction, error) {
-	row := q.db.QueryRowContext(ctx, getDCPModelActionByIdentity, arg.TaskID, arg.Kind, arg.ExactHeadSha)
+	row := q.db.QueryRowContext(ctx, getDCPModelActionByIdentity,
+		arg.TaskID,
+		arg.Kind,
+		arg.ExactHeadSha,
+		arg.IncidentID,
+	)
 	var i DcpModelAction
 	err := row.Scan(
 		&i.Sequence,
@@ -133,6 +141,7 @@ func (q *Queries) GetDCPModelActionByIdentity(ctx context.Context, arg GetDCPMod
 		&i.Slot,
 		&i.LaunchID,
 		&i.ReviewRunID,
+		&i.IncidentID,
 		&i.ErrorCode,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -219,8 +228,8 @@ func (q *Queries) GetDCPReviewLabPolicyTaskByTaskID(ctx context.Context, taskID 
 const insertDCPModelAction = `-- name: InsertDCPModelAction :exec
 INSERT INTO dcp_model_action (
     id, task_id, session_id, kind, exact_head_sha, status, slot,
-    launch_id, review_run_id, error_code, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    launch_id, review_run_id, incident_id, error_code, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertDCPModelActionParams struct {
@@ -233,6 +242,7 @@ type InsertDCPModelActionParams struct {
 	Slot         int64
 	LaunchID     string
 	ReviewRunID  string
+	IncidentID   string
 	ErrorCode    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -249,6 +259,7 @@ func (q *Queries) InsertDCPModelAction(ctx context.Context, arg InsertDCPModelAc
 		arg.Slot,
 		arg.LaunchID,
 		arg.ReviewRunID,
+		arg.IncidentID,
 		arg.ErrorCode,
 		arg.CreatedAt,
 		arg.UpdatedAt,
@@ -328,7 +339,7 @@ func (q *Queries) InsertDCPReviewLabPolicyTask(ctx context.Context, arg InsertDC
 }
 
 const listActiveDCPModelActions = `-- name: ListActiveDCPModelActions :many
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action WHERE status IN ('claimed', 'running') ORDER BY slot
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action WHERE status IN ('claimed', 'running') ORDER BY slot
 `
 
 func (q *Queries) ListActiveDCPModelActions(ctx context.Context) ([]DcpModelAction, error) {
@@ -351,6 +362,7 @@ func (q *Queries) ListActiveDCPModelActions(ctx context.Context) ([]DcpModelActi
 			&i.Slot,
 			&i.LaunchID,
 			&i.ReviewRunID,
+			&i.IncidentID,
 			&i.ErrorCode,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -369,7 +381,7 @@ func (q *Queries) ListActiveDCPModelActions(ctx context.Context) ([]DcpModelActi
 }
 
 const listDCPModelActions = `-- name: ListDCPModelActions :many
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action ORDER BY sequence
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action ORDER BY sequence
 `
 
 func (q *Queries) ListDCPModelActions(ctx context.Context) ([]DcpModelAction, error) {
@@ -392,6 +404,7 @@ func (q *Queries) ListDCPModelActions(ctx context.Context) ([]DcpModelAction, er
 			&i.Slot,
 			&i.LaunchID,
 			&i.ReviewRunID,
+			&i.IncidentID,
 			&i.ErrorCode,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -464,7 +477,7 @@ func (q *Queries) ListDCPReviewLabPolicyTasks(ctx context.Context) ([]DcpReviewL
 }
 
 const listQueuedDCPModelActions = `-- name: ListQueuedDCPModelActions :many
-SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, error_code, created_at, updated_at FROM dcp_model_action WHERE status = 'queued' ORDER BY sequence
+SELECT sequence, id, task_id, session_id, kind, exact_head_sha, status, slot, launch_id, review_run_id, incident_id, error_code, created_at, updated_at FROM dcp_model_action WHERE status = 'queued' ORDER BY sequence
 `
 
 func (q *Queries) ListQueuedDCPModelActions(ctx context.Context) ([]DcpModelAction, error) {
@@ -487,6 +500,7 @@ func (q *Queries) ListQueuedDCPModelActions(ctx context.Context) ([]DcpModelActi
 			&i.Slot,
 			&i.LaunchID,
 			&i.ReviewRunID,
+			&i.IncidentID,
 			&i.ErrorCode,
 			&i.CreatedAt,
 			&i.UpdatedAt,

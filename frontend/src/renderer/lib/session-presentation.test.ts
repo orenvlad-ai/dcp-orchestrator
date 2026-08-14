@@ -154,6 +154,7 @@ describe("session presentation", () => {
 		["merged", "merged", false, "merged", "merge", "merged", "bg-status-merged", false],
 		["failed", "failed", false, "needs_you", "action", "failed", "bg-status-exited", false],
 		["incident", "incident", false, "needs_you", "action", "failed", "bg-status-exited", false],
+		["incident arbiter active", "incident", true, "needs_you", "action", "failed", "bg-status-exited", false],
 		["reserved", "reserved", false, "working", "working", "working", "bg-status-working", false],
 	] as const)(
 		"maps policy %s to one shared projection",

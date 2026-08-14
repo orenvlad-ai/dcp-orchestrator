@@ -400,6 +400,54 @@ describe("SessionsBoard", () => {
 		expect(within(cardFor("policy needs you")).getByText("Review failed")).toHaveClass("text-status-exited");
 	});
 
+	it("keeps an active arbiter inside Needs You without pulse and exposes its durable detail", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-arbiter-running",
+						title: "policy arbiter running",
+						status: "working",
+						dcpPolicyState: "incident",
+						dcpPolicyActionActive: true,
+						dcpArbiterStatus: "running",
+						dcpArbiterGeneration: 2,
+						dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+						dcpArbiterCohort: ["night-a", "night-b"],
+						dcpArbiterActionStatus: "running",
+					}),
+					boardSession({
+						id: "s-arbiter-human",
+						title: "policy arbiter gate",
+						status: "review_failed",
+						dcpPolicyState: "incident",
+						dcpArbiterStatus: "human_gate",
+						dcpArbiterGeneration: 1,
+						dcpHumanGateQuestion: "Should the shared value use intent A or intent B?",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const needsYou = screen.getByRole("region", { name: "Needs you sessions" });
+		const runningCard = within(needsYou)
+			.getByText("policy arbiter running")
+			.closest('[data-testid="board-session-card"]') as HTMLElement;
+		const dot = runningCard.querySelector<HTMLElement>("[data-session-status]");
+		expect(dot).toHaveClass("bg-status-exited");
+		expect(dot).not.toHaveClass("animate-status-pulse");
+		expect(within(runningCard).getByRole("status")).toHaveTextContent(
+			"Arbiter evaluating this incident · incident merge_conflict_or_ambiguity · generation 2 · cohort night-a → night-b · action running",
+		);
+		const humanCard = within(needsYou)
+			.getByText("policy arbiter gate")
+			.closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(humanCard).getByRole("status")).toHaveTextContent("Should the shared value use intent A or intent B? · generation 1");
+	});
+
 	it("does not show a stale secondary open PR after the durable policy merges", () => {
 		scmSummaryMock.mockReturnValue({ data: [scmSummary({ state: "open" })] });
 		workspaceQueryMock.mockReturnValue({

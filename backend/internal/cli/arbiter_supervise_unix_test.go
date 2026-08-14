@@ -182,3 +182,50 @@ func TestArbiterSuperviseAcceptsOnlyExactSuccessorAndPreservesEvidence(t *testin
 		t.Fatalf("foreign successor identity error = %v", err)
 	}
 }
+
+func TestArbiterSuperviseAcceptsExactFutureGenerationAndPreservesEvidence(t *testing.T) {
+	cfg := setConfigEnv(t)
+	digest := strings.Repeat("e", 64)
+	incident := "dcp-future-arbiter-" + digest
+	var decision arbiterDecisionRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/dcp/review-lab/arbiter/decision" {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &decision); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	root := filepath.Join(cfg.dataDir, "runtime", "dcp-future-arbiter", incident)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	schemaPath, resultPath := filepath.Join(root, "schema.json"), filepath.Join(root, "result.json")
+	if err := os.WriteFile(schemaPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resultJSON := `{"schemaVersion":"dcp.review-lab.future-arbiter-decision/v1","incidentId":"` + incident + `"}`
+	_, _, err := executeCLI(t, Deps{In: strings.NewReader("")}, "arbiter", "supervise",
+		"--handle", incident, "--incident", incident, "--identity-digest", digest, "--input-digest", strings.Repeat("f", 64),
+		"--supervisor-data-dir", cfg.dataDir, "--supervisor-run-file", cfg.runFile,
+		"--result-file", resultPath, "--result-schema", schemaPath,
+		"--", "sh", "-c", `printf '%s' "$1" > "$2"`, "sh", resultJSON, resultPath)
+	if err != nil {
+		t.Fatalf("future arbiter supervise: %v", err)
+	}
+	if decision.IncidentID != incident || string(decision.Decision) != resultJSON {
+		t.Fatalf("future decision = %+v", decision)
+	}
+	for _, artifact := range []string{resultPath, schemaPath} {
+		if info, err := os.Lstat(artifact); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("future audit artifact was not preserved at %s: %v", artifact, err)
+		}
+	}
+}

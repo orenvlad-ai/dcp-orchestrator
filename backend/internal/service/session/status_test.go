@@ -286,6 +286,19 @@ type policyReadStore struct {
 	task         domain.DCPReviewLabPolicyTask
 	action       domain.DCPModelAction
 	actionActive bool
+	incident     domain.DCPFutureArbiterIncident
+	incidentOpen bool
+}
+
+func (s *policyReadStore) GetDCPFutureArbiterIncidentByTask(_ context.Context, taskID string) (domain.DCPFutureArbiterIncident, bool, error) {
+	return s.incident, s.incidentOpen && s.incident.TaskID == taskID, nil
+}
+
+func (s *policyReadStore) GetDCPModelActionByID(_ context.Context, id string) (domain.DCPModelAction, bool, error) {
+	if s.incidentOpen && id == s.incident.ModelActionID {
+		return domain.DCPModelAction{ID: id, IncidentID: s.incident.IncidentID, Status: domain.DCPActionSucceeded}, true, nil
+	}
+	return domain.DCPModelAction{}, false, nil
 }
 
 func (s *policyReadStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
@@ -301,9 +314,13 @@ func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *t
 	base := newFakeStore()
 	store := &policyReadStore{
 		fakeStore:    base,
-		task:         domain.DCPReviewLabPolicyTask{SessionID: id, State: domain.DCPPolicyReviewRunning},
+		task:         domain.DCPReviewLabPolicyTask{TaskID: "future-13", SessionID: id, State: domain.DCPPolicyReviewRunning},
 		action:       domain.DCPModelAction{SessionID: id, Kind: domain.DCPActionReviewer, Status: domain.DCPActionRunning},
 		actionActive: true,
+		incident: domain.DCPFutureArbiterIncident{IncidentID: "dcp-future-arbiter-test", TaskID: "future-13", Status: domain.DCPFutureArbiterHumanGate,
+			Generation: 2, IncidentKind: "merge_conflict_or_ambiguity", CohortJSON: `[{"taskId":"future-12"},{"taskId":"future-13"}]`,
+			ModelActionID: "dcp-model-future-13-arbiter-2", HumanQuestion: "Choose compatible intent A or B?"},
+		incidentOpen: true,
 	}
 	service := NewWithDeps(Deps{Store: store})
 	record := domain.SessionRecord{ID: id, Activity: domain.Activity{State: domain.ActivityIdle}}
@@ -311,7 +328,11 @@ func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || !session.DCPPolicyActionActive {
+	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || !session.DCPPolicyActionActive ||
+		session.DCPArbiterStatus != domain.DCPFutureArbiterHumanGate || session.DCPArbiterGeneration != 2 ||
+		session.DCPArbiterIncidentKind != "merge_conflict_or_ambiguity" || len(session.DCPArbiterCohort) != 2 ||
+		session.DCPArbiterActionStatus != domain.DCPActionSucceeded ||
+		session.DCPHumanGateQuestion != "Choose compatible intent A or B?" {
 		t.Fatalf("policy read model=%+v", session)
 	}
 

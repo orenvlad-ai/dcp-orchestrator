@@ -846,6 +846,7 @@ function SessionCard({
 	const termination = useTerminateSessionState(session.id);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
 	const keepTerminateVisible = visual.displayStatus === "merged";
+	const arbiterDetail = dcpArbiterCardDetail(session);
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		if (!interactive || !onOpen) return;
 		if (event.currentTarget !== event.target) return;
@@ -955,6 +956,16 @@ function SessionCard({
 						{formatTimeCompact(session.updatedAt)}
 					</span>
 				</div>
+				{arbiterDetail ? (
+					<div
+						className="line-clamp-3 text-2xs leading-normal text-status-exited"
+						data-testid="board-session-arbiter-detail"
+						role="status"
+						title={arbiterDetail}
+					>
+						{arbiterDetail}
+					</div>
+				) : null}
 				{prSummaries.length > 0 && (
 					<div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-2xs text-passive">
 						{groupPRsByLifecycle(prSummaries).map((group) => (
@@ -979,6 +990,37 @@ function SessionCard({
 			{footer}
 		</div>
 	);
+}
+
+function dcpArbiterCardDetail(session: WorkspaceSession): string | null {
+	if (!session.dcpArbiterStatus) return null;
+	const metadata = [
+		session.dcpArbiterIncidentKind ? `incident ${session.dcpArbiterIncidentKind}` : null,
+		session.dcpArbiterGeneration ? `generation ${session.dcpArbiterGeneration}` : null,
+		session.dcpArbiterCohort?.length ? `cohort ${session.dcpArbiterCohort.join(" → ")}` : null,
+		session.dcpArbiterActionStatus ? `action ${session.dcpArbiterActionStatus}` : null,
+	]
+		.filter(Boolean)
+		.join(" · ");
+	const suffix = metadata ? ` · ${metadata}` : "";
+	switch (session.dcpArbiterStatus) {
+		case "requested":
+		case "claimed":
+		case "running":
+			return `Arbiter evaluating this incident${suffix}`;
+		case "hold":
+			return `Held passively for the arbiter-approved order${suffix}`;
+		case "repair_queued":
+			return `Arbiter-approved bounded repair${suffix}`;
+		case "recovery_reviewed":
+			return `Repaired head approved; waiting for trusted merge${suffix}`;
+		case "human_gate":
+			return `${session.dcpHumanGateQuestion || "Owner decision required"}${suffix}`;
+		case "failed":
+			return `Arbiter failed closed${suffix}`;
+		case "succeeded":
+			return null;
+	}
 }
 
 function ArchiveSessionItem({

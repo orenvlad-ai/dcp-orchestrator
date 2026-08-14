@@ -116,6 +116,20 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 					return failErr
 				}
 			}
+		case domain.DCPActionArbiter:
+			if s.policyArbiter == nil {
+				return errors.New("DCP future arbiter handler is unavailable")
+			}
+			if launchErr := s.policyArbiter.LaunchPolicyArbiterAction(ctx, action); launchErr != nil {
+				fresh, found, getErr := s.policyStore.GetDCPModelActionByID(ctx, action.ID)
+				if getErr != nil {
+					return errors.Join(launchErr, getErr)
+				}
+				if !found || (fresh.Status != domain.DCPActionFailed && fresh.Status != domain.DCPActionSucceeded) {
+					return launchErr
+				}
+				continue
+			}
 		default:
 			return fmt.Errorf("unknown DCP model action kind %q", action.Kind)
 		}
@@ -125,6 +139,12 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 func (s *Service) workerActionPrompt(ctx context.Context, task domain.DCPReviewLabPolicyTask, action domain.DCPModelAction) (string, error) {
 	if action.Kind == domain.DCPActionInitialWorker {
 		return "DCP synthetic task " + task.TaskID + ": " + task.Prompt, nil
+	}
+	if action.Kind == domain.DCPActionRepairWorker && action.IncidentID != "" {
+		if s.policyArbiter == nil || task.RepairCount != 1 || task.State != domain.DCPPolicyRepairRunning || action.ExactHeadSHA != task.CurrentHeadSHA {
+			return "", errors.New("arbiter-approved repair identity is incomplete")
+		}
+		return s.policyArbiter.FutureArbiterRepairPrompt(ctx, task, action)
 	}
 	if action.Kind != domain.DCPActionRepairWorker || task.RepairCount != 1 || task.CurrentHeadSHA == "" || action.ExactHeadSHA != task.CurrentHeadSHA || task.ReviewRunID == "" {
 		return "", errors.New("bounded repair identity is incomplete")

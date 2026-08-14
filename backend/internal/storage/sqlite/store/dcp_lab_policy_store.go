@@ -148,7 +148,7 @@ func (s *Store) GetDCPModelActionByID(ctx context.Context, id string) (domain.DC
 }
 
 func (s *Store) GetDCPModelActionByIdentity(ctx context.Context, taskID string, kind domain.DCPModelActionKind, exactHead string) (domain.DCPModelAction, bool, error) {
-	row, err := s.qr.GetDCPModelActionByIdentity(ctx, gen.GetDCPModelActionByIdentityParams{TaskID: taskID, Kind: string(kind), ExactHeadSha: strings.ToLower(exactHead)})
+	row, err := s.qr.GetDCPModelActionByIdentity(ctx, gen.GetDCPModelActionByIdentityParams{TaskID: taskID, Kind: string(kind), ExactHeadSha: strings.ToLower(exactHead), IncidentID: ""})
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DCPModelAction{}, false, nil
 	}
@@ -232,6 +232,15 @@ func (s *Store) ClaimNextDCPModelAction(ctx context.Context, now time.Time) (dom
 		if err != nil || rows != 1 {
 			return errors.Join(err, ErrDCPPolicyStale)
 		}
+		if action.Kind == domain.DCPActionArbiter {
+			rows, err = q.ClaimDCPFutureArbiterIncident(ctx, gen.ClaimDCPFutureArbiterIncidentParams{UpdatedAt: now, IncidentID: action.IncidentID, ModelActionID: action.ID})
+			if err != nil || rows != 1 {
+				return errors.Join(err, ErrDCPPolicyStale)
+			}
+			action.Status, action.Slot, action.UpdatedAt = domain.DCPActionClaimed, slot, now
+			claimed, ok = action, true
+			return nil
+		}
 		next := task
 		next.State = runningState
 		next.UpdatedAt = now
@@ -249,11 +258,25 @@ func (s *Store) ClaimNextDCPModelAction(ctx context.Context, now time.Time) (dom
 func (s *Store) StartDCPModelAction(ctx context.Context, action domain.DCPModelAction, launchID, reviewRunID string, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	rows, err := s.qw.StartDCPModelAction(ctx, gen.StartDCPModelActionParams{
-		LaunchID: launchID, ReviewRunID: reviewRunID, UpdatedAt: now,
-		ID: action.ID, Slot: action.Slot,
+	started := false
+	err := s.inTx(ctx, "start DCP model action", func(q *gen.Queries) error {
+		rows, err := q.StartDCPModelAction(ctx, gen.StartDCPModelActionParams{
+			LaunchID: launchID, ReviewRunID: reviewRunID, UpdatedAt: now,
+			ID: action.ID, Slot: action.Slot,
+		})
+		if err != nil || rows != 1 {
+			return err
+		}
+		if action.Kind == domain.DCPActionArbiter {
+			rows, err = q.StartDCPFutureArbiterIncident(ctx, gen.StartDCPFutureArbiterIncidentParams{UpdatedAt: now, IncidentID: action.IncidentID, ModelActionID: action.ID})
+			if err != nil || rows != 1 {
+				return errors.Join(err, ErrDCPPolicyStale)
+			}
+		}
+		started = true
+		return nil
 	})
-	return rows == 1, err
+	return started, err
 }
 
 // FinishDCPModelAction atomically releases the slot and advances the owning
@@ -338,7 +361,7 @@ func (s *Store) QueueDCPModelAction(ctx context.Context, current, next domain.DC
 	var result domain.DCPModelAction
 	var created bool
 	err := s.inTx(ctx, "queue DCP model action", func(q *gen.Queries) error {
-		existing, err := q.GetDCPModelActionByIdentity(ctx, gen.GetDCPModelActionByIdentityParams{TaskID: action.TaskID, Kind: string(action.Kind), ExactHeadSha: strings.ToLower(action.ExactHeadSHA)})
+		existing, err := q.GetDCPModelActionByIdentity(ctx, gen.GetDCPModelActionByIdentityParams{TaskID: action.TaskID, Kind: string(action.Kind), ExactHeadSha: strings.ToLower(action.ExactHeadSHA), IncidentID: action.IncidentID})
 		if err == nil {
 			result = dcpModelActionFromGen(existing)
 			return nil
@@ -395,7 +418,7 @@ func dcpModelActionFromGen(row gen.DcpModelAction) domain.DCPModelAction {
 		Sequence: row.Sequence, ID: row.ID, TaskID: row.TaskID, SessionID: domain.SessionID(row.SessionID),
 		Kind: domain.DCPModelActionKind(row.Kind), ExactHeadSHA: row.ExactHeadSha,
 		Status: domain.DCPModelActionStatus(row.Status), Slot: row.Slot, LaunchID: row.LaunchID,
-		ReviewRunID: row.ReviewRunID, ErrorCode: row.ErrorCode, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		ReviewRunID: row.ReviewRunID, IncidentID: row.IncidentID, ErrorCode: row.ErrorCode, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
 
@@ -426,7 +449,7 @@ func modelActionInsertParams(action domain.DCPModelAction) gen.InsertDCPModelAct
 	return gen.InsertDCPModelActionParams{
 		ID: action.ID, TaskID: action.TaskID, SessionID: string(action.SessionID), Kind: string(action.Kind),
 		ExactHeadSha: strings.ToLower(action.ExactHeadSHA), Status: string(action.Status), Slot: action.Slot,
-		LaunchID: action.LaunchID, ReviewRunID: action.ReviewRunID, ErrorCode: action.ErrorCode,
+		LaunchID: action.LaunchID, ReviewRunID: action.ReviewRunID, IncidentID: action.IncidentID, ErrorCode: action.ErrorCode,
 		CreatedAt: action.CreatedAt, UpdatedAt: action.UpdatedAt,
 	}
 }
@@ -439,6 +462,8 @@ func queuedAndRunningState(kind domain.DCPModelActionKind) (domain.DCPReviewLabP
 		return domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning
 	case domain.DCPActionReviewer:
 		return domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning
+	case domain.DCPActionArbiter:
+		return domain.DCPPolicyIncident, domain.DCPPolicyIncident
 	default:
 		return "", ""
 	}

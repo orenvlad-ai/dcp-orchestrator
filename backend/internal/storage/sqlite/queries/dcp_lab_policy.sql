@@ -27,15 +27,15 @@ WHERE task_id = ? AND state = ? AND revision = ?;
 -- name: InsertDCPModelAction :exec
 INSERT INTO dcp_model_action (
     id, task_id, session_id, kind, exact_head_sha, status, slot,
-    launch_id, review_run_id, error_code, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    launch_id, review_run_id, incident_id, error_code, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetDCPModelActionByID :one
 SELECT * FROM dcp_model_action WHERE id = ?;
 
 -- name: GetDCPModelActionByIdentity :one
 SELECT * FROM dcp_model_action
-WHERE task_id = ? AND kind = ? AND exact_head_sha = ?;
+WHERE task_id = ? AND kind = ? AND exact_head_sha = ? AND incident_id = ?;
 
 -- name: GetActiveDCPModelActionBySession :one
 SELECT * FROM dcp_model_action
