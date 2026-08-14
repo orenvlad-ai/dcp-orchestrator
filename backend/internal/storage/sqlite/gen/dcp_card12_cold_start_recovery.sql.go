@@ -297,7 +297,8 @@ WHERE q.recovery_id = 'dcp-card12-cold-start-recovery-087176dbe56428dc97a99823a9
     SELECT 1 FROM sessions s WHERE s.id = q.session_id
       AND s.project_id = 'dcp-review-lab' AND s.kind = 'worker'
       AND s.harness = 'codex' AND s.agent_session_id = ''
-      AND s.activity_state = 'idle' AND s.is_terminated = 0
+      AND ((s.activity_state = 'idle' AND s.is_terminated = 0)
+        OR (s.activity_state = 'exited' AND s.is_terminated = 1))
       AND s.runtime_handle_id = s.id
       AND s.branch = CASE q.session_id
         WHEN 'dcp-review-lab-11' THEN 'ao/dcp-review-lab-11/root'

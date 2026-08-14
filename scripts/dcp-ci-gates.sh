@@ -213,6 +213,7 @@ source_gates() {
 	grep -Fq 'AdmissionSessionA  = "dcp-review-lab-9"' backend/internal/dcpterminalmerge/merge.go || fail 'I13 first fresh card identity is not exact'
 	grep -Fq 'AdmissionSessionB  = "dcp-review-lab-10"' backend/internal/dcpterminalmerge/merge.go || fail 'I13 second fresh card identity is not exact'
 	grep -Fq 'ResumeDCPReviewLabIdleAgent' backend/internal/session_manager/manager.go || fail 'I13 bounded same-worker wake is absent'
+	grep -Fq "OR (s.activity_state = 'exited' AND s.is_terminated = 1)" backend/internal/storage/sqlite/queries/dcp_card12_cold_start_recovery.sql || fail 'terminal governed sessions cannot preserve startup quarantine'
 	[[ -s "$arbiter_migration" ]] || fail 'I13 Stage 2 bounded arbiter migration is absent'
 	grep -Fq 'CREATE TABLE dcp_review_lab_arbiter_v1' "$arbiter_migration" || fail 'I13 Stage 2 durable incident/action row is absent'
 	grep -Fq 'idx_dcp_review_lab_arbiter_v1_single_incident' "$arbiter_migration" || fail 'I13 Stage 2 global one-incident guard is absent'
@@ -323,6 +324,7 @@ unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^
 unexpected_paths="$( { printf '%s\n' "$unexpected_paths"; git ls-files --others --exclude-standard; } | sort -u)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/cold_start_auto_merge_migration_test\.go|backend/internal/storage/sqlite/migrations/0063_dcp_card12_cold_start_auto_merge_recovery\.sql|backend/internal/dcpterminalmerge/rebase_head_finalization_(engine|executor|test)\.go|backend/internal/domain/dcp_card12_rebase_head_finalization\.go|backend/internal/storage/sqlite/(rebase_head_finalization(_provider_base)?_migration_test\.go|migrations/006(4_dcp_card12_rebase_head_finalization|5_dcp_card12_rebase_head_finalization_audit_recovery|6_dcp_card12_rebase_head_finalization_provider_base_recovery)\.sql|queries/dcp_card12_rebase_head_finalization\.sql|gen/dcp_card12_rebase_head_finalization\.sql\.go|store/dcp_card12_rebase_head_finalization_store(_test)?\.go))$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/cli/dcp\.go|backend/internal/domain/dcp_lab_policy\.go|backend/internal/service/dcptask/(policy|review_repository)\.go|backend/internal/storage/sqlite/gen/dcp_lab_policy\.sql\.go|backend/internal/storage/sqlite/migrations/0067_dcp_review_lab_happy_path_v1\.sql|backend/internal/storage/sqlite/queries/dcp_lab_policy\.sql|backend/internal/storage/sqlite/store/dcp_lab_policy_store(_test)?\.go)$' || true)"
+unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/gen/dcp_terminal_quarantine_test\.go$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src/renderer/hooks/useWorkspaceQuery(\.test)?\.tsx?|frontend/src/renderer/styles\.css)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
