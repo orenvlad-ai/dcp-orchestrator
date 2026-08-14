@@ -213,6 +213,24 @@ type DcpCard12RebaseHeadFinalizationProviderBaseRecovery struct {
 	RearmedAt                  time.Time
 }
 
+type DcpFutureCardArbiterSchemaRecoveryV1 struct {
+	RecoveryID                string
+	PredecessorIncidentID     string
+	PredecessorIdentityDigest string
+	PredecessorInputDigest    string
+	PredecessorModelActionID  string
+	PredecessorSchemaDigest   string
+	ProviderErrorJson         string
+	ProviderErrorDigest       string
+	ProviderInferenceTokens   int64
+	SuccessorGeneration       int64
+	Status                    string
+	SuccessorIncidentID       string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	ConsumedAt                sql.NullTime
+}
+
 type DcpFutureCardArbiterV1 struct {
 	IncidentID          string
 	Generation          int64

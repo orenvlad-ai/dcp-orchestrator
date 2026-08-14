@@ -30,6 +30,55 @@ func (q *Queries) ClaimDCPFutureArbiterIncident(ctx context.Context, arg ClaimDC
 	return result.RowsAffected()
 }
 
+const consumeDCPFutureArbiterSchemaRecovery = `-- name: ConsumeDCPFutureArbiterSchemaRecovery :execrows
+UPDATE dcp_future_card_arbiter_schema_recovery_v1
+SET status = 'consumed', successor_incident_id = ?1,
+    updated_at = ?2, consumed_at = ?2
+WHERE recovery_id = ?3
+  AND predecessor_incident_id = ?4
+  AND predecessor_identity_digest = ?5
+  AND predecessor_input_digest = ?6
+  AND predecessor_model_action_id = ?7
+  AND predecessor_schema_digest = ?8
+  AND provider_error_digest = ?9
+  AND provider_inference_tokens = 0
+  AND successor_generation = ?10
+  AND status = 'authorized'
+  AND successor_incident_id = ''
+`
+
+type ConsumeDCPFutureArbiterSchemaRecoveryParams struct {
+	SuccessorIncidentID       string
+	ConsumedAt                time.Time
+	RecoveryID                string
+	PredecessorIncidentID     string
+	PredecessorIdentityDigest string
+	PredecessorInputDigest    string
+	PredecessorModelActionID  string
+	PredecessorSchemaDigest   string
+	ProviderErrorDigest       string
+	SuccessorGeneration       int64
+}
+
+func (q *Queries) ConsumeDCPFutureArbiterSchemaRecovery(ctx context.Context, arg ConsumeDCPFutureArbiterSchemaRecoveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, consumeDCPFutureArbiterSchemaRecovery,
+		arg.SuccessorIncidentID,
+		arg.ConsumedAt,
+		arg.RecoveryID,
+		arg.PredecessorIncidentID,
+		arg.PredecessorIdentityDigest,
+		arg.PredecessorInputDigest,
+		arg.PredecessorModelActionID,
+		arg.PredecessorSchemaDigest,
+		arg.ProviderErrorDigest,
+		arg.SuccessorGeneration,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countDCPFutureArbiterGenerationsForTask = `-- name: CountDCPFutureArbiterGenerationsForTask :one
 SELECT count(*) FROM dcp_future_card_arbiter_v1 WHERE task_id = ?
 `
@@ -296,6 +345,34 @@ func (q *Queries) GetDCPFutureArbiterIncidentByTask(ctx context.Context, taskID 
 		&i.UpdatedAt,
 		&i.DecisionAt,
 		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDCPFutureArbiterSchemaRecoveryByPredecessor = `-- name: GetDCPFutureArbiterSchemaRecoveryByPredecessor :one
+SELECT recovery_id, predecessor_incident_id, predecessor_identity_digest, predecessor_input_digest, predecessor_model_action_id, predecessor_schema_digest, provider_error_json, provider_error_digest, provider_inference_tokens, successor_generation, status, successor_incident_id, created_at, updated_at, consumed_at FROM dcp_future_card_arbiter_schema_recovery_v1
+WHERE predecessor_incident_id = ?
+`
+
+func (q *Queries) GetDCPFutureArbiterSchemaRecoveryByPredecessor(ctx context.Context, predecessorIncidentID string) (DcpFutureCardArbiterSchemaRecoveryV1, error) {
+	row := q.db.QueryRowContext(ctx, getDCPFutureArbiterSchemaRecoveryByPredecessor, predecessorIncidentID)
+	var i DcpFutureCardArbiterSchemaRecoveryV1
+	err := row.Scan(
+		&i.RecoveryID,
+		&i.PredecessorIncidentID,
+		&i.PredecessorIdentityDigest,
+		&i.PredecessorInputDigest,
+		&i.PredecessorModelActionID,
+		&i.PredecessorSchemaDigest,
+		&i.ProviderErrorJson,
+		&i.ProviderErrorDigest,
+		&i.ProviderInferenceTokens,
+		&i.SuccessorGeneration,
+		&i.Status,
+		&i.SuccessorIncidentID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConsumedAt,
 	)
 	return i, err
 }

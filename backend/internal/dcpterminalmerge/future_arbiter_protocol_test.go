@@ -41,15 +41,22 @@ func TestFutureArbiterDecisionSchemaIsStrictAndNonCompositional(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(schema)
-	for _, forbidden := range []string{`"oneOf"`, `"anyOf"`, `"allOf"`} {
+	for _, forbidden := range []string{`"oneOf"`, `"anyOf"`, `"allOf"`, `"not"`, `"const"`, `"uniqueItems"`, `"$schema"`} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("schema contains provider-unsupported composition %s", forbidden)
 		}
 	}
-	for _, required := range []string{`"additionalProperties":false`, `"const":"dcp.review-lab.future-arbiter-decision/v1"`, `"successor_repair"`, `"human_gate"`} {
+	for _, required := range []string{`"additionalProperties":false`, `"enum":["dcp.review-lab.future-arbiter-decision/v1"]`, `"successor_repair"`, `"human_gate"`} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("schema omitted %s", required)
 		}
+	}
+}
+
+func TestFutureArbiterResponseSchemaCompatibilityFenceRejectsNestedUnsupportedKeyword(t *testing.T) {
+	bad := []byte(`{"type":"object","properties":{"affectedPaths":{"type":"array","uniqueItems":true}}}`)
+	if err := validateFutureArbiterResponseSchema(bad); err == nil || !strings.Contains(err.Error(), `"uniqueItems"`) {
+		t.Fatalf("unsupported nested keyword crossed compatibility fence: %v", err)
 	}
 }
 

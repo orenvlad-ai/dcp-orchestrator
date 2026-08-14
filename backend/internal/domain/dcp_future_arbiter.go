@@ -62,6 +62,27 @@ type DCPFutureArbiterIncident struct {
 	FinishedAt          *time.Time
 }
 
+// DCPFutureArbiterSchemaRecovery is the one exact additive authorization for
+// a provider-rejected pre-inference schema generation. It preserves the
+// terminal predecessor and cannot become a general retry policy.
+type DCPFutureArbiterSchemaRecovery struct {
+	RecoveryID                string
+	PredecessorIncidentID     string
+	PredecessorIdentityDigest string
+	PredecessorInputDigest    string
+	PredecessorModelActionID  string
+	PredecessorSchemaDigest   string
+	ProviderErrorJSON         string
+	ProviderErrorDigest       string
+	ProviderInferenceTokens   int64
+	SuccessorGeneration       int64
+	Status                    string
+	SuccessorIncidentID       string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	ConsumedAt                *time.Time
+}
+
 // DCPFutureArbiterStatus is the durable lifecycle of one exact incident generation.
 type DCPFutureArbiterStatus string
 

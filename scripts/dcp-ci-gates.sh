@@ -174,7 +174,8 @@ source_gates() {
 	happy_path_migration='backend/internal/storage/sqlite/migrations/0067_dcp_review_lab_happy_path_v1.sql'
 	provider_pending_recovery_migration='backend/internal/storage/sqlite/migrations/0068_dcp_policy_provider_pending_recovery.sql'
 	future_arbiter_migration='backend/internal/storage/sqlite/migrations/0069_dcp_future_card_arbiter_v1.sql'
-	printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	future_arbiter_schema_recovery_migration='backend/internal/storage/sqlite/migrations/0070_dcp_future_arbiter_schema_recovery.sql'
+	printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -206,7 +207,7 @@ source_gates() {
 	grep -Fq "reasoning = 'xhigh'" "$future_arbiter_migration" || fail 'ordinary-card arbiter reasoning is not physical'
 	grep -Fq 'token_budget = 16384' "$future_arbiter_migration" || fail 'ordinary-card arbiter token ceiling is not physical'
 	grep -Fq 'model_call_count IN (0, 1)' "$future_arbiter_migration" || fail 'ordinary-card one-call generation fence is absent'
-	! grep -Fq '"oneOf"' backend/internal/dcpterminalmerge/future_arbiter_protocol.go || fail 'ordinary-card response schema uses unsupported composition'
+	! sed -n '/func FutureArbiterDecisionJSONSchema/,/func validateFutureArbiterResponseSchema/p' backend/internal/dcpterminalmerge/future_arbiter_protocol.go | grep -Eq '"(oneOf|anyOf|allOf|not|const|uniqueItems|\$schema)"[[:space:]]*:' || fail 'ordinary-card response schema uses unsupported composition'
 	grep -Fq 'futureArbiterAllowsAdmission' backend/internal/dcpterminalmerge/merge.go || fail 'ordinary-card sibling hold is not event-driven admission state'
 	grep -Fq 'func (s *Service) SubmitPolicy' backend/internal/service/dcptask/service.go || fail 'policy submit path is absent'
 	grep -Fq 'func (s *Service) DrainModelActions' backend/internal/service/dcptask/policy.go || fail 'event-driven model-action drain is absent'
@@ -329,6 +330,12 @@ source_gates() {
 	grep -Fq 'SubmitArbiterDecision' backend/internal/dcpterminalmerge/arbiter_engine.go || fail 'I13 Stage 2 trusted decision path is absent'
 	grep -Fq 'same_worker_conflict_repair' backend/internal/dcpterminalmerge/arbiter_protocol.go || fail 'I13 Stage 2 sole recovery path is absent'
 	grep -Fq 'localControlRequest(req)' backend/internal/httpd/router.go || fail 'I13 Stage 2 callback is not loopback-gated'
+	[[ -s "$future_arbiter_schema_recovery_migration" ]] || fail 'ordinary-card arbiter schema recovery migration is absent'
+	grep -Fq 'dcp-future-arbiter-141e3d64af9568aea9ea1fb6835045060dfd566bc3b21d50ff6f3f90f3f67a52' "$future_arbiter_schema_recovery_migration" || fail 'ordinary-card arbiter failed generation identity is not exact'
+	grep -Fq 'provider_inference_tokens    INTEGER NOT NULL CHECK (provider_inference_tokens = 0)' "$future_arbiter_schema_recovery_migration" || fail 'ordinary-card arbiter recovery does not prove zero inference tokens'
+	grep -Fq 'OLD.status = '\''authorized'\'' AND NEW.status = '\''consumed'\''' "$future_arbiter_schema_recovery_migration" || fail 'ordinary-card arbiter recovery is not one-way immutable'
+	grep -Fq '"not": true, "const": true, "uniqueItems": true' backend/internal/dcpterminalmerge/future_arbiter_protocol.go || fail 'ordinary-card arbiter provider compatibility fence is incomplete'
+	! sed -n '/func FutureArbiterDecisionJSONSchema/,/func validateFutureArbiterResponseSchema/p' backend/internal/dcpterminalmerge/future_arbiter_protocol.go | grep -Eq '"(const|uniqueItems|\\$schema)"[[:space:]]*:' || fail 'ordinary-card arbiter generated schema retains an unsupported keyword'
 	! grep -ERq 'time\.(NewTicker|Tick)|for[[:space:]]*\{[[:space:]]*time\.Sleep' backend/internal/dcpterminalmerge || fail 'I13 admission/arbiter introduced a poll or heartbeat loop'
 	grep -Fq 'ApplySCMEligibilityObservation' backend/internal/observe/scm/observer.go || fail 'happy-path admission catch-up is not driven by the stock SCM event'
 	grep -Fq 'admission.Status != domain.DCPAdmissionWaiting' backend/internal/lifecycle/reactions.go || fail 'SCM admission catch-up is not fenced to one durable waiting identity'
@@ -346,7 +353,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/inte
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/gen/dcp_terminal_quarantine_test\.go$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/db\.go|backend/internal/storage/sqlite/card13_creation_base_migration_test\.go)$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src/renderer/hooks/useWorkspaceQuery(\.test)?\.tsx?|frontend/src/renderer/styles\.css)$' || true)"
-unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/future_arbiter_(engine|launcher|protocol)(_test)?\.go|backend/internal/domain/dcp_future_arbiter\.go|backend/internal/storage/sqlite/(migrations/0069_dcp_future_card_arbiter_v1\.sql|queries/dcp_future_arbiter\.sql|gen/dcp_future_arbiter\.sql\.go|store/dcp_future_arbiter_store(_test)?\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/future_arbiter_(engine|launcher|protocol|schema_recovery)(_test)?\.go|backend/internal/domain/dcp_future_arbiter\.go|backend/internal/storage/sqlite/(migrations/00(69_dcp_future_card_arbiter_v1|70_dcp_future_arbiter_schema_recovery)\.sql|queries/dcp_future_arbiter\.sql|gen/dcp_future_arbiter\.sql\.go|store/dcp_future_arbiter_store(_test)?\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

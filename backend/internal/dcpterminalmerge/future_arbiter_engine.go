@@ -26,7 +26,9 @@ type FutureArbiterStore interface {
 	GetDCPFutureArbiterIncidentByTask(context.Context, string) (domain.DCPFutureArbiterIncident, bool, error)
 	ListDCPFutureArbiterIncidents(context.Context) ([]domain.DCPFutureArbiterIncident, error)
 	CountDCPFutureArbiterGenerationsForTask(context.Context, string) (int64, error)
+	GetDCPFutureArbiterSchemaRecoveryByPredecessor(context.Context, string) (domain.DCPFutureArbiterSchemaRecovery, bool, error)
 	OpenDCPFutureArbiterIncident(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error)
+	OpenDCPFutureArbiterSchemaRecovery(context.Context, domain.DCPFutureArbiterIncident, domain.DCPFutureArbiterSchemaRecovery, domain.DCPFutureArbiterIncident, domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error)
 	FailDCPFutureArbiterIncident(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction, string, time.Time) (bool, error)
 	RecordDCPFutureArbiterDecision(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction, string, string, domain.DCPFutureArbiterVerdict, string, string, string, string, time.Time) (bool, error)
 	RebindDCPFutureArbiterAdmission(context.Context, domain.DCPFutureArbiterIncident, domain.DCPReviewLabPolicyTask, domain.ReviewRun, string, time.Time) (bool, error)
@@ -81,8 +83,25 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		var schemaRecovery domain.DCPFutureArbiterSchemaRecovery
+		recoveringSchema := false
 		if found && existing.Status != domain.DCPFutureArbiterHold {
-			continue
+			if existing.Status != domain.DCPFutureArbiterFailed {
+				continue
+			}
+			schemaRecovery, recoveringSchema, err = store.GetDCPFutureArbiterSchemaRecoveryByPredecessor(ctx, existing.IncidentID)
+			if err != nil {
+				return err
+			}
+			if !recoveringSchema || schemaRecovery.Status != "authorized" {
+				continue
+			}
+			if e.futureArbiter == nil {
+				return errors.New("DCP future arbiter schema recovery launcher is unavailable")
+			}
+			if err := e.futureArbiter.PreflightSchemaRecovery(ctx, existing, schemaRecovery); err != nil {
+				return err
+			}
 		}
 		candidate, exact, err := e.candidateForFutureArbiterAdmission(ctx, admission)
 		if err != nil || !exact {
@@ -97,6 +116,9 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 			return err
 		}
 		generation := generationCount + 1
+		if recoveringSchema && generation != schemaRecovery.SuccessorGeneration {
+			return errors.New("DCP future arbiter schema recovery generation drifted")
+		}
 		incident, action, err := e.deriveFutureArbiterIncident(ctx, admission, candidate, observation, review, generation, e.clock())
 		if errors.Is(err, errFutureArbiterCohortPending) {
 			continue
@@ -104,10 +126,15 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if found && existing.CurrentMainSHA == incident.CurrentMainSHA {
+		if found && !recoveringSchema && existing.CurrentMainSHA == incident.CurrentMainSHA {
 			continue
 		}
-		_, created, err := store.OpenDCPFutureArbiterIncident(ctx, incident, action)
+		var created bool
+		if recoveringSchema {
+			_, created, err = store.OpenDCPFutureArbiterSchemaRecovery(ctx, existing, schemaRecovery, incident, action)
+		} else {
+			_, created, err = store.OpenDCPFutureArbiterIncident(ctx, incident, action)
+		}
 		if err != nil {
 			return err
 		}
@@ -186,7 +213,19 @@ func (e *Engine) futureArbiterAllowsAdmission(ctx context.Context, admission dom
 			byAdmission[task.AdmissionID] = task
 		}
 	}
+	// Only the latest immutable generation controls a given admission. An older
+	// failed generation remains audit evidence but must not shadow a separately
+	// authorized successor forever.
+	latestGenerationByAdmission := make(map[string]int64)
 	for _, incident := range incidents {
+		if incident.Generation > latestGenerationByAdmission[incident.AdmissionID] {
+			latestGenerationByAdmission[incident.AdmissionID] = incident.Generation
+		}
+	}
+	for _, incident := range incidents {
+		if incident.Generation != latestGenerationByAdmission[incident.AdmissionID] {
+			continue
+		}
 		switch incident.Status {
 		case domain.DCPFutureArbiterRequested, domain.DCPFutureArbiterClaimed, domain.DCPFutureArbiterRunning,
 			domain.DCPFutureArbiterRepairQueued, domain.DCPFutureArbiterRecoveryReviewed:

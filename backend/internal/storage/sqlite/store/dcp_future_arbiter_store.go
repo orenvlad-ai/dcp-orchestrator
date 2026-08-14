@@ -40,6 +40,22 @@ func futureArbiterFromGen(row gen.DcpFutureCardArbiterV1) domain.DCPFutureArbite
 	return result
 }
 
+func futureArbiterSchemaRecoveryFromGen(row gen.DcpFutureCardArbiterSchemaRecoveryV1) domain.DCPFutureArbiterSchemaRecovery {
+	result := domain.DCPFutureArbiterSchemaRecovery{
+		RecoveryID: row.RecoveryID, PredecessorIncidentID: row.PredecessorIncidentID,
+		PredecessorIdentityDigest: row.PredecessorIdentityDigest, PredecessorInputDigest: row.PredecessorInputDigest,
+		PredecessorModelActionID: row.PredecessorModelActionID, PredecessorSchemaDigest: row.PredecessorSchemaDigest,
+		ProviderErrorJSON: row.ProviderErrorJson, ProviderErrorDigest: row.ProviderErrorDigest,
+		ProviderInferenceTokens: row.ProviderInferenceTokens, SuccessorGeneration: row.SuccessorGeneration,
+		Status: row.Status, SuccessorIncidentID: row.SuccessorIncidentID, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+	if row.ConsumedAt.Valid {
+		t := row.ConsumedAt.Time
+		result.ConsumedAt = &t
+	}
+	return result
+}
+
 // GetDCPFutureArbiterIncidentByID reads one exact ordinary-card incident generation.
 func (s *Store) GetDCPFutureArbiterIncidentByID(ctx context.Context, id string) (domain.DCPFutureArbiterIncident, bool, error) {
 	row, err := s.qr.GetDCPFutureArbiterIncidentByID(ctx, id)
@@ -85,6 +101,16 @@ func (s *Store) CountDCPFutureArbiterGenerationsForTask(ctx context.Context, tas
 	return s.qr.CountDCPFutureArbiterGenerationsForTask(ctx, taskID)
 }
 
+// GetDCPFutureArbiterSchemaRecoveryByPredecessor reads the sole separately
+// authorized recovery, if any, for an immutable terminal generation.
+func (s *Store) GetDCPFutureArbiterSchemaRecoveryByPredecessor(ctx context.Context, incidentID string) (domain.DCPFutureArbiterSchemaRecovery, bool, error) {
+	row, err := s.qr.GetDCPFutureArbiterSchemaRecoveryByPredecessor(ctx, incidentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DCPFutureArbiterSchemaRecovery{}, false, nil
+	}
+	return futureArbiterSchemaRecoveryFromGen(row), err == nil, err
+}
+
 // OpenDCPFutureArbiterIncident atomically persists one incident and queued action.
 func (s *Store) OpenDCPFutureArbiterIncident(ctx context.Context, incident domain.DCPFutureArbiterIncident, action domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error) {
 	s.writeMu.Lock()
@@ -128,28 +154,93 @@ func (s *Store) OpenDCPFutureArbiterIncident(ctx context.Context, incident domai
 			action.Kind != domain.DCPActionArbiter || action.IncidentID != incident.IncidentID || action.TaskID != incident.TaskID || action.SessionID != incident.SessionID {
 			return ErrDCPPolicyStale
 		}
-		rows, err := q.InsertDCPFutureArbiterIncident(ctx, gen.InsertDCPFutureArbiterIncidentParams{
-			IncidentID: incident.IncidentID, Generation: incident.Generation, IdentityDigest: incident.IdentityDigest,
-			TaskID: incident.TaskID, SessionID: string(incident.SessionID), AdmissionID: incident.AdmissionID,
-			AdmissionSequence: incident.AdmissionSequence, IncidentLeaseID: incident.IncidentLeaseID, IncidentKind: incident.IncidentKind,
-			SourcePacketJson: incident.SourcePacketJSON, SourcePacketDigest: incident.SourcePacketDigest,
-			PRURL: incident.PRURL, PRNumber: incident.PRNumber, CandidateHeadSha: incident.CandidateHeadSHA,
-			ReviewedBaseSha: incident.ReviewedBaseSHA, CurrentMainSha: incident.CurrentMainSHA, ReviewRunID: incident.ReviewRunID,
-			AffectedPathsJson: incident.AffectedPathsJSON, CohortJson: incident.CohortJSON, CohortDigest: incident.CohortDigest,
-			EvidenceJson: incident.EvidenceJSON, EvidenceDigest: incident.EvidenceDigest, InputJson: incident.InputJSON,
-			InputDigest: incident.InputDigest, ModelActionID: action.ID, RuntimeHandleID: incident.RuntimeHandleID,
-			CreatedAt: incident.CreatedAt, UpdatedAt: incident.UpdatedAt,
-		})
-		if err != nil || rows != 1 {
-			return errors.Join(err, ErrDCPPolicyStale)
-		}
-		if err := q.InsertDCPModelAction(ctx, modelActionInsertParams(action)); err != nil {
+		if err := insertFutureArbiterIncident(ctx, q, incident, action); err != nil {
 			return err
 		}
 		result, created = incident, true
 		return nil
 	})
 	return result, created, err
+}
+
+func insertFutureArbiterIncident(ctx context.Context, q *gen.Queries, incident domain.DCPFutureArbiterIncident, action domain.DCPModelAction) error {
+	rows, err := q.InsertDCPFutureArbiterIncident(ctx, gen.InsertDCPFutureArbiterIncidentParams{
+		IncidentID: incident.IncidentID, Generation: incident.Generation, IdentityDigest: incident.IdentityDigest,
+		TaskID: incident.TaskID, SessionID: string(incident.SessionID), AdmissionID: incident.AdmissionID,
+		AdmissionSequence: incident.AdmissionSequence, IncidentLeaseID: incident.IncidentLeaseID, IncidentKind: incident.IncidentKind,
+		SourcePacketJson: incident.SourcePacketJSON, SourcePacketDigest: incident.SourcePacketDigest,
+		PRURL: incident.PRURL, PRNumber: incident.PRNumber, CandidateHeadSha: incident.CandidateHeadSHA,
+		ReviewedBaseSha: incident.ReviewedBaseSHA, CurrentMainSha: incident.CurrentMainSHA, ReviewRunID: incident.ReviewRunID,
+		AffectedPathsJson: incident.AffectedPathsJSON, CohortJson: incident.CohortJSON, CohortDigest: incident.CohortDigest,
+		EvidenceJson: incident.EvidenceJSON, EvidenceDigest: incident.EvidenceDigest, InputJson: incident.InputJSON,
+		InputDigest: incident.InputDigest, ModelActionID: action.ID, RuntimeHandleID: incident.RuntimeHandleID,
+		CreatedAt: incident.CreatedAt, UpdatedAt: incident.UpdatedAt,
+	})
+	if err != nil || rows != 1 {
+		return errors.Join(err, ErrDCPPolicyStale)
+	}
+	return q.InsertDCPModelAction(ctx, modelActionInsertParams(action))
+}
+
+// OpenDCPFutureArbiterSchemaRecovery atomically consumes one exact recovery
+// grant and opens its additive successor generation. The failed predecessor is
+// read and compared but never updated.
+func (s *Store) OpenDCPFutureArbiterSchemaRecovery(ctx context.Context, predecessor domain.DCPFutureArbiterIncident, recovery domain.DCPFutureArbiterSchemaRecovery, incident domain.DCPFutureArbiterIncident, action domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var result domain.DCPFutureArbiterIncident
+	var created bool
+	err := s.inTx(ctx, "open DCP future-card arbiter schema recovery", func(q *gen.Queries) error {
+		latestRow, err := q.GetDCPFutureArbiterIncidentByAdmission(ctx, predecessor.AdmissionID)
+		if err != nil {
+			return err
+		}
+		latest := futureArbiterFromGen(latestRow)
+		if !sameFutureArbiterOpenIdentity(latest, predecessor) || latest.Status != domain.DCPFutureArbiterFailed || latest.ErrorCode != "launch_failed" ||
+			latest.ModelCallCount != 1 || latest.DecisionJSON != "" || latest.DecisionDigest != "" ||
+			recovery.Status != "authorized" || recovery.PredecessorIncidentID != predecessor.IncidentID ||
+			recovery.PredecessorIdentityDigest != predecessor.IdentityDigest || recovery.PredecessorInputDigest != predecessor.InputDigest ||
+			recovery.PredecessorModelActionID != predecessor.ModelActionID || recovery.ProviderInferenceTokens != 0 ||
+			recovery.SuccessorGeneration != predecessor.Generation+1 || incident.Generation != recovery.SuccessorGeneration ||
+			!sameFutureArbiterRecoveryEvidence(predecessor, incident) || action.ID != incident.ModelActionID || action.IncidentID != incident.IncidentID ||
+			action.Kind != domain.DCPActionArbiter || action.TaskID != incident.TaskID || action.SessionID != incident.SessionID {
+			return ErrDCPPolicyStale
+		}
+		actionRow, err := q.GetDCPModelActionByID(ctx, predecessor.ModelActionID)
+		if err != nil || actionRow.Status != string(domain.DCPActionFailed) || actionRow.ErrorCode != "launch_failed" || actionRow.IncidentID != predecessor.IncidentID {
+			return errors.Join(err, ErrDCPPolicyStale)
+		}
+		if err := insertFutureArbiterIncident(ctx, q, incident, action); err != nil {
+			return err
+		}
+		rows, err := q.ConsumeDCPFutureArbiterSchemaRecovery(ctx, gen.ConsumeDCPFutureArbiterSchemaRecoveryParams{
+			SuccessorIncidentID: incident.IncidentID, ConsumedAt: incident.CreatedAt, RecoveryID: recovery.RecoveryID,
+			PredecessorIncidentID: recovery.PredecessorIncidentID, PredecessorIdentityDigest: recovery.PredecessorIdentityDigest,
+			PredecessorInputDigest: recovery.PredecessorInputDigest, PredecessorModelActionID: recovery.PredecessorModelActionID,
+			PredecessorSchemaDigest: recovery.PredecessorSchemaDigest, ProviderErrorDigest: recovery.ProviderErrorDigest,
+			SuccessorGeneration: recovery.SuccessorGeneration,
+		})
+		if err != nil || rows != 1 {
+			return errors.Join(err, ErrDCPPolicyStale)
+		}
+		result, created = incident, true
+		return nil
+	})
+	return result, created, err
+}
+
+//nolint:dupl // Every frozen evidence field is an intentional recovery fence.
+func sameFutureArbiterRecoveryEvidence(predecessor, successor domain.DCPFutureArbiterIncident) bool {
+	return predecessor.TaskID == successor.TaskID && predecessor.SessionID == successor.SessionID &&
+		predecessor.AdmissionID == successor.AdmissionID && predecessor.AdmissionSequence == successor.AdmissionSequence &&
+		predecessor.IncidentLeaseID == successor.IncidentLeaseID && predecessor.IncidentKind == successor.IncidentKind &&
+		predecessor.SourcePacketJSON == successor.SourcePacketJSON && predecessor.SourcePacketDigest == successor.SourcePacketDigest &&
+		predecessor.PRURL == successor.PRURL && predecessor.PRNumber == successor.PRNumber &&
+		predecessor.CandidateHeadSHA == successor.CandidateHeadSHA && predecessor.ReviewedBaseSHA == successor.ReviewedBaseSHA &&
+		predecessor.CurrentMainSHA == successor.CurrentMainSHA && predecessor.ReviewRunID == successor.ReviewRunID &&
+		predecessor.AffectedPathsJSON == successor.AffectedPathsJSON && predecessor.CohortJSON == successor.CohortJSON &&
+		predecessor.CohortDigest == successor.CohortDigest && predecessor.EvidenceJSON == successor.EvidenceJSON &&
+		predecessor.EvidenceDigest == successor.EvidenceDigest
 }
 
 //nolint:dupl // Explicit equality is the conflicting-replay fence for every immutable input field.
