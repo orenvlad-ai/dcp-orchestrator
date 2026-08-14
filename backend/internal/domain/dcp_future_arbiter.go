@@ -83,6 +83,37 @@ type DCPFutureArbiterSchemaRecovery struct {
 	ConsumedAt                *time.Time
 }
 
+// DCPFutureArbiterResultRecovery is the immutable failure audit and one-way
+// model-free validation grant for one already-produced exact result. It never
+// authorizes another incident generation or model call.
+type DCPFutureArbiterResultRecovery struct {
+	RecoveryID            string
+	IncidentID            string
+	IdentityDigest        string
+	InputDigest           string
+	ModelActionID         string
+	PriorStatus           string
+	PriorErrorCode        string
+	PriorFinishedAt       time.Time
+	PriorModelCallCount   int64
+	PriorDecisionDigest   string
+	RuntimeHandleID       string
+	PhysicalRuntimeHandle string
+	InputArtifactDigest   string
+	InputArtifactSize     int64
+	SchemaArtifactDigest  string
+	SchemaArtifactSize    int64
+	ResultArtifactDigest  string
+	ResultArtifactSize    int64
+	CodexSessionID        string
+	InferenceTokens       int64
+	ContractCommit        string
+	Status                string
+	ErrorCode             string
+	CreatedAt             time.Time
+	FinishedAt            *time.Time
+}
+
 // DCPFutureArbiterStatus is the durable lifecycle of one exact incident generation.
 type DCPFutureArbiterStatus string
 

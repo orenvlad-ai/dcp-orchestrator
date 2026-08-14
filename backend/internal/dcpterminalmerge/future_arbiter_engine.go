@@ -27,10 +27,13 @@ type FutureArbiterStore interface {
 	ListDCPFutureArbiterIncidents(context.Context) ([]domain.DCPFutureArbiterIncident, error)
 	CountDCPFutureArbiterGenerationsForTask(context.Context, string) (int64, error)
 	GetDCPFutureArbiterSchemaRecoveryByPredecessor(context.Context, string) (domain.DCPFutureArbiterSchemaRecovery, bool, error)
+	GetDCPFutureArbiterResultRecovery(context.Context, string) (domain.DCPFutureArbiterResultRecovery, bool, error)
 	OpenDCPFutureArbiterIncident(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error)
 	OpenDCPFutureArbiterSchemaRecovery(context.Context, domain.DCPFutureArbiterIncident, domain.DCPFutureArbiterSchemaRecovery, domain.DCPFutureArbiterIncident, domain.DCPModelAction) (domain.DCPFutureArbiterIncident, bool, error)
 	FailDCPFutureArbiterIncident(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction, string, time.Time) (bool, error)
 	RecordDCPFutureArbiterDecision(context.Context, domain.DCPFutureArbiterIncident, domain.DCPModelAction, string, string, domain.DCPFutureArbiterVerdict, string, string, string, string, time.Time) (bool, error)
+	RecoverDCPFutureArbiterExactDecision(context.Context, domain.DCPFutureArbiterIncident, string, string, string, string, string, time.Time) (bool, error)
+	FailDCPFutureArbiterResultRecovery(context.Context, string, string, time.Time) (bool, error)
 	RebindDCPFutureArbiterAdmission(context.Context, domain.DCPFutureArbiterIncident, domain.DCPReviewLabPolicyTask, domain.ReviewRun, string, time.Time) (bool, error)
 	GetDCPReviewLabPolicyTaskByTaskID(context.Context, string) (domain.DCPReviewLabPolicyTask, bool, error)
 	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
@@ -62,6 +65,15 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 	store, ok := e.store.(FutureArbiterStore)
 	if !ok {
 		return nil
+	}
+	recovered, err := e.recoverFutureArbiterExactResult(ctx, store)
+	if err != nil {
+		return err
+	}
+	if recovered && e.policyActionDrain != nil {
+		if err := e.policyActionDrain(ctx); err != nil {
+			return err
+		}
 	}
 	admissions, err := e.store.ListDCPReviewLabAdmissions(ctx)
 	if err != nil {
@@ -187,6 +199,55 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (e *Engine) recoverFutureArbiterExactResult(ctx context.Context, store FutureArbiterStore) (bool, error) {
+	incidents, err := store.ListDCPFutureArbiterIncidents(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, incident := range incidents {
+		recovery, found, err := store.GetDCPFutureArbiterResultRecovery(ctx, incident.IncidentID)
+		if err != nil {
+			return false, err
+		}
+		if !found || recovery.Status != "pending" {
+			continue
+		}
+		fail := func(code string, cause error) (bool, error) {
+			_, persistErr := store.FailDCPFutureArbiterResultRecovery(ctx, incident.IncidentID, code, e.clock())
+			return false, errors.Join(cause, persistErr)
+		}
+		if e.futureArbiter == nil {
+			return fail("launcher_unavailable", errors.New("DCP future arbiter result recovery launcher is unavailable"))
+		}
+		if err := e.revalidateFutureArbiter(ctx, incident); err != nil {
+			return fail("identity_drift", err)
+		}
+		if err := e.futureArbiter.PreflightResultRecovery(ctx, incident, recovery); err != nil {
+			return fail("artifact_or_process_drift", err)
+		}
+		resultPath, err := e.futureArbiter.FutureResultPath(incident)
+		if err != nil {
+			return fail("result_path_invalid", err)
+		}
+		data, err := os.ReadFile(resultPath)
+		if err != nil || int64(len(data)) != recovery.ResultArtifactSize || digestBytes(data) != recovery.ResultArtifactDigest {
+			return fail("result_digest_drift", errors.Join(err, errors.New("DCP future arbiter recovered result drifted after preflight")))
+		}
+		decision, canonical, err := ParseFutureArbiterDecision(data, incident)
+		if err != nil || decision.Verdict != string(domain.DCPFutureVerdictRepair) || decision.RepairTaskID != incident.TaskID {
+			return fail("result_still_invalid", errors.Join(err, errors.New("DCP future arbiter recovered decision is outside the bounded repair contour")))
+		}
+		orderJSON, _ := json.Marshal(decision.Order)
+		pathsJSON, _ := json.Marshal(decision.AffectedPaths)
+		changed, err := store.RecoverDCPFutureArbiterExactDecision(ctx, incident, string(canonical), digestBytes(canonical), string(orderJSON), decision.RepairObjective, string(pathsJSON), e.clock())
+		if err != nil || !changed {
+			return false, errors.Join(err, errors.New("DCP future arbiter exact model-free result recovery was unavailable"))
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // futureArbiterAllowsAdmission is the passive cohort hold. It performs only

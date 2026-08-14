@@ -110,6 +110,14 @@ type RuntimeHandle struct {
 	ID string
 }
 
+// RuntimeSessionHandleResolver returns the opaque physical runtime handle for
+// a durable logical session identity without creating or mutating a runtime.
+// Launchers use this when an adapter must shorten a logical identity (for
+// example, to fit a tmux session-name ceiling).
+type RuntimeSessionHandleResolver interface {
+	ResolveSessionHandle(sessionID domain.SessionID) (RuntimeHandle, error)
+}
+
 // SupervisedProcessRef identifies the AO-owned supervisor belonging to one
 // managed agent launch. LaunchID fences process observations from older
 // spawn/restore generations of the same session.
