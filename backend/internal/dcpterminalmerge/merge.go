@@ -781,7 +781,15 @@ type mergeCandidate struct {
 }
 
 func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
-	candidate, ok, err := e.candidate(ctx, admission.SessionID)
+	return e.candidateForAdmissionInPolicyState(ctx, admission, domain.DCPPolicyAdmissionWait)
+}
+
+func (e *Engine) candidateForFutureArbiterAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
+	return e.candidateForAdmissionInPolicyState(ctx, admission, domain.DCPPolicyIncident)
+}
+
+func (e *Engine) candidateForAdmissionInPolicyState(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
+	candidate, ok, err := e.candidateInPolicyState(ctx, admission.SessionID, state)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
@@ -794,6 +802,10 @@ func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCP
 }
 
 func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandidate, bool, error) {
+	return e.candidateInPolicyState(ctx, id, domain.DCPPolicyAdmissionWait)
+}
+
+func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
 	var policyTask domain.DCPReviewLabPolicyTask
 	policy := false
 	if ps, ok := e.store.(policyStore); ok {
@@ -813,7 +825,7 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 		(!policy && !validTaskIdentity(session)) {
 		return mergeCandidate{}, false, nil
 	}
-	if policy && (!validPolicyTaskIdentity(policyTask, session, e.dataDir) || policyTask.State != domain.DCPPolicyAdmissionWait) {
+	if policy && (!validPolicyTaskIdentity(policyTask, session, e.dataDir) || policyTask.State != state) {
 		return mergeCandidate{}, false, nil
 	}
 	if session.ID == ArbiterSessionA || session.ID == ArbiterSessionB {
