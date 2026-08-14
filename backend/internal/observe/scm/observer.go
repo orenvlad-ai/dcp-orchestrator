@@ -80,6 +80,15 @@ type Lifecycle interface {
 	ApplySCMObservation(ctx context.Context, sessionID domain.SessionID, obs ports.SCMObservation) error
 }
 
+// eligibilityLifecycle is the optional catch-up surface for a successfully
+// fetched provider snapshot whose semantic facts already match the durable SCM
+// rows. The ordinary lifecycle path owns changed observations; this narrower
+// path only lets durable policy admission catch up when it was created after
+// those facts were first acknowledged.
+type eligibilityLifecycle interface {
+	ApplySCMEligibilityObservation(ctx context.Context, sessionID domain.SessionID, obs ports.SCMObservation) error
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }
@@ -376,6 +385,13 @@ func (o *Observer) Poll(ctx context.Context) error {
 		}
 		prepared := o.prepareForPersistence(obs, local, opts, now)
 		if !prepared.Changed.Metadata && !prepared.Changed.CI && !prepared.Changed.Review {
+			if lifecycle, ok := o.lifecycle.(eligibilityLifecycle); ok {
+				if err := lifecycle.ApplySCMEligibilityObservation(ctx, subj.session.ID, prepared); err != nil {
+					o.logger.Error("scm observer: eligibility notification failed", "session", subj.session.ID, "pr", firstNonEmpty(prepared.PR.URL, prepared.PR.HTMLURL, local.URL), "err", err)
+					markRepoRefreshFailed(subj.repo)
+					continue
+				}
+			}
 			prRefreshOK[key] = true
 			continue
 		}

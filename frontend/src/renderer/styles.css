@@ -273,7 +273,7 @@
 	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 
-	--animate-status-pulse: status-pulse 1.8s ease-in-out infinite;
+	--animate-status-pulse: status-pulse 2.2s ease-in-out infinite;
 	--animate-overlay-in: overlay-in 130ms var(--ease-out);
 	--animate-modal-in: modal-in 180ms var(--ease-out);
 	/* Exits are shorter than entries: the system is responding, not deciding. */
@@ -1130,7 +1130,7 @@ textarea,
 		opacity: 1;
 	}
 	50% {
-		opacity: 0.35;
+		opacity: 0.5;
 	}
 }
 
@@ -1274,6 +1274,7 @@ body.is-resizing-x [data-slot="sidebar-container"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.animate-status-pulse,
 	.ao-startup-logo,
 	.ao-startup-status,
 	.ao-startup-dots span {

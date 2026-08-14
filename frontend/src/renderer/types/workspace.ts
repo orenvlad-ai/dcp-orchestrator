@@ -135,6 +135,10 @@ export type WorkspaceSession = {
 	status: SessionStatus;
 	/** Stack-aware PR context derived by the daemon independently of runtime activity. */
 	scmStatus?: SessionStatus;
+	/** Durable happy-path policy lifecycle projected through this same native session. */
+	dcpPolicyState?: DCPPolicyState;
+	/** True only while the current bounded policy action is durably running. */
+	dcpPolicyActionActive?: boolean;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
@@ -169,6 +173,20 @@ export type WorkspaceSession = {
 	 */
 	prs: PullRequestFacts[];
 };
+
+export type DCPPolicyState =
+	| "reserved"
+	| "worker_queued"
+	| "worker_running"
+	| "ci_waiting"
+	| "review_queued"
+	| "review_running"
+	| "repair_queued"
+	| "repair_running"
+	| "admission_waiting"
+	| "merged"
+	| "failed"
+	| "incident";
 
 // Tracker providers whose ids the intake daemon stamps sessions with, in
 // "<provider>:<native>" form. Adding a provider (Linear, Jira, ...) later is

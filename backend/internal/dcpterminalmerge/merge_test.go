@@ -427,6 +427,42 @@ func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T)
 	}
 }
 
+func TestFuturePolicyWaitingAdmissionDrainsOnLaterCleanEventOnceAcrossRestart(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	scm.observation.PR.ProviderMergeable = "UNKNOWN"
+	scm.observation.PR.ProviderMergeStateStatus = "UNKNOWN"
+	scm.observation.Mergeability = ports.SCMMergeabilityObservation{}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || store.claims != 0 || store.admission == nil || store.admission.Status != domain.DCPAdmissionWaiting {
+		t.Fatalf("pending event must remain passive: merges=%d claims=%d admission=%+v", scm.mergeCalls, store.claims, store.admission)
+	}
+
+	scm.observation.PR.ProviderMergeable = "MERGEABLE"
+	scm.observation.PR.ProviderMergeStateStatus = "CLEAN"
+	scm.observation.Mergeability = ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.claims != 1 || store.policyTask.State != domain.DCPPolicyMerged || store.admission.Status != domain.DCPAdmissionSucceeded {
+		t.Fatalf("clean catch-up did not merge once: merges=%d claims=%d task=%+v admission=%+v", scm.mergeCalls, store.claims, store.policyTask, store.admission)
+	}
+
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(store, scm, engine.dataDir)
+	restarted.git = engine.git
+	restarted.providerRepository = engine.providerRepository
+	if err := restarted.ReconcileStartup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.claims != 1 {
+		t.Fatalf("terminal replay/restart duplicated merge: merges=%d claims=%d", scm.mergeCalls, store.claims)
+	}
+}
+
 func TestFuturePolicyNonCleanOrForeignNamedCIFailsClosedWithoutWake(t *testing.T) {
 	for name, mutate := range map[string]func(*fakeSCM){
 		"behind":           func(scm *fakeSCM) { scm.observation.PR.ProviderMergeStateStatus = "BEHIND" },

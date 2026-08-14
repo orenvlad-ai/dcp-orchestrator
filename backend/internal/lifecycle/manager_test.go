@@ -955,6 +955,99 @@ func TestSCMObservationSignalsReviewEligibility(t *testing.T) {
 	}
 }
 
+type eligibilityPolicyStore struct {
+	*fakeStore
+	task      domain.DCPReviewLabPolicyTask
+	admission domain.DCPReviewLabAdmission
+}
+
+func (s *eligibilityPolicyStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	return s.task, s.task.SessionID == id, nil
+}
+
+func (s *eligibilityPolicyStore) GetDCPReviewLabAdmissionByRun(_ context.Context, runID string) (domain.DCPReviewLabAdmission, bool, error) {
+	return s.admission, s.admission.ReviewRunID == runID, nil
+}
+
+func terminalReadySCMObservation() ports.SCMObservation {
+	const (
+		prURL = "https://github.com/orenvlad-ai/dcp-review-lab/pull/10"
+		head  = "e467d1a44668294d59cca15a756c6cef18e4b247"
+	)
+	return ports.SCMObservation{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: "orenvlad-ai/dcp-review-lab",
+		PR: ports.SCMPRObservation{
+			URL: prURL, HTMLURL: prURL, HeadSHA: head, State: string(domain.PRStateOpen), ProviderState: "OPEN",
+			ProviderMergeable: "MERGEABLE", ProviderMergeStateStatus: "CLEAN",
+		},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: head},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewNone)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true},
+	}
+}
+
+func TestSCMEligibilityObservationSignalsOnlyExactWaitingPolicyAdmission(t *testing.T) {
+	const (
+		id    = domain.SessionID("dcp-review-lab-13")
+		prURL = "https://github.com/orenvlad-ai/dcp-review-lab/pull/10"
+		head  = "e467d1a44668294d59cca15a756c6cef18e4b247"
+		runID = "152048c0-6720-4397-9430-df975a453807"
+		admID = "dcp-admission-152048c0-6720-4397-9430-df975a453807"
+	)
+	store := &eligibilityPolicyStore{
+		fakeStore: newFakeStore(),
+		task: domain.DCPReviewLabPolicyTask{
+			SessionID: id, State: domain.DCPPolicyAdmissionWait, PRURL: prURL, CurrentHeadSHA: head,
+			ReviewRunID: runID, AdmissionID: admID,
+		},
+		admission: domain.DCPReviewLabAdmission{
+			ID: admID, ReviewRunID: runID, SessionID: id, PRURL: prURL, TargetSHA: head, Status: domain.DCPAdmissionWaiting,
+		},
+	}
+	manager := New(store, nil)
+	var got []domain.SessionID
+	manager.SetTerminalMergeEligibilityHandler(func(_ context.Context, sessionID domain.SessionID) { got = append(got, sessionID) })
+	ready := terminalReadySCMObservation()
+	if err := manager.ApplySCMEligibilityObservation(ctx, id, ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("eligibility signals=%v, want [%s]", got, id)
+	}
+
+	for name, mutate := range map[string]func(*eligibilityPolicyStore, *ports.SCMObservation){
+		"provider pending": func(_ *eligibilityPolicyStore, o *ports.SCMObservation) { o.PR.ProviderMergeable = "UNKNOWN" },
+		"stale head":       func(_ *eligibilityPolicyStore, o *ports.SCMObservation) { o.PR.HeadSHA = strings.Repeat("f", 40) },
+		"admission done": func(s *eligibilityPolicyStore, _ *ports.SCMObservation) {
+			s.admission.Status = domain.DCPAdmissionSucceeded
+		},
+		"task done": func(s *eligibilityPolicyStore, _ *ports.SCMObservation) { s.task.State = domain.DCPPolicyMerged },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyStore := *store
+			observation := ready
+			mutate(&copyStore, &observation)
+			copyManager := New(&copyStore, nil)
+			copyManager.SetTerminalMergeEligibilityHandler(func(_ context.Context, sessionID domain.SessionID) { got = append(got, sessionID) })
+			before := len(got)
+			if err := copyManager.ApplySCMEligibilityObservation(ctx, id, observation); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != before {
+				t.Fatalf("unexpected eligibility signal: got=%v", got)
+			}
+		})
+	}
+
+	store.admission.Status = domain.DCPAdmissionSucceeded
+	if err := manager.ApplySCMEligibilityObservation(ctx, id, ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("terminal replay signaled again: %v", got)
+	}
+}
+
 func TestSCMObservation_MissingSessionIsIgnored(t *testing.T) {
 	st := newFakeStore()
 	m := New(st, nil)

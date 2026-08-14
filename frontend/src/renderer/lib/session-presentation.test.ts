@@ -1,9 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	attentionZone,
 	getAgentActivityView,
 	getAttentionZoneView,
 	getSessionStatusView,
+	getSessionVisualStatus,
 	getSessionTimelinePillView,
 	isAgentActivityWorking,
 	isSessionIdle,
@@ -127,6 +129,43 @@ describe("session presentation", () => {
 
 		expect(active.indicatorClassName).toBe("bg-status-working animate-status-pulse");
 		expect(idle.indicatorClassName).toBe("bg-status-idle");
+	});
+
+	it.each([
+		["worker active", "worker_running", true, "working", "bg-status-working", true],
+		["worker queued", "worker_queued", false, "working", "bg-status-working", false],
+		["review active", "review_running", true, "review", "bg-status-in-review", true],
+		["review queued", "review_queued", false, "review", "bg-status-in-review", false],
+		["review inactive", "review_running", false, "attention", "bg-status-needs-you", false],
+		["CI waiting", "ci_waiting", false, "attention", "bg-status-needs-you", false],
+		["admission waiting", "admission_waiting", false, "attention", "bg-status-needs-you", false],
+		["merged", "merged", false, "merged", "bg-status-merged", false],
+		["failed", "failed", false, "failed", "bg-status-exited", false],
+		["incident", "incident", false, "failed", "bg-status-exited", false],
+		["reserved", "reserved", false, "idle", "bg-status-idle", false],
+	] as const)("maps policy %s to one shared dot", (_name, state, actionActive, tone, dotClassName, active) => {
+		const visual = getSessionVisualStatus(
+			sessionWith({ dcpPolicyState: state, dcpPolicyActionActive: actionActive, activity: { state: "idle", lastActivityAt: "" } }),
+		);
+		expect(visual).toMatchObject({ tone, dotClassName, active });
+		expect(visual.indicatorClassName).toBe(`${dotClassName}${active ? " animate-status-pulse" : ""}`);
+	});
+
+	it("keeps non-policy human and merge readiness steady orange", () => {
+		for (const status of ["needs_input", "review_pending", "approved", "mergeable"] as const) {
+			expect(getSessionVisualStatus(sessionWith({ status, activity: { state: "idle", lastActivityAt: "" } }))).toMatchObject({
+				tone: "attention",
+				dotClassName: "bg-status-needs-you",
+				active: false,
+			});
+		}
+	});
+
+	it("disables status pulse under reduced motion without changing the steady color class", () => {
+		const css = readFileSync("src/renderer/styles.css", "utf8");
+		expect(css).toMatch(
+			/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.animate-status-pulse,[\s\S]*?animation:\s*none;/,
+		);
 	});
 
 	it("uses a muted accent treatment for In Review instead of idle gray", () => {

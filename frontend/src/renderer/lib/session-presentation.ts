@@ -73,6 +73,81 @@ export function isAgentActivityWorking(activity?: SessionActivity | null): boole
 	return getAgentActivityView(activity).state === "active";
 }
 
+export type SessionVisualStatus = {
+	tone: "working" | "review" | "attention" | "merged" | "failed" | "idle";
+	dotClassName: string;
+	indicatorClassName: string;
+	active: boolean;
+};
+
+function visualStatus(tone: SessionVisualStatus["tone"], dotClassName: string, active = false): SessionVisualStatus {
+	return {
+		tone,
+		dotClassName,
+		indicatorClassName: `${dotClassName}${active ? " animate-status-pulse" : ""}`,
+		active,
+	};
+}
+
+// One shared status-dot projection serves both the stock board card and the
+// sidebar. Durable policy lifecycle wins over a retained idle terminal shell;
+// motion is reserved for a model action whose durable action row is running.
+export function getSessionVisualStatus(session: WorkspaceSession): SessionVisualStatus {
+	const policyActive = session.dcpPolicyActionActive === true;
+	switch (session.dcpPolicyState) {
+		case "worker_queued":
+		case "repair_queued":
+			return visualStatus("working", "bg-status-working");
+		case "worker_running":
+		case "repair_running":
+			return visualStatus("working", "bg-status-working", policyActive);
+		case "review_queued":
+			return visualStatus("review", "bg-status-in-review");
+		case "review_running":
+			return policyActive
+				? visualStatus("review", "bg-status-in-review", true)
+				: visualStatus("attention", "bg-status-needs-you");
+		case "ci_waiting":
+		case "admission_waiting":
+			return visualStatus("attention", "bg-status-needs-you");
+		case "merged":
+			return visualStatus("merged", "bg-status-merged");
+		case "failed":
+		case "incident":
+			return visualStatus("failed", "bg-status-exited");
+		case "reserved":
+			return visualStatus("idle", "bg-status-idle");
+	}
+
+	if (session.activity?.state === "active") {
+		return visualStatus("working", "bg-status-working", true);
+	}
+	if (session.activity?.state === "waiting_input" || session.activity?.state === "blocked") {
+		return visualStatus("attention", "bg-status-needs-you");
+	}
+	switch (session.status) {
+		case "working":
+			return visualStatus("working", "bg-status-working");
+		case "needs_input":
+		case "review_pending":
+		case "changes_requested":
+		case "draft":
+		case "pr_open":
+		case "approved":
+		case "mergeable":
+			return visualStatus("attention", "bg-status-needs-you");
+		case "merged":
+			return visualStatus("merged", "bg-status-merged");
+		case "ci_failed":
+		case "review_failed":
+		case "exited":
+		case "terminated":
+			return visualStatus("failed", "bg-status-exited");
+		default:
+			return visualStatus("idle", "bg-status-idle");
+	}
+}
+
 export type SessionStatusView = {
 	label: string;
 	className: string;

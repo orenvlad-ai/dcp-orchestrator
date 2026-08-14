@@ -272,6 +272,65 @@ describe("SessionsBoard", () => {
 		expect(working.querySelector("span")).toHaveClass("bg-status-working", "animate-status-pulse");
 	});
 
+	it("uses the same policy lifecycle color and active semantics as the sidebar dot", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({
+						id: "s-worker-active",
+						title: "policy worker active",
+						status: "working",
+						dcpPolicyState: "worker_running",
+						dcpPolicyActionActive: true,
+					}),
+					boardSession({
+						id: "s-review-active",
+						title: "policy reviewer active",
+						status: "review_pending",
+						dcpPolicyState: "review_running",
+						dcpPolicyActionActive: true,
+					}),
+					boardSession({
+						id: "s-review-queued",
+						title: "policy review queued",
+						status: "review_pending",
+						dcpPolicyState: "review_queued",
+					}),
+					boardSession({
+						id: "s-admission",
+						title: "policy admission waiting",
+						status: "mergeable",
+						dcpPolicyState: "admission_waiting",
+					}),
+					boardSession({ id: "s-merged", title: "policy merged", status: "merged", dcpPolicyState: "merged" }),
+					boardSession({
+						id: "s-incident",
+						title: "policy incident",
+						status: "review_failed",
+						dcpPolicyState: "incident",
+					}),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const dot = (title: string) =>
+			screen
+				.getByText(title)
+				.closest('[data-testid="board-session-card"]')
+				?.querySelector<HTMLElement>("[data-session-status]");
+		expect(dot("policy worker active")).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(dot("policy worker active")).toHaveAttribute("data-session-status-active", "true");
+		expect(dot("policy reviewer active")).toHaveClass("bg-status-in-review", "animate-status-pulse");
+		expect(dot("policy review queued")).toHaveClass("bg-status-in-review");
+		expect(dot("policy review queued")).toHaveAttribute("data-session-status-active", "false");
+		expect(dot("policy admission waiting")).toHaveClass("bg-status-needs-you");
+		expect(dot("policy merged")).toHaveClass("bg-status-merged");
+		expect(dot("policy incident")).toHaveClass("bg-status-exited");
+	});
+
 	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [

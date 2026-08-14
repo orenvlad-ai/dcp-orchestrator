@@ -249,8 +249,9 @@ func (p *fakeProvider) FetchReviewThreads(_ context.Context, ref ports.SCMPRRef)
 }
 
 type fakeLifecycle struct {
-	observed []ports.SCMObservation
-	err      error
+	observed    []ports.SCMObservation
+	eligibility []ports.SCMObservation
+	err         error
 }
 
 func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionID, obs ports.SCMObservation) error {
@@ -258,6 +259,14 @@ func (l *fakeLifecycle) ApplySCMObservation(_ context.Context, _ domain.SessionI
 		return l.err
 	}
 	l.observed = append(l.observed, obs)
+	return nil
+}
+
+func (l *fakeLifecycle) ApplySCMEligibilityObservation(_ context.Context, _ domain.SessionID, obs ports.SCMObservation) error {
+	if l.err != nil {
+		return l.err
+	}
+	l.eligibility = append(l.eligibility, obs)
 	return nil
 }
 
@@ -1184,7 +1193,7 @@ func TestPoll_ReviewPollingRespectsInterval(t *testing.T) {
 	}
 }
 
-func TestPoll_UnchangedHashesDoNotWriteOrNotify(t *testing.T) {
+func TestPoll_UnchangedHashesDoNotWriteButNotifyEligibility(t *testing.T) {
 	store := testStoreWithSession()
 	obsValue := testObs(1)
 	local := knownPR(1)
@@ -1198,8 +1207,8 @@ func TestPoll_UnchangedHashesDoNotWriteOrNotify(t *testing.T) {
 	if err := obs.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.writes) != 0 || len(lc.observed) != 0 {
-		t.Fatalf("unchanged hashes wrote/notified: writes=%d observed=%d", len(store.writes), len(lc.observed))
+	if len(store.writes) != 0 || len(lc.observed) != 0 || len(lc.eligibility) != 1 {
+		t.Fatalf("unchanged hashes: writes=%d observed=%d eligibility=%d", len(store.writes), len(lc.observed), len(lc.eligibility))
 	}
 }
 
