@@ -179,6 +179,35 @@ func (f fakeSessions) ListAllSessions(context.Context) ([]domain.SessionRecord, 
 
 type fakePRs struct{ prs []domain.PullRequest }
 
+type fakePolicyReviewGate struct {
+	authorized bool
+	marked     int
+	failed     int
+	head       string
+	runID      string
+	handleID   string
+}
+
+func (f *fakePolicyReviewGate) IsPolicyReviewSession(context.Context, domain.SessionID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakePolicyReviewGate) AuthorizePolicyReview(_ context.Context, _ domain.SessionID, _ string, head string) (bool, bool, error) {
+	f.head = head
+	return true, f.authorized, nil
+}
+
+func (f *fakePolicyReviewGate) MarkPolicyReviewStarted(_ context.Context, _ domain.SessionID, head, runID, handleID string) error {
+	f.marked++
+	f.head, f.runID, f.handleID = head, runID, handleID
+	return nil
+}
+
+func (f *fakePolicyReviewGate) FailPolicyReviewLaunch(_ context.Context, _ domain.SessionID, _ string, _ string) error {
+	f.failed++
+	return nil
+}
+
 func (f fakePRs) ListPRsBySession(_ context.Context, _ domain.SessionID) ([]domain.PullRequest, error) {
 	return f.prs, nil
 }
@@ -454,6 +483,28 @@ func TestDCPReviewLabRejectsFutureCardAutomatically(t *testing.T) {
 	}
 }
 
+func TestDCPReviewLabPolicyAuthorizesOneFreshExactHead(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-13", "dcp-review-lab", domain.HarnessCodex
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-13"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha-policy"), fakeProjects{}, launcher)
+	gate := &fakePolicyReviewGate{authorized: true}
+	eng.SetPolicyGate(gate)
+
+	result, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !result.Created || launcher.spawnCount != 1 || gate.marked != 1 || gate.failed != 0 {
+		t.Fatalf("policy trigger = %+v err=%v spawns=%d gate=%+v", result, err, launcher.spawnCount, gate)
+	}
+	if gate.head != "sha-policy" || gate.runID != result.Run.ID || gate.handleID != launcher.handle {
+		t.Fatalf("policy exact-head binding = %+v run=%+v", gate, result.Run)
+	}
+	duplicate, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || duplicate.Created || launcher.spawnCount != 1 || gate.marked != 1 {
+		t.Fatalf("duplicate policy trigger = %+v err=%v spawns=%d marked=%d", duplicate, err, launcher.spawnCount, gate.marked)
+	}
+}
+
 func TestAutoTriggerRequiresIdleWorkerAndEligiblePR(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -505,6 +556,26 @@ func TestReconcileStartupRecoversProvenStaleRunOnce(t *testing.T) {
 	}
 	if launcher.spawnCount != 1 || len(store.runs) != 2 {
 		t.Fatalf("recovery duplicated: runs=%d spawns=%d", len(store.runs), launcher.spawnCount)
+	}
+}
+
+func TestReconcileStartupDoesNotRetryPolicyReviewerOnSameHead(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "dcp-review-lab-13", "dcp-review-lab", domain.HarnessCodex
+	old := domain.ReviewRun{
+		ID: "policy-old-run", ReviewID: "policy-review", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("sha1").prs[0].URL, TargetSHA: "sha1", Status: domain.ReviewRunRunning, CreatedAt: time.Unix(1, 0),
+	}
+	store := &fakeStore{review: &domain.Review{ID: old.ReviewID, SessionID: worker.ID, ReviewerHandleID: "review-dcp-review-lab-13", Harness: domain.ReviewerCodex}, runs: []domain.ReviewRun{old}}
+	launcher := &fakeLauncher{handle: "review-dcp-review-lab-13"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.SetPolicyGate(&fakePolicyReviewGate{authorized: true})
+
+	if err := eng.ReconcileStartup(context.Background()); err != nil {
+		t.Fatalf("ReconcileStartup: %v", err)
+	}
+	if store.runs[0].Status != domain.ReviewRunFailed || len(store.runs) != 1 || launcher.spawnCount != 0 {
+		t.Fatalf("policy restart retried same head: runs=%+v spawns=%d", store.runs, launcher.spawnCount)
 	}
 }
 

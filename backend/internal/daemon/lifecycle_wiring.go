@@ -122,6 +122,9 @@ type sessionLifecycle interface {
 	RestoreAll(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	ResumeDCPReviewLabIdleAgent(ctx context.Context, id domain.SessionID, prompt string) (sessionmanager.RestoreResult, error)
+	ProvisionDCPReviewLabPolicySession(ctx context.Context, id domain.SessionID, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	LaunchDCPReviewLabPolicyAction(ctx context.Context, id domain.SessionID, prompt string) (sessionmanager.RestoreResult, error)
+	DCPReviewLabPolicyActionAlive(ctx context.Context, id domain.SessionID, launchID string) (bool, error)
 	// SetShellTerminalCloser late-binds Kill/Cleanup to close a session's
 	// scoped shell terminals before its worktree is torn down. shellterm.Service
 	// is built after Session Manager during boot (see startShellTerminals), so

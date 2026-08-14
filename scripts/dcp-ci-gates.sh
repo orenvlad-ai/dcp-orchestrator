@@ -10,8 +10,8 @@ i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
-control_plane_commit='9465a84ec44f72f6b7c245ebddeac22d722108ae'
-operating_contract_revision='2026-08-13.8'
+control_plane_commit='b94c5b8cbb0dae50e81cbd8e118cbc3c785f8e19'
+operating_contract_revision='2026-08-14.1'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -56,12 +56,14 @@ source_gates() {
 
 	[[ -s AGENTS.md && -s CLAUDE.md ]] || fail 'DCP coding-agent operational entry is absent'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/CURRENT_OPERATING_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane operating contract'
-	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/TARGET_ARCHITECTURE_V1.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane target contract'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact happy-path v1 contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
 	grep -Fq 'I12 activates only the existing stock Review/ReviewRun/Engine contour' AGENTS.md || fail 'AGENTS.md does not bound the I12 reviewer contour'
+	grep -Fq 'at most three active' AGENTS.md || fail 'AGENTS.md lacks the global DCP model-action cap'
+	grep -Fq 'not an alternative future policy' AGENTS.md || fail 'AGENTS.md does not retire qualification ceilings as future policy'
 	grep -Fq 'does not add a second' AGENTS.md || fail 'AGENTS.md does not exclude parallel state/runtime authorities'
 	grep -Fq 'Read and follow [`AGENTS.md`](AGENTS.md)' CLAUDE.md || fail 'compatibility agent entry does not defer to DCP AGENTS.md'
 	if grep -Fq 'All app state lives under `~/.ao` only' AGENTS.md CLAUDE.md \
@@ -169,9 +171,13 @@ source_gates() {
 	rebase_head_finalization_migration='backend/internal/storage/sqlite/migrations/0064_dcp_card12_rebase_head_finalization.sql'
 	rebase_head_finalization_audit_recovery_migration='backend/internal/storage/sqlite/migrations/0065_dcp_card12_rebase_head_finalization_audit_recovery.sql'
 	rebase_head_finalization_provider_base_recovery_migration='backend/internal/storage/sqlite/migrations/0066_dcp_card12_rebase_head_finalization_provider_base_recovery.sql'
-	printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	happy_path_migration='backend/internal/storage/sqlite/migrations/0067_dcp_review_lab_happy_path_v1.sql'
+	printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
-	git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations | sort > "${TMPDIR:-/tmp}/dcp-actual-migrations.$$"
+	{
+		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
+		git ls-files --others --exclude-standard -- backend/internal/storage/sqlite/migrations
+	} | sort -u > "${TMPDIR:-/tmp}/dcp-actual-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$" "${TMPDIR:-/tmp}/dcp-actual-migrations.$$"' EXIT
 	diff -u "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$" "${TMPDIR:-/tmp}/dcp-actual-migrations.$$" >/dev/null || fail 'post-I11 source added an unauthorized storage migration'
 	[[ -s "$terminal_merge_migration" ]] || fail 'bounded terminal-merge ReviewRun migration is absent'
@@ -179,6 +185,18 @@ source_gates() {
 	! sed '/-- +goose Down/,$d' "$terminal_merge_migration" | grep -Eiq 'CREATE[[:space:]]+TABLE|ALTER[[:space:]]+TABLE[[:space:]]+([^r]|r[^e]|re[^v]|rev[^i]|revi[^e]|revie[^w]|review[^_]|review_[^r])' || fail 'terminal merge added a second storage schema instead of reusing ReviewRun'
 	grep -Fq 'RepositoryFullName = "orenvlad-ai/dcp-review-lab"' backend/internal/dcpterminalmerge/merge.go || fail 'terminal merge repository identity is not exact'
 	grep -Fq 'RequiredCheckName  = "dcp-review-lab"' backend/internal/dcpterminalmerge/merge.go || fail 'terminal merge named check is absent'
+	[[ -s "$happy_path_migration" ]] || fail 'future DCP happy-path migration is absent'
+	grep -Fq 'CREATE TABLE dcp_review_lab_policy_task' "$happy_path_migration" || fail 'future task identity table is absent'
+	grep -Fq 'CREATE TABLE dcp_model_action' "$happy_path_migration" || fail 'future model-action FIFO is absent'
+	grep -Fq 'idx_dcp_model_action_one_slot' "$happy_path_migration" || fail 'three-slot physical uniqueness is absent'
+	grep -Fq 'slot BETWEEN 0 AND 3' "$happy_path_migration" || fail 'three-slot physical ceiling is absent'
+	grep -Fq 'card_number > 12' "$happy_path_migration" || fail 'future task rows do not preserve historical card identities'
+	grep -Fq 'UNIQUE (task_id, kind, exact_head_sha)' "$happy_path_migration" || fail 'fresh-review exact-head uniqueness is absent'
+	grep -Fq 'func (s *Service) SubmitPolicy' backend/internal/service/dcptask/service.go || fail 'policy submit path is absent'
+	grep -Fq 'func (s *Service) DrainModelActions' backend/internal/service/dcptask/policy.go || fail 'event-driven model-action drain is absent'
+	grep -Fq 'CompleteDCPReviewLabPolicyAdmission' backend/internal/storage/sqlite/store/dcp_admission_store.go || fail 'atomic policy terminal persistence is absent'
+	grep -Fq 'DCPReviewLabPolicyAuthorized: true' backend/internal/session_manager/manager.go || fail 'typed future worker network proof is absent'
+	! grep -ERq 'time\.(NewTicker|Tick)|for[[:space:]]*\{[[:space:]]*time\.Sleep' backend/internal/service/dcptask || fail 'future policy introduced a poll or heartbeat loop'
 	grep -Fq 'headRepository{ nameWithOwner }' backend/internal/adapters/scm/github/observer_provider.go || fail 'SCM observation does not request exact PR head repository identity'
 	grep -Fq 'HeadRepo:                 repositoryNameWithOwner(pr["headRepository"])' backend/internal/adapters/scm/github/observer_provider.go || fail 'SCM observation does not preserve exact PR head repository identity'
 	grep -Fq 'Method:          ports.SCMMergeSquash' backend/internal/dcpterminalmerge/merge.go || fail 'terminal merge method is not exact squash'
@@ -297,7 +315,9 @@ source_gates() {
 	! grep -ERq 'time\.(NewTicker|Tick)|for[[:space:]]*\{[[:space:]]*time\.Sleep' backend/internal/dcpterminalmerge || fail 'I13 admission/arbiter introduced a poll or heartbeat loop'
 
 unexpected_paths="$(git diff --name-only "$i8_parity_commit"..HEAD | grep -Ev '^(\.github/workflows/.*|AGENTS\.md|CLAUDE\.md|DCP_PROVENANCE\.md|NOTICE|README\.md|scripts/dcp-ci-gates\.sh|frontend/forge\.config\.ts|frontend/package(-lock)?\.json|backend/internal/adapters/(agent|reviewer)/codex/codex(_test)?\.go|backend/internal/adapters/runtime/(tmux/tmux(_test)?|conpty/runtime)\.go|backend/internal/adapters/scm/github/(observer_provider|provider_test)\.go|backend/internal/browserruntime/broker(_test)?\.go|backend/internal/cli/(arbiter(_supervise_unix_test)?|recovery(_supervise_unix_test)?|project|project_test|review|review_supervise_unix_test|root|root_test)\.go|backend/internal/daemon/(daemon|lifecycle_wiring|scm_wiring|wiring_test)\.go|backend/internal/dcpterminalmerge/(arbiter_(engine|launcher|protocol|successor|successor_engine|successor_launcher)(_test)?|fresh_worker_(engine|launcher|test)|model_free_rebase_(engine|executor|test)|cold_start_recovery_(engine|executor|test)|merge|merge_test)\.go|backend/internal/domain/(agentconfig|dcp_admission|dcp_arbiter|dcp_fresh_worker_recovery|dcp_model_free_rebase_continuation|dcp_card12_cold_start_recovery|dcp_task|review|session|status)\.go|backend/internal/httpd/(api|router)\.go|backend/internal/httpd/apispec/openapi\.yaml|backend/internal/httpd/apispec/specgen/build\.go|backend/internal/httpd/controllers/(dcp_tasks(_test)?|dto|reviews(_test)?)\.go|backend/internal/lifecycle/(manager|manager_test|reactions)\.go|backend/internal/observe/scm/observer(_test)?\.go|backend/internal/ports/(agent|reviewer|outbound)\.go|backend/internal/review/(launcher|launcher_test|planner|prompt|result|result_test|review|review_test)\.go|backend/internal/service/dcptask/(repository|repository_test|service|service_test)\.go|backend/internal/service/review/review(_test)?\.go|backend/internal/service/session/(service|status_test)\.go|backend/internal/session_manager/manager(_test)?\.go|backend/internal/storage/sqlite/gen/((dcp_admission|dcp_arbiter|dcp_fresh_worker_recovery|dcp_model_free_rebase_continuation|dcp_card12_cold_start_recovery|dcp_tasks|review|sessions)\.sql\.go|models\.go)|backend/internal/storage/sqlite/(migrate(_burned_versions)?|cold_start_tool_path_migration)_test\.go|backend/internal/storage/sqlite/migrations/(004(8_dcp_task_foundation|9_dcp_review_lab_terminal_merge)|005(0_dcp_review_lab_admission|1_dcp_review_lab_recovered_incident|2_dcp_review_lab_arbiter_v1|3_dcp_arbiter_prelaunch_config_recovery|4_dcp_arbiter_response_schema_recovery|5_dcp_arbiter_successor_attempt|6_dcp_arbiter_successor_result_validation_recovery|7_dcp_review_lab_card12_fresh_worker_recovery|8_dcp_review_lab_card12_fresh_worker_preflight_recovery|9_dcp_review_lab_card12_model_free_rebase_continuation)|006(0_dcp_review_lab_card12_model_free_provider_base_correction|1_dcp_card12_cold_start_quarantined_recovery|2_dcp_card12_cold_start_tool_path_recovery))\.sql|backend/internal/storage/sqlite/queries/(dcp_admission|dcp_arbiter|dcp_fresh_worker_recovery|dcp_model_free_rebase_continuation|dcp_card12_cold_start_recovery|dcp_tasks|review|sessions)\.sql|backend/internal/storage/sqlite/store/(dcp_admission_store|dcp_arbiter_store|dcp_arbiter_successor_store|dcp_fresh_worker_recovery_store|dcp_model_free_rebase_continuation_store|dcp_card12_cold_start_recovery_store|dcp_task_store|review_store)(_test)?\.go|backend/internal/telemetrymeta/cli\.go|backend/sqlc\.yaml|frontend/src/api/schema\.ts|frontend/src/renderer/__tests__/integration/board-empty-states\.test\.tsx|frontend/src/renderer/components/(CommandPalette|ProjectSettingsForm|RestoreUnavailableDialog|SessionInspector|SessionsBoard|ShellTopbar|Sidebar)(\.test)?\.tsx|frontend/src/renderer/hooks/useDCPTasksQuery\.ts|frontend/src/renderer/i18n/(de|en|es|fr|ja|ko|pt-BR|zh-CN)\.json|frontend/src/renderer/lib/(api-client|command-palette|orchestrator-spawn-sources|session-presentation|spawn-orchestrator)(\.test)?\.ts|frontend/src/renderer/types/workspace\.ts)$' || true)"
+unexpected_paths="$( { printf '%s\n' "$unexpected_paths"; git ls-files --others --exclude-standard; } | sort -u)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/cold_start_auto_merge_migration_test\.go|backend/internal/storage/sqlite/migrations/0063_dcp_card12_cold_start_auto_merge_recovery\.sql|backend/internal/dcpterminalmerge/rebase_head_finalization_(engine|executor|test)\.go|backend/internal/domain/dcp_card12_rebase_head_finalization\.go|backend/internal/storage/sqlite/(rebase_head_finalization(_provider_base)?_migration_test\.go|migrations/006(4_dcp_card12_rebase_head_finalization|5_dcp_card12_rebase_head_finalization_audit_recovery|6_dcp_card12_rebase_head_finalization_provider_base_recovery)\.sql|queries/dcp_card12_rebase_head_finalization\.sql|gen/dcp_card12_rebase_head_finalization\.sql\.go|store/dcp_card12_rebase_head_finalization_store(_test)?\.go))$' || true)"
+unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/cli/dcp\.go|backend/internal/domain/dcp_lab_policy\.go|backend/internal/service/dcptask/(policy|review_repository)\.go|backend/internal/storage/sqlite/gen/dcp_lab_policy\.sql\.go|backend/internal/storage/sqlite/migrations/0067_dcp_review_lab_happy_path_v1\.sql|backend/internal/storage/sqlite/queries/dcp_lab_policy\.sql|backend/internal/storage/sqlite/store/dcp_lab_policy_store(_test)?\.go)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

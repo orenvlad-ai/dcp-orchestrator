@@ -149,6 +149,15 @@ func (l *fakeLCM) PrepareLaunch(id domain.SessionID, launchID string) error {
 func (l *fakeLCM) CancelLaunch(id domain.SessionID, launchID string) {
 	l.cancelled = append(l.cancelled, string(id)+":"+launchID)
 }
+func (l *fakeLCM) MarkProvisioned(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	l.completed++
+	rec := l.store.sessions[id]
+	rec.IsTerminated = false
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
+	rec.Metadata = metadata
+	l.store.sessions[id] = rec
+	return nil
+}
 func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
 	l.completed++
 	rec := l.store.sessions[id]

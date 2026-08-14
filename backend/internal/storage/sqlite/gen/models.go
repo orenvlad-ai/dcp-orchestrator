@@ -223,6 +223,22 @@ type DcpGovernedStartupQuarantine struct {
 	LastVerifiedAt    time.Time
 }
 
+type DcpModelAction struct {
+	Sequence     int64
+	ID           string
+	TaskID       string
+	SessionID    string
+	Kind         string
+	ExactHeadSha string
+	Status       string
+	Slot         int64
+	LaunchID     string
+	ReviewRunID  string
+	ErrorCode    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string
@@ -599,6 +615,35 @@ type DcpReviewLabCard12RebaseHeadFinalization struct {
 	AuthorizedAt               time.Time
 	UpdatedAt                  time.Time
 	FinishedAt                 sql.NullTime
+}
+
+type DcpReviewLabPolicyTask struct {
+	TaskID          string
+	PayloadJson     string
+	PayloadDigest   string
+	Target          string
+	Profile         string
+	Repository      string
+	PolicyVersion   string
+	SessionID       string
+	CardNumber      int64
+	WorktreePath    string
+	SourceBranch    string
+	Prompt          string
+	State           string
+	Revision        int64
+	RepairCount     int64
+	PRURL           string
+	PRNumber        int64
+	CurrentHeadSha  string
+	PreviousHeadSha string
+	ReviewRunID     string
+	AdmissionID     string
+	MergeCommitSha  string
+	ErrorCode       string
+	IncidentPacket  string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type DcpTask struct {

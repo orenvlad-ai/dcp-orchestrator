@@ -28,6 +28,7 @@ type fakeStore struct {
 	claims            int
 	admission         *domain.DCPReviewLabAdmission
 	includeCohortPeer bool
+	policyTask        *domain.DCPReviewLabPolicyTask
 }
 
 func (f *fakeStore) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -153,6 +154,48 @@ func (f *fakeStore) RecordDCPReviewLabIncident(_ context.Context, admission doma
 	f.admission.Status, f.admission.LeaseID, f.admission.AdmittedBaseSHA = domain.DCPAdmissionIncident, leaseID, baseSHA
 	f.admission.ErrorCode, f.admission.IncidentPacket, f.admission.UpdatedAt = code, packet, now
 	return true, nil
+}
+func (f *fakeStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	if f.policyTask == nil || f.policyTask.SessionID != id {
+		return domain.DCPReviewLabPolicyTask{}, false, nil
+	}
+	return *f.policyTask, true, nil
+}
+func (f *fakeStore) UpdateDCPReviewLabPolicyTaskCAS(_ context.Context, current, next domain.DCPReviewLabPolicyTask) (bool, error) {
+	if f.policyTask == nil || f.policyTask.TaskID != current.TaskID || f.policyTask.Revision != current.Revision || f.policyTask.State != current.State {
+		return false, nil
+	}
+	next.Revision++
+	*f.policyTask = next
+	return true, nil
+}
+func (f *fakeStore) EnqueueDCPReviewLabPolicyAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask) (domain.DCPReviewLabAdmission, bool, error) {
+	row, created, err := f.EnqueueDCPReviewLabAdmission(ctx, admission)
+	if err != nil {
+		return row, created, err
+	}
+	if f.policyTask == nil || f.policyTask.TaskID != task.TaskID || f.policyTask.State != domain.DCPPolicyAdmissionWait {
+		return domain.DCPReviewLabAdmission{}, false, errors.New("policy task unavailable")
+	}
+	f.policyTask.AdmissionID = row.ID
+	f.policyTask.Revision++
+	return row, created, nil
+}
+func (f *fakeStore) CompleteDCPReviewLabPolicyAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, sha string, now time.Time) (bool, error) {
+	completed, err := f.CompleteDCPReviewLabAdmission(ctx, admission, sha, now)
+	if completed && f.policyTask != nil && f.policyTask.TaskID == task.TaskID {
+		f.policyTask.State, f.policyTask.MergeCommitSHA = domain.DCPPolicyMerged, sha
+		f.policyTask.Revision++
+	}
+	return completed, err
+}
+func (f *fakeStore) RecordDCPReviewLabPolicyIncident(ctx context.Context, admission domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, leaseID, baseSHA, code, packet string, now time.Time) (bool, error) {
+	recorded, err := f.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, code, packet, now)
+	if recorded && f.policyTask != nil && f.policyTask.TaskID == task.TaskID {
+		f.policyTask.State, f.policyTask.ErrorCode, f.policyTask.IncidentPacket = domain.DCPPolicyIncident, code, packet
+		f.policyTask.Revision++
+	}
+	return recorded, err
 }
 
 type fakeSCM struct {
@@ -287,6 +330,121 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 		return "", errors.New("unexpected git command")
 	}
 	return engine, store, scm
+}
+
+func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
+	t.Helper()
+	engine, store, scm := fixture(t)
+	id := domain.SessionID("dcp-review-lab-13")
+	workspace := filepath.Join(engine.dataDir, "worktrees", ProjectID, string(id))
+	privateGitDir := filepath.Join(store.project.Path, ".git", "worktrees", string(id))
+	for _, path := range []string{workspace, privateGitDir} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	branch := "ao/" + string(id) + "/root"
+	store.session.ID, store.session.DisplayName = id, "DCP:future-1"
+	store.session.Metadata.WorkspacePath, store.session.Metadata.Branch = workspace, branch
+	store.session.Metadata.Prompt = "DCP synthetic task future-1: Add one future policy fixture."
+	store.pr.SessionID, store.pr.SourceBranch = id, branch
+	store.run.SessionID = id
+	store.policyTask = &domain.DCPReviewLabPolicyTask{
+		TaskID: "future-1", Target: ProjectID, Profile: "synthetic-pr", Repository: RepositoryFullName,
+		PolicyVersion: domain.DCPReviewLabPolicyVersion, SessionID: id, CardNumber: 13,
+		WorktreePath: workspace, SourceBranch: branch, Prompt: "Add one future policy fixture.",
+		State: domain.DCPPolicyAdmissionWait, Revision: 8, CurrentHeadSHA: testHead, ReviewRunID: store.run.ID,
+	}
+	scm.observation.PR.SourceBranch = branch
+	scm.observation.CI.Checks[0].URL = "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/123/job/456"
+	engine.providerRepository = func(context.Context) (string, error) { return RepositoryFullName + "|false|main", nil }
+	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
+		cmd := strings.Join(args, " ")
+		if cmd == "status --porcelain" {
+			return "", nil
+		}
+		if cmd == "remote" {
+			return "origin", nil
+		}
+		if cmd == "remote get-url origin" {
+			return RepositoryURL, nil
+		}
+		if cmd == "fetch --no-tags origin main" {
+			return "", nil
+		}
+		if path == store.project.Path {
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return path, nil
+			case "branch --show-current":
+				return TargetBranch, nil
+			case "rev-parse origin/main", "rev-parse HEAD":
+				return strings.ToLower(store.pr.BaseSHA), nil
+			case "merge-tree --write-tree " + strings.ToLower(store.pr.BaseSHA) + " " + testHead:
+				return testMerge, nil
+			}
+		}
+		if path == workspace {
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return path, nil
+			case "branch --show-current":
+				return branch, nil
+			case "rev-parse HEAD":
+				return testHead, nil
+			case "rev-parse --path-format=absolute --git-common-dir":
+				return filepath.Join(store.project.Path, ".git"), nil
+			case "rev-parse --path-format=absolute --absolute-git-dir":
+				return privateGitDir, nil
+			case "merge-base --is-ancestor " + testBase + " " + testHead:
+				return "", nil
+			case "rev-list --count " + testBase + ".." + testHead:
+				return "1", nil
+			case "rev-list --merges " + testBase + ".." + testHead:
+				return "", nil
+			}
+		}
+		return "", errors.New("unexpected future-policy git command: " + cmd)
+	}
+	return engine, store, scm
+}
+
+func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	advancedMain := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	store.pr.BaseSHA, scm.observation.PR.BaseSHA = advancedMain, advancedMain
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.policyTask.State != domain.DCPPolicyMerged || store.policyTask.MergeCommitSHA != testMerge || store.admission == nil || store.admission.Status != domain.DCPAdmissionSucceeded {
+		t.Fatalf("future terminal projection: merges=%d task=%+v admission=%+v", scm.mergeCalls, store.policyTask, store.admission)
+	}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 {
+		t.Fatalf("future terminal merge duplicated: %d", scm.mergeCalls)
+	}
+}
+
+func TestFuturePolicyNonCleanOrForeignNamedCIFailsClosedWithoutWake(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeSCM){
+		"behind":           func(scm *fakeSCM) { scm.observation.PR.ProviderMergeStateStatus = "BEHIND" },
+		"foreign named CI": func(scm *fakeSCM) { scm.observation.CI.Checks[0].URL = "https://example.invalid/actions/runs/123" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			engine, store, scm := futurePolicyFixture(t)
+			mutate(scm)
+			wakes := 0
+			engine.SetRefreshWaker(func(context.Context, domain.SessionID, string) error { wakes++; return nil })
+			if err := engine.Try(context.Background(), store.session.ID); err != nil {
+				t.Fatal(err)
+			}
+			if wakes != 0 || scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyIncident || (store.admission != nil && store.admission.Status != domain.DCPAdmissionIncident) {
+				t.Fatalf("future fail-closed projection: wakes=%d merges=%d task=%+v admission=%+v", wakes, scm.mergeCalls, store.policyTask, store.admission)
+			}
+		})
+	}
 }
 
 func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {

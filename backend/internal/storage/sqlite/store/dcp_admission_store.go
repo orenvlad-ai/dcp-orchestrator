@@ -16,7 +16,51 @@ import (
 func (s *Store) EnqueueDCPReviewLabAdmission(ctx context.Context, a domain.DCPReviewLabAdmission) (domain.DCPReviewLabAdmission, bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	n, err := s.qw.InsertDCPReviewLabAdmission(ctx, gen.InsertDCPReviewLabAdmissionParams{
+	return enqueueDCPReviewLabAdmission(ctx, s.qw, a)
+}
+
+// EnqueueDCPReviewLabPolicyAdmission atomically appends the global FIFO row
+// and binds it to the future policy card. Restart can never see a mergeable
+// queue row whose native task projection still lacks its admission identity.
+func (s *Store) EnqueueDCPReviewLabPolicyAdmission(ctx context.Context, a domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask) (domain.DCPReviewLabAdmission, bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var result domain.DCPReviewLabAdmission
+	var created bool
+	err := s.inTx(ctx, "enqueue DCP review-lab policy admission", func(q *gen.Queries) error {
+		currentRow, err := q.GetDCPReviewLabPolicyTaskBySessionID(ctx, string(a.SessionID))
+		if err != nil {
+			return err
+		}
+		current := dcpPolicyTaskFromGen(currentRow)
+		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != domain.DCPPolicyAdmissionWait ||
+			current.CurrentHeadSHA != a.TargetSHA || current.ReviewRunID != a.ReviewRunID ||
+			(current.AdmissionID != "" && current.AdmissionID != a.ID) {
+			return errors.New("exact policy admission identity was unavailable")
+		}
+		result, created, err = enqueueDCPReviewLabAdmission(ctx, q, a)
+		if err != nil {
+			return err
+		}
+		if result.ID != a.ID || result.ReviewRunID != a.ReviewRunID || result.SessionID != a.SessionID || result.TargetSHA != a.TargetSHA {
+			return errors.New("persisted policy admission identity drifted")
+		}
+		if current.AdmissionID == result.ID {
+			return nil
+		}
+		next := current
+		next.AdmissionID, next.UpdatedAt = result.ID, a.UpdatedAt
+		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
+		if err != nil || n != 1 {
+			return errors.Join(err, errors.New("exact policy admission binding was unavailable"))
+		}
+		return nil
+	})
+	return result, created, err
+}
+
+func enqueueDCPReviewLabAdmission(ctx context.Context, q *gen.Queries, a domain.DCPReviewLabAdmission) (domain.DCPReviewLabAdmission, bool, error) {
+	n, err := q.InsertDCPReviewLabAdmission(ctx, gen.InsertDCPReviewLabAdmissionParams{
 		ID:            a.ID,
 		PRNumber:      a.PRNumber,
 		ReviewBaseSha: a.ReviewBaseSHA,
@@ -31,7 +75,7 @@ func (s *Store) EnqueueDCPReviewLabAdmission(ctx context.Context, a domain.DCPRe
 	if err != nil {
 		return domain.DCPReviewLabAdmission{}, false, err
 	}
-	row, err := s.qw.GetDCPReviewLabAdmissionByRun(ctx, a.ReviewRunID)
+	row, err := q.GetDCPReviewLabAdmissionByRun(ctx, a.ReviewRunID)
 	if err != nil {
 		return domain.DCPReviewLabAdmission{}, false, err
 	}
@@ -133,29 +177,68 @@ func (s *Store) CompleteDCPReviewLabAdmission(ctx context.Context, a domain.DCPR
 	defer s.writeMu.Unlock()
 	completed := false
 	err := s.inTx(ctx, "complete DCP review-lab admission", func(q *gen.Queries) error {
-		if err := requireDCPArbiterCompletion(q, ctx, a, mergeSHA, now); err != nil {
+		if err := completeDCPReviewLabAdmissionTx(ctx, q, a, mergeSHA, now); err != nil {
 			return err
-		}
-		n, err := q.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{MergeCommitSha: mergeSHA, RunID: a.ReviewRunID})
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return errors.New("exact ReviewRun terminal completion was unavailable")
-		}
-		n, err = q.CompleteDCPReviewLabAdmission(ctx, gen.CompleteDCPReviewLabAdmissionParams{
-			MergeCommitSha: mergeSHA, UpdatedAt: now, ID: a.ID, ReviewRunID: a.ReviewRunID, LeaseID: a.LeaseID,
-		})
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return errors.New("exact admission completion was unavailable")
 		}
 		completed = true
 		return nil
 	})
 	return completed, err
+}
+
+// CompleteDCPReviewLabPolicyAdmission stores the ordinary provider merge,
+// releases the one FIFO lease, and makes the stock native card terminal in one
+// SQLite transaction. A restart can therefore observe neither half alone.
+func (s *Store) CompleteDCPReviewLabPolicyAdmission(ctx context.Context, a domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, mergeSHA string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	completed := false
+	err := s.inTx(ctx, "complete DCP review-lab policy admission", func(q *gen.Queries) error {
+		row, err := q.GetDCPReviewLabPolicyTaskBySessionID(ctx, string(a.SessionID))
+		if err != nil {
+			return err
+		}
+		current := dcpPolicyTaskFromGen(row)
+		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != domain.DCPPolicyAdmissionWait ||
+			current.AdmissionID != a.ID || current.ReviewRunID != a.ReviewRunID || current.CurrentHeadSHA != a.TargetSHA {
+			return errors.New("exact policy terminal identity was unavailable")
+		}
+		if err := completeDCPReviewLabAdmissionTx(ctx, q, a, mergeSHA, now); err != nil {
+			return err
+		}
+		next := current
+		next.State, next.MergeCommitSHA, next.UpdatedAt = domain.DCPPolicyMerged, mergeSHA, now
+		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
+		if err != nil || n != 1 {
+			return errors.Join(err, errors.New("exact policy terminal projection was unavailable"))
+		}
+		completed = true
+		return nil
+	})
+	return completed, err
+}
+
+func completeDCPReviewLabAdmissionTx(ctx context.Context, q *gen.Queries, a domain.DCPReviewLabAdmission, mergeSHA string, now time.Time) error {
+	if err := requireDCPArbiterCompletion(q, ctx, a, mergeSHA, now); err != nil {
+		return err
+	}
+	n, err := q.CompleteDCPReviewLabTerminalMerge(ctx, gen.CompleteDCPReviewLabTerminalMergeParams{MergeCommitSha: mergeSHA, RunID: a.ReviewRunID})
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("exact ReviewRun terminal completion was unavailable")
+	}
+	n, err = q.CompleteDCPReviewLabAdmission(ctx, gen.CompleteDCPReviewLabAdmissionParams{
+		MergeCommitSha: mergeSHA, UpdatedAt: now, ID: a.ID, ReviewRunID: a.ReviewRunID, LeaseID: a.LeaseID,
+	})
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("exact admission completion was unavailable")
+	}
+	return nil
 }
 
 func (s *Store) FailDCPReviewLabAdmission(ctx context.Context, a domain.DCPReviewLabAdmission, errorCode string, now time.Time) (bool, error) {
@@ -203,82 +286,121 @@ func (s *Store) RecordDCPReviewLabIncident(ctx context.Context, a domain.DCPRevi
 	defer s.writeMu.Unlock()
 	recorded := false
 	err := s.inTx(ctx, "record DCP review-lab incident", func(q *gen.Queries) error {
-		if a.Status == domain.DCPAdmissionClaimed {
-			n, err := q.FailDCPReviewLabTerminalMerge(ctx, gen.FailDCPReviewLabTerminalMergeParams{ErrorCode: errorCode, RunID: a.ReviewRunID})
-			if err != nil {
-				return err
-			}
-			if n != 1 {
-				return errors.New("claimed ReviewRun could not be fenced")
-			}
-		}
-		n, err := q.RecordDCPReviewLabIncident(ctx, gen.RecordDCPReviewLabIncidentParams{
-			LeaseID: leaseID, AdmittedBaseSha: baseSHA, ErrorCode: errorCode,
-			IncidentPacket: packet, UpdatedAt: now, ID: a.ID, ReviewRunID: a.ReviewRunID,
-			SessionID: string(a.SessionID), TargetSha: a.TargetSHA, ExpectedLeaseID: a.LeaseID,
-		})
-		if err != nil {
+		if err := recordDCPReviewLabIncidentTx(ctx, q, a, leaseID, baseSHA, errorCode, packet, now); err != nil {
 			return err
-		}
-		if n != 1 {
-			return errors.New("exact admission incident transition was unavailable")
-		}
-		finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
-		if finalizationErr == nil && finalization.Status == string(domain.DCPRebaseHeadFinalizationRecoveryReviewed) &&
-			finalization.ReviewRunID == a.ReviewRunID && finalization.CandidateHead == a.TargetSHA {
-			n, failErr := q.FailDCPCard12RebaseHeadFinalizationTerminal(ctx, gen.FailDCPCard12RebaseHeadFinalizationTerminalParams{
-				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
-				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
-			})
-			if failErr != nil || n != 1 {
-				return errors.Join(failErr, errors.New("card-12 REBASE_HEAD terminal failure was unavailable"))
-			}
-		} else if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
-			return finalizationErr
-		}
-		coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
-		if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryRecoveryReviewed) &&
-			coldStart.RecoveryReviewRunID == a.ReviewRunID && coldStart.NewHead == a.TargetSHA {
-			n, failErr := q.FailDCPCard12ColdStartRecoveryTerminal(ctx, gen.FailDCPCard12ColdStartRecoveryTerminalParams{
-				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
-				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
-			})
-			if failErr != nil || n != 1 {
-				return errors.Join(failErr, errors.New("card-12 cold-start terminal failure was unavailable"))
-			}
-		} else if coldStartErr != nil && !errors.Is(coldStartErr, sql.ErrNoRows) {
-			return coldStartErr
-		}
-		continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
-		if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseRecoveryReviewed) &&
-			continuation.RecoveryReviewRunID == a.ReviewRunID && continuation.NewHead == a.TargetSHA {
-			n, failErr := q.FailDCPCard12ModelFreeRebaseTerminal(ctx, gen.FailDCPCard12ModelFreeRebaseTerminalParams{
-				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
-				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
-			})
-			if failErr != nil || n != 1 {
-				return errors.Join(failErr, errors.New("card-12 model-free terminal failure was unavailable"))
-			}
-		} else if continuationErr != nil && !errors.Is(continuationErr, sql.ErrNoRows) {
-			return continuationErr
-		}
-		fresh, freshErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
-		if freshErr == nil && fresh.Status == string(domain.DCPFreshWorkerRecoveryReviewed) &&
-			fresh.RecoveryReviewRunID == a.ReviewRunID && fresh.NewHead == a.TargetSHA {
-			n, failErr := q.FailDCPCard12FreshWorkerTerminal(ctx, gen.FailDCPCard12FreshWorkerTerminalParams{
-				ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
-				ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
-			})
-			if failErr != nil || n != 1 {
-				return errors.Join(failErr, errors.New("card-12 fresh recovery terminal failure was unavailable"))
-			}
-		} else if freshErr != nil && !errors.Is(freshErr, sql.ErrNoRows) {
-			return freshErr
 		}
 		recorded = true
 		return nil
 	})
 	return recorded, err
+}
+
+// RecordDCPReviewLabPolicyIncident freezes the FIFO admission and its stock
+// native card projection in one transaction. Historical recovery rows remain
+// handled by the shared admission helper and are never attached to policy rows.
+func (s *Store) RecordDCPReviewLabPolicyIncident(ctx context.Context, a domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, leaseID, baseSHA, errorCode, packet string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	recorded := false
+	err := s.inTx(ctx, "record DCP review-lab policy incident", func(q *gen.Queries) error {
+		currentRow, err := q.GetDCPReviewLabPolicyTaskBySessionID(ctx, string(a.SessionID))
+		if err != nil {
+			return err
+		}
+		current := dcpPolicyTaskFromGen(currentRow)
+		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != domain.DCPPolicyAdmissionWait ||
+			current.AdmissionID != a.ID || current.ReviewRunID != a.ReviewRunID || current.CurrentHeadSHA != a.TargetSHA {
+			return errors.New("exact policy incident identity was unavailable")
+		}
+		if err := recordDCPReviewLabIncidentTx(ctx, q, a, leaseID, baseSHA, errorCode, packet, now); err != nil {
+			return err
+		}
+		next := current
+		next.State, next.ErrorCode, next.IncidentPacket, next.UpdatedAt = domain.DCPPolicyIncident, errorCode, packet, now
+		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
+		if err != nil || n != 1 {
+			return errors.Join(err, errors.New("exact policy incident projection was unavailable"))
+		}
+		recorded = true
+		return nil
+	})
+	return recorded, err
+}
+
+func recordDCPReviewLabIncidentTx(ctx context.Context, q *gen.Queries, a domain.DCPReviewLabAdmission, leaseID, baseSHA, errorCode, packet string, now time.Time) error {
+	if a.Status == domain.DCPAdmissionClaimed {
+		n, err := q.FailDCPReviewLabTerminalMerge(ctx, gen.FailDCPReviewLabTerminalMergeParams{ErrorCode: errorCode, RunID: a.ReviewRunID})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("claimed ReviewRun could not be fenced")
+		}
+	}
+	n, err := q.RecordDCPReviewLabIncident(ctx, gen.RecordDCPReviewLabIncidentParams{
+		LeaseID: leaseID, AdmittedBaseSha: baseSHA, ErrorCode: errorCode,
+		IncidentPacket: packet, UpdatedAt: now, ID: a.ID, ReviewRunID: a.ReviewRunID,
+		SessionID: string(a.SessionID), TargetSha: a.TargetSHA, ExpectedLeaseID: a.LeaseID,
+	})
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("exact admission incident transition was unavailable")
+	}
+	finalization, finalizationErr := q.GetDCPCard12RebaseHeadFinalization(ctx, dcpCard12RebaseHeadFinalizationID)
+	if finalizationErr == nil && finalization.Status == string(domain.DCPRebaseHeadFinalizationRecoveryReviewed) &&
+		finalization.ReviewRunID == a.ReviewRunID && finalization.CandidateHead == a.TargetSHA {
+		n, failErr := q.FailDCPCard12RebaseHeadFinalizationTerminal(ctx, gen.FailDCPCard12RebaseHeadFinalizationTerminalParams{
+			ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 REBASE_HEAD terminal failure was unavailable"))
+		}
+	} else if finalizationErr != nil && !errors.Is(finalizationErr, sql.ErrNoRows) {
+		return finalizationErr
+	}
+	coldStart, coldStartErr := q.GetDCPCard12ColdStartRecovery(ctx, dcpCard12ColdStartRecoveryID)
+	if coldStartErr == nil && coldStart.Status == string(domain.DCPColdStartRecoveryRecoveryReviewed) &&
+		coldStart.RecoveryReviewRunID == a.ReviewRunID && coldStart.NewHead == a.TargetSHA {
+		n, failErr := q.FailDCPCard12ColdStartRecoveryTerminal(ctx, gen.FailDCPCard12ColdStartRecoveryTerminalParams{
+			ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 cold-start terminal failure was unavailable"))
+		}
+	} else if coldStartErr != nil && !errors.Is(coldStartErr, sql.ErrNoRows) {
+		return coldStartErr
+	}
+	continuation, continuationErr := q.GetDCPCard12ModelFreeRebaseContinuation(ctx, dcpCard12ModelFreeRebaseContinuationID)
+	if continuationErr == nil && continuation.Status == string(domain.DCPModelFreeRebaseRecoveryReviewed) &&
+		continuation.RecoveryReviewRunID == a.ReviewRunID && continuation.NewHead == a.TargetSHA {
+		n, failErr := q.FailDCPCard12ModelFreeRebaseTerminal(ctx, gen.FailDCPCard12ModelFreeRebaseTerminalParams{
+			ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 model-free terminal failure was unavailable"))
+		}
+	} else if continuationErr != nil && !errors.Is(continuationErr, sql.ErrNoRows) {
+		return continuationErr
+	}
+	fresh, freshErr := q.GetDCPCard12FreshWorkerRecovery(ctx, dcpCard12FreshWorkerRecoveryID)
+	if freshErr == nil && fresh.Status == string(domain.DCPFreshWorkerRecoveryReviewed) &&
+		fresh.RecoveryReviewRunID == a.ReviewRunID && fresh.NewHead == a.TargetSHA {
+		n, failErr := q.FailDCPCard12FreshWorkerTerminal(ctx, gen.FailDCPCard12FreshWorkerTerminalParams{
+			ErrorCode: errorCode, UpdatedAt: now, FinishedAt: sql.NullTime{Time: now, Valid: true},
+			ReviewRunID: a.ReviewRunID, TargetSha: a.TargetSHA,
+		})
+		if failErr != nil || n != 1 {
+			return errors.Join(failErr, errors.New("card-12 fresh recovery terminal failure was unavailable"))
+		}
+	} else if freshErr != nil && !errors.Is(freshErr, sql.ErrNoRows) {
+		return freshErr
+	}
+	return nil
 }
 
 func dcpAdmissionResult(row gen.DcpReviewLabAdmission, err error) (domain.DCPReviewLabAdmission, bool, error) {

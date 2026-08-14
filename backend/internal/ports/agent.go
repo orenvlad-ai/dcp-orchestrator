@@ -297,6 +297,9 @@ type LaunchConfig struct {
 	Permissions PermissionMode
 	Prompt      string
 	SessionID   string
+	// DCPReviewLabPolicyAuthorized is a daemon-derived, non-configurable proof
+	// that this future session has one exact durable happy-path policy row.
+	DCPReviewLabPolicyAuthorized bool
 	// AllowedTools and DisallowedTools scope the agent to a tool allowlist when
 	// it runs in a non-bypass permission mode (allow rules auto-approve, deny
 	// rules auto-reject). They are the enforced read-only guarantee the reviewer
@@ -323,10 +326,11 @@ type WorkspaceHookConfig struct {
 
 // RestoreConfig carries inputs needed to continue an existing native agent session.
 type RestoreConfig struct {
-	Config      AgentConfig
-	DataDir     string
-	Kind        domain.SessionKind
-	Permissions PermissionMode
+	Config                       AgentConfig
+	DataDir                      string
+	Kind                         domain.SessionKind
+	Permissions                  PermissionMode
+	DCPReviewLabPolicyAuthorized bool
 	// Prompt is an optional new turn appended only to a native resume command.
 	// Callers must never replay it through a fresh-launch fallback.
 	Prompt  string

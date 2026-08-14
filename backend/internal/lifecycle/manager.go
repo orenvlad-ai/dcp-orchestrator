@@ -131,6 +131,8 @@ type Manager struct {
 	reviewEligibility          func(context.Context, domain.SessionID)
 	terminalMergeEligibilityMu sync.RWMutex
 	terminalMergeEligibility   func(context.Context, domain.SessionID)
+	dcpModelActionMu           sync.RWMutex
+	dcpModelAction             func(context.Context, domain.SessionID, string, bool)
 }
 
 // New builds a Lifecycle Manager over the session store it writes and the messenger it uses for agent nudges.
@@ -191,6 +193,23 @@ func (m *Manager) signalTerminalMergeEligibility(ctx context.Context, id domain.
 	m.terminalMergeEligibilityMu.RUnlock()
 	if handler != nil {
 		handler(ctx, id)
+	}
+}
+
+// SetDCPModelActionHandler late-binds the future-policy process boundary. It
+// receives only committed exact-generation process-exit facts.
+func (m *Manager) SetDCPModelActionHandler(handler func(context.Context, domain.SessionID, string, bool)) {
+	m.dcpModelActionMu.Lock()
+	m.dcpModelAction = handler
+	m.dcpModelActionMu.Unlock()
+}
+
+func (m *Manager) signalDCPModelAction(ctx context.Context, id domain.SessionID, launchID string, success bool) {
+	m.dcpModelActionMu.RLock()
+	handler := m.dcpModelAction
+	m.dcpModelActionMu.RUnlock()
+	if handler != nil {
+		handler(ctx, id, launchID, success)
 	}
 }
 
@@ -494,7 +513,14 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	}
 	m.emitNotification(ctx, intent)
 	m.resolveNotifications(ctx, resolutions...)
+	if s.Event == "process-exited" && s.LaunchID != "" {
+		m.signalDCPModelAction(ctx, id, s.LaunchID, successfulProcessExit)
+	}
 	if successfulProcessExit && next.Activity.State == domain.ActivityIdle {
+		// Future DCP workers must first release their durable global model
+		// action and enter ci_waiting. The handler is a no-op for every
+		// ordinary/historical session, so this preserves their behavior while
+		// closing the fast-exit review race for policy tasks.
 		m.signalReviewEligibility(ctx, id)
 	}
 	return nil
@@ -725,6 +751,31 @@ func (m *Manager) resolveNotifications(ctx context.Context, resolutions ...ports
 			)
 		}
 	}
+}
+
+// MarkProvisioned stores one native session's exact workspace identity while
+// deliberately leaving it without a runtime/model generation. The policy
+// queue uses this for passive DCP cards; it is otherwise the same stock card.
+func (m *Manager) MarkProvisioned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error {
+	if metadata.WorkspacePath == "" || metadata.Branch == "" || metadata.RuntimeHandleID != "" || metadata.RuntimeLaunchID != "" {
+		return fmt.Errorf("lifecycle: invalid provisioned metadata for %q", id)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("lifecycle: MarkProvisioned for unknown session %q", id)
+	}
+	now := m.clock()
+	rec.IsTerminated = false
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: now}
+	rec.FirstSignalAt = time.Time{}
+	rec.Metadata = mergeMetadata(rec.Metadata, metadata)
+	rec.UpdatedAt = now
+	return m.store.UpdateSession(ctx, rec)
 }
 
 // MarkSpawned marks a newly spawned or restored session live and stores runtime/workspace handles.

@@ -46,12 +46,13 @@ type ProcessExitReport struct {
 
 // Service is the API-facing review service. It delegates to the core engine.
 type Service struct {
-	engine             *reviewcore.Engine
-	store              Store
-	lifecycle          Reducer
-	clock              func() time.Time
-	approvedStructured func(context.Context, domain.SessionID)
-	structuredResult   func(context.Context, domain.SessionID, domain.ReviewRun) bool
+	engine              *reviewcore.Engine
+	store               Store
+	lifecycle           Reducer
+	clock               func() time.Time
+	approvedStructured  func(context.Context, domain.SessionID)
+	structuredResult    func(context.Context, domain.SessionID, domain.ReviewRun) bool
+	policyReviewFailure func(context.Context, domain.SessionID, string) error
 }
 
 // SetApprovedStructuredHandler late-binds the bounded DCP terminal action.
@@ -65,6 +66,10 @@ func (s *Service) SetApprovedStructuredHandler(handler func(context.Context, dom
 // unrelated results return false and keep the stock behavior.
 func (s *Service) SetStructuredResultHandler(handler func(context.Context, domain.SessionID, domain.ReviewRun) bool) {
 	s.structuredResult = handler
+}
+
+func (s *Service) SetPolicyReviewFailureHandler(handler func(context.Context, domain.SessionID, string) error) {
+	s.policyReviewFailure = handler
 }
 
 var _ Manager = (*Service)(nil)
@@ -134,6 +139,8 @@ func (s *Service) ReconcileStartup(ctx context.Context) error {
 	return s.engine.ReconcileStartup(ctx)
 }
 
+func (s *Service) SetPolicyGate(gate reviewcore.PolicyReviewGate) { s.engine.SetPolicyGate(gate) }
+
 // ProcessExit marks only still-running runs from the exact supervised batch as
 // failed. If the reviewer submitted a verdict before exiting, that terminal
 // result wins and this report is an idempotent no-op.
@@ -198,6 +205,11 @@ func (s *Service) ProcessExit(ctx context.Context, workerID domain.SessionID, re
 			if updated {
 				run.Status = domain.ReviewRunFailed
 				run.Body = reason
+				if s.policyReviewFailure != nil {
+					if err := s.policyReviewFailure(ctx, workerID, run.ID); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 		runs = append(runs, run)

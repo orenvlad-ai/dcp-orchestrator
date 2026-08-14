@@ -32,6 +32,21 @@ type SubmitDCPTaskRequest struct {
 	ApprovedScope  domain.DCPApprovedScope `json:"approvedScope"`
 }
 
+// SubmitDCPPolicyTaskRequest is the hidden loopback command used only by the
+// canonical dev-control-plane adapter after its locked target preflight.
+type SubmitDCPPolicyTaskRequest struct {
+	TaskID     string `json:"taskId" minLength:"1" maxLength:"16"`
+	Target     string `json:"target" enum:"dcp-review-lab"`
+	Profile    string `json:"profile" enum:"synthetic-pr"`
+	Repository string `json:"repository" enum:"orenvlad-ai/dcp-review-lab"`
+	Prompt     string `json:"prompt" minLength:"1" maxLength:"512"`
+}
+
+type DCPPolicyTaskResponse struct {
+	Task      domain.DCPReviewLabPolicyTask `json:"task"`
+	Duplicate bool                          `json:"duplicate"`
+}
+
 type DCPTaskResponse struct {
 	Task      domain.DCPTask `json:"task"`
 	Duplicate bool           `json:"duplicate"`

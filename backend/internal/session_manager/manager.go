@@ -103,6 +103,7 @@ const hookBinaryName = "ao"
 type lifecycleRecorder interface {
 	PrepareLaunch(id domain.SessionID, launchID string) error
 	CancelLaunch(id domain.SessionID, launchID string)
+	MarkProvisioned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error
 	MarkSpawned(ctx context.Context, id domain.SessionID, metadata domain.SessionMetadata) error
 	MarkTerminated(ctx context.Context, id domain.SessionID) error
 }
@@ -189,6 +190,10 @@ type Store interface {
 	// Kill and successful RestoreAll must remove these rows to prevent
 	// resurrecting sessions the user intentionally terminated.
 	DeleteSessionWorktrees(ctx context.Context, id domain.SessionID) error
+}
+
+type dcpReviewLabPolicyStore interface {
+	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
 }
 
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
@@ -596,6 +601,241 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, err
 	}
 	return rec, promptBytes, systemPromptBytes, nil
+}
+
+// ProvisionDCPReviewLabPolicySession completes the already-atomic native seed
+// reserved with a future policy task. It creates/adopts the exact stock
+// worktree and persists the original prompt, but deliberately creates no
+// runtime and starts no model. Replaying the same reservation is idempotent.
+func (m *Manager) ProvisionDCPReviewLabPolicySession(ctx context.Context, id domain.SessionID, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	task, err := m.requireDCPReviewLabPolicySession(ctx, id)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: %w", id, err)
+	}
+	if cfg.ProjectID != domain.ProjectID("dcp-review-lab") || cfg.Kind != domain.KindWorker || cfg.Harness != domain.HarnessCodex ||
+		cfg.DisplayName != "DCP:"+task.TaskID || cfg.Prompt != "DCP synthetic task "+task.TaskID+": "+task.Prompt ||
+		cfg.Branch != task.SourceBranch || len(cfg.Attachments) != 0 || cfg.IssueID != "" {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: reserved command identity drift", id)
+	}
+	project, err := m.loadProject(ctx, cfg.ProjectID)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	if !exactDCPReviewLabPolicyProject(project) {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: exact project profile unavailable", id)
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil || !ok {
+		return domain.SessionRecord{}, 0, 0, errors.Join(err, ErrNotFound)
+	}
+	if rec.ProjectID != cfg.ProjectID || rec.Kind != cfg.Kind || rec.Harness != cfg.Harness || rec.DisplayName != cfg.DisplayName || rec.IsTerminated {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: native seed identity drift", id)
+	}
+	prompt, systemPrompt, err := m.buildSpawnTexts(ctx, cfg)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	promptBytes, systemPromptBytes := len(prompt), len(systemPrompt)
+	if rec.Metadata.WorkspacePath != "" || rec.Metadata.Branch != "" || rec.Metadata.Prompt != "" {
+		if rec.Metadata.WorkspacePath == task.WorktreePath && rec.Metadata.Branch == task.SourceBranch && rec.Metadata.Prompt == prompt &&
+			rec.Metadata.RuntimeHandleID == "" && rec.Metadata.RuntimeLaunchID == "" && rec.Activity.State == domain.ActivityIdle {
+			return rec, promptBytes, systemPromptBytes, nil
+		}
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: partial native metadata is ambiguous", id)
+	}
+	systemPromptFile, err := m.prepareSystemPromptFile(id, cfg.Harness, systemPrompt)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, err
+	}
+	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, task.SourceBranch)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: workspace: %w", id, err)
+	}
+	if workspaceProject != nil || ws.Path != task.WorktreePath || ws.Branch != task.SourceBranch {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: worktree identity drift", id)
+	}
+	if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: %w", id, err)
+	}
+	agent, ok := m.agents.Agent(cfg.Harness)
+	if !ok {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: unknown agent", id)
+	}
+	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Kind, project.Config), cfg.AgentConfig)
+	env := m.runtimeEnv(id, cfg.ProjectID, cfg.IssueID, project.Config.Env)
+	m.augmentAgentRuntimeEnv(agent, env)
+	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: %w", id, err)
+	}
+	metadata := domain.SessionMetadata{
+		Branch: ws.Branch, WorkspacePath: ws.Path, WorkspaceRepoPath: ws.RepoPath, Prompt: prompt,
+	}
+	metadata.DiffBaseSHA, metadata.DiffBaseRef = resolveSpawnDiffBase(ctx, ws.Path, project.Config.WithDefaults().DefaultBranch)
+	if err := m.lcm.MarkProvisioned(ctx, id, metadata); err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: persist: %w", id, err)
+	}
+	rec, err = m.getRecord(ctx, id)
+	return rec, promptBytes, systemPromptBytes, err
+}
+
+// LaunchDCPReviewLabPolicyAction starts one already-slot-claimed initial or
+// bounded repair worker in the exact reserved native card. Both are fresh,
+// stateless Codex turns; the repair prompt carries the complete bounded
+// findings envelope and never relies on transcript recovery.
+func (m *Manager) LaunchDCPReviewLabPolicyAction(ctx context.Context, id domain.SessionID, prompt string) (RestoreResult, error) {
+	if !m.beginAgentResume(id) {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: %w", id, ErrResumeInProgress)
+	}
+	defer m.endAgentResume(id)
+	task, err := m.requireDCPReviewLabPolicySession(ctx, id)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: %w", id, err)
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" || len(prompt) > 16*1024 || !utf8.ValidString(prompt) || strings.ContainsRune(prompt, '\x00') {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: invalid bounded prompt", id)
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil || !ok {
+		return RestoreResult{}, errors.Join(err, ErrNotFound)
+	}
+	if rec.ProjectID != "dcp-review-lab" || rec.Kind != domain.KindWorker || rec.Harness != domain.HarnessCodex || rec.IsTerminated ||
+		rec.Activity.State != domain.ActivityIdle || rec.Metadata.RuntimeLaunchID != "" || rec.Metadata.WorkspacePath != task.WorktreePath ||
+		rec.Metadata.Branch != task.SourceBranch || rec.Metadata.Prompt != "DCP synthetic task "+task.TaskID+": "+task.Prompt {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: %w", id, ErrNotRestorable)
+	}
+	project, err := m.loadProject(ctx, rec.ProjectID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if !exactDCPReviewLabPolicyProject(project) {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: exact project profile unavailable", id)
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: unknown agent", id)
+	}
+	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	systemPromptFile, err := m.prepareSystemPromptFile(rec.ID, rec.Harness, systemPrompt)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	m.augmentAgentRuntimeEnv(agent, env)
+	if err := m.prepareWorkspace(ctx, agent, rec.ID, rec.Metadata.WorkspacePath, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
+		return RestoreResult{}, err
+	}
+	launchCfg := ports.LaunchConfig{
+		DataDir: m.dataDir, SessionID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
+		Kind: rec.Kind, Prompt: prompt, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile,
+		Config: agentConfig, Permissions: agentConfig.Permissions, DCPReviewLabPolicyAuthorized: true,
+	}
+	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if delivery == ports.PromptDeliveryAfterStart {
+		launchCfg.Prompt = ""
+	}
+	argv, err := agent.GetLaunchCommand(ctx, launchCfg)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if err := m.validateAgentBinary(argv); err != nil {
+		return RestoreResult{}, err
+	}
+	m.augmentRuntimePATHForLaunchBinary(ctx, env, argv)
+	argv, launchID, err := m.superviseAgentProcess(agent, rec.ID, env, argv)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if err := m.lcm.PrepareLaunch(rec.ID, launchID); err != nil {
+		return RestoreResult{}, err
+	}
+	defer m.lcm.CancelLaunch(rec.ID, launchID)
+	runtimeCfg := ports.RuntimeConfig{SessionID: rec.ID, WorkspacePath: rec.Metadata.WorkspacePath, Argv: argv, Env: env}
+	var handle ports.RuntimeHandle
+	if rec.Metadata.RuntimeHandleID == "" {
+		handle, err = m.runtime.Create(ctx, runtimeCfg)
+	} else {
+		existing := ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID}
+		handle, err = m.restartRuntime(ctx, existing, runtimeCfg)
+	}
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: runtime: %w", id, err)
+	}
+	metadata := rec.Metadata
+	metadata.RuntimeHandleID = handle.ID
+	metadata.RuntimeLaunchID = launchID
+	if err := m.lcm.MarkSpawned(ctx, rec.ID, metadata); err != nil {
+		_ = m.runtime.Destroy(ctx, handle)
+		return RestoreResult{}, err
+	}
+	if delivery == ports.PromptDeliveryAfterStart {
+		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, prompt); err != nil {
+			_ = m.runtime.Destroy(ctx, handle)
+			return RestoreResult{}, err
+		}
+	}
+	updated, err := m.getRecord(ctx, rec.ID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	return RestoreResult{Session: updated, Mode: RestoreModeFresh}, nil
+}
+
+// DCPReviewLabPolicyActionAlive proves that the exact supervised worker
+// generation, not merely its retained tmux shell, still owns the native card.
+// Startup uses this read-only fact to adopt or terminally fail without replay.
+func (m *Manager) DCPReviewLabPolicyActionAlive(ctx context.Context, id domain.SessionID, launchID string) (bool, error) {
+	if _, err := m.requireDCPReviewLabPolicySession(ctx, id); err != nil {
+		return false, err
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil || !ok {
+		return false, errors.Join(err, ErrNotFound)
+	}
+	if launchID == "" || rec.Metadata.RuntimeLaunchID != launchID || rec.Metadata.RuntimeHandleID == "" {
+		return false, ErrNotRestorable
+	}
+	inspector, ok := m.runtime.(ports.SupervisedProcessInspector)
+	if !ok {
+		return false, errors.New("DCP policy runtime cannot inspect an exact supervised generation")
+	}
+	return inspector.IsSupervisedProcessAlive(ctx, runtimeHandle(rec.Metadata), ports.SupervisedProcessRef{SessionID: id, LaunchID: launchID})
+}
+
+func (m *Manager) requireDCPReviewLabPolicySession(ctx context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, error) {
+	store, ok := m.store.(dcpReviewLabPolicyStore)
+	if !ok {
+		return domain.DCPReviewLabPolicyTask{}, errors.New("policy store unavailable")
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+	if err != nil || !found {
+		return domain.DCPReviewLabPolicyTask{}, errors.Join(err, ErrNotRestorable)
+	}
+	if task.PolicyVersion != domain.DCPReviewLabPolicyVersion || task.Target != "dcp-review-lab" || task.Profile != "synthetic-pr" ||
+		task.Repository != "orenvlad-ai/dcp-review-lab" || task.CardNumber <= 12 || task.SessionID != id ||
+		task.WorktreePath != filepath.Join(m.dataDir, "worktrees", "dcp-review-lab", string(id)) || task.SourceBranch != "ao/"+string(id)+"/root" {
+		return domain.DCPReviewLabPolicyTask{}, ErrNotRestorable
+	}
+	return task, nil
+}
+
+func exactDCPReviewLabPolicyProject(project domain.ProjectRecord) bool {
+	return project.ID == "dcp-review-lab" && project.Kind.WithDefault() == domain.ProjectKindSingleRepo &&
+		project.RepoOriginURL == "https://github.com/orenvlad-ai/dcp-review-lab.git" &&
+		project.Config.DefaultBranch == "main" && project.Config.SessionPrefix == "dcp-review-lab" &&
+		project.Config.AgentRules == domain.DCPReviewLabPolicyAgentRules && project.Config.AgentRulesFile == "" && project.Config.OrchestratorRules == "" &&
+		project.Config.AgentConfig.IsZero() &&
+		project.Config.Worker == (domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}}) &&
+		project.Config.Orchestrator == (domain.RoleOverride{}) && project.Config.TrackerIntake == (domain.TrackerIntakeConfig{}) &&
+		project.Config.ContainerReap == (domain.ContainerReapConfig{}) && len(project.Config.Reviewers) == 1 &&
+		project.Config.Reviewers[0].Harness == domain.ReviewerCodex && len(project.Config.Env) == 0 && len(project.Config.Symlinks) == 0 && len(project.Config.PostCreate) == 0
 }
 
 // loadProject loads the project record so spawn can resolve its per-project

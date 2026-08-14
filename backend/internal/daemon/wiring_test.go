@@ -639,6 +639,18 @@ func (f *fakeSessionLifecycle) ResumeDCPReviewLabIdleAgent(context.Context, doma
 	return sessionmanager.RestoreResult{}, nil
 }
 
+func (f *fakeSessionLifecycle) ProvisionDCPReviewLabPolicySession(context.Context, domain.SessionID, ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	return domain.SessionRecord{}, 0, 0, nil
+}
+
+func (f *fakeSessionLifecycle) LaunchDCPReviewLabPolicyAction(context.Context, domain.SessionID, string) (sessionmanager.RestoreResult, error) {
+	return sessionmanager.RestoreResult{}, nil
+}
+
+func (f *fakeSessionLifecycle) DCPReviewLabPolicyActionAlive(context.Context, domain.SessionID, string) (bool, error) {
+	return false, nil
+}
+
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile
 // check) and that Reconcile and RestoreAll dispatch correctly through the

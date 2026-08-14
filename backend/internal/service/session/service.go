@@ -40,6 +40,10 @@ type reviewRunReader interface {
 	ListReviewRunsBySession(ctx context.Context, id domain.SessionID) ([]domain.ReviewRun, error)
 }
 
+type dcpPolicyTaskReader interface {
+	GetDCPReviewLabPolicyTaskBySession(ctx context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+}
+
 // ListFilter captures API-facing session list query filters.
 type ListFilter struct {
 	ProjectID        domain.ProjectID
@@ -760,6 +764,15 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		}
 		status = overlayReviewStatus(status, prs, runs)
 	}
+	if policies, ok := s.store.(dcpPolicyTaskReader); ok {
+		task, found, policyErr := policies.GetDCPReviewLabPolicyTaskBySession(ctx, rec.ID)
+		if policyErr != nil {
+			return domain.Session{}, fmt.Errorf("DCP policy facts %s: %w", rec.ID, policyErr)
+		}
+		if found {
+			status = overlayDCPPolicyStatus(status, task.State)
+		}
+	}
 	return domain.Session{
 		SessionRecord:    rec,
 		Status:           status,
@@ -767,6 +780,33 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
 		PRs:              prs,
 	}, nil
+}
+
+// overlayDCPPolicyStatus projects the durable future-task state through the
+// existing stock board vocabulary. It prevents passive queued cards from
+// degrading to no_signal without adding a parallel task-card service.
+func overlayDCPPolicyStatus(base domain.SessionStatus, state domain.DCPReviewLabPolicyState) domain.SessionStatus {
+	switch state {
+	case domain.DCPPolicyReserved, domain.DCPPolicyWorkerQueued, domain.DCPPolicyRepairQueued:
+		return domain.StatusIdle
+	case domain.DCPPolicyWorkerRunning, domain.DCPPolicyRepairRunning:
+		return domain.StatusWorking
+	case domain.DCPPolicyCIWaiting:
+		if base == domain.StatusNoSignal || base == domain.StatusIdle {
+			return domain.StatusPROpen
+		}
+		return base
+	case domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning:
+		return domain.StatusReviewPending
+	case domain.DCPPolicyAdmissionWait:
+		return domain.StatusMergeable
+	case domain.DCPPolicyMerged:
+		return domain.StatusMerged
+	case domain.DCPPolicyFailed, domain.DCPPolicyIncident:
+		return domain.StatusReviewFailed
+	default:
+		return domain.StatusReviewFailed
+	}
 }
 
 // overlayReviewStatus projects only the latest AO-internal run for each exact

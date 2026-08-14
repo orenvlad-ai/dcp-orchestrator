@@ -29,7 +29,7 @@ import (
 const (
 	ProjectID          = "dcp-review-lab"
 	SessionPrefix      = "dcp-review-lab"
-	ProfileAgentRules  = "DCP synthetic PR profile v3. Work only in this exact synthetic repository and the current AO branch. Do not create subagents, extra branches, worktrees, remotes, additional pull requests, or network services. On the initial call implement only the direct task, create one commit, push the current branch, open one ready pull request targeting main, and then stop. If the trusted DCP daemon issues the single bounded admission-refresh continuation, rebase only onto the exact named origin/main and abort without push on any conflict or ambiguity. Only for native cards 11/12, if the trusted daemon supplies the exact I13 arbiter recovery identity, approved scope digest, old head, current main and conflict path, resolve only that one conflict within the original task, keep the same branch and pull request, run the check, push with exact force-with-lease, and stop. Do not merge; only the trusted DCP daemon may perform terminal merge after fresh exact-head review, checks, and admission."
+	ProfileAgentRules  = domain.DCPReviewLabPolicyAgentRules
 	TaskDisplayPrefix  = "DCP:"
 	TaskPromptPrefix   = "DCP synthetic task "
 	RepositoryFullName = "orenvlad-ai/dcp-review-lab"
@@ -67,6 +67,14 @@ type Store interface {
 	RecordDCPReviewLabIncident(context.Context, domain.DCPReviewLabAdmission, string, string, string, string, time.Time) (bool, error)
 }
 
+type policyStore interface {
+	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+	UpdateDCPReviewLabPolicyTaskCAS(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask) (bool, error)
+	EnqueueDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask) (domain.DCPReviewLabAdmission, bool, error)
+	CompleteDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, time.Time) (bool, error)
+	RecordDCPReviewLabPolicyIncident(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, string, string, time.Time) (bool, error)
+}
+
 type SCM interface {
 	FetchPullRequests(context.Context, []ports.SCMPRRef) ([]ports.SCMObservation, error)
 	FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCMReviewObservation, error)
@@ -81,6 +89,7 @@ type Engine struct {
 	dataDir                string
 	mu                     sync.Mutex
 	git                    func(context.Context, string, ...string) (string, error)
+	providerRepository     func(context.Context) (string, error)
 	wake                   RefreshWaker
 	arbiter                ArbiterLauncher
 	freshWorker            FreshWorkerLauncher
@@ -94,7 +103,7 @@ type Engine struct {
 func New(store Store, scm SCM, dataDir string) *Engine {
 	return &Engine{
 		store: store, scm: scm, dataDir: filepath.Clean(dataDir),
-		git: gitOutput, clock: func() time.Time { return time.Now().UTC() },
+		git: gitOutput, providerRepository: publicRepositoryIdentity, clock: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -151,7 +160,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
 	})
 	for _, session := range sessions {
-		if eligibleSessionID(session.ID) {
+		if eligible, eligibleErr := e.eligibleSession(ctx, session.ID); eligibleErr != nil {
+			return eligibleErr
+		} else if eligible {
 			if err := e.enrol(ctx, session.ID); err != nil {
 				return err
 			}
@@ -174,6 +185,15 @@ func (e *Engine) recoverCanonicalBaseIncidents(ctx context.Context) error {
 		if admission.Status != domain.DCPAdmissionIncident || admission.ErrorCode != "canonical_main_diverged" ||
 			admission.RefreshWakeCount != 0 || admission.RecoveredIncidentPacket != "" {
 			continue
+		}
+		if store, ok := e.store.(policyStore); ok {
+			if _, futurePolicy, policyErr := store.GetDCPReviewLabPolicyTaskBySession(ctx, admission.SessionID); policyErr != nil {
+				return policyErr
+			} else if futurePolicy {
+				// The historical one-shot false-positive recovery is immutable
+				// qualification evidence, never a future-policy retry mechanism.
+				continue
+			}
 		}
 		candidate, ok, candidateErr := e.candidateForAdmission(ctx, admission)
 		if candidateErr != nil {
@@ -213,7 +233,9 @@ func (e *Engine) Try(ctx context.Context, sessionID domain.SessionID) error {
 	if err := e.configured(); err != nil {
 		return err
 	}
-	if !eligibleSessionID(sessionID) {
+	if eligible, err := e.eligibleSession(ctx, sessionID); err != nil {
+		return err
+	} else if !eligible {
 		return nil
 	}
 	e.mu.Lock()
@@ -233,8 +255,11 @@ func (e *Engine) configured() error {
 
 func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 	candidate, ok, err := e.candidate(ctx, sessionID)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return e.incidentPolicyBeforeAdmission(ctx, sessionID, "admission_identity_drift")
 	}
 	if candidate.run.TerminalMergeStatus != "" {
 		return nil
@@ -242,6 +267,11 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 	if existing, ok, err := e.store.GetDCPReviewLabAdmissionByRun(ctx, candidate.run.ID); err != nil {
 		return err
 	} else if ok {
+		if candidate.policy {
+			if err := e.bindPolicyAdmission(ctx, candidate, existing); err != nil {
+				return err
+			}
+		}
 		if existing.Status == domain.DCPAdmissionRefreshing && candidate.session.Metadata.RuntimeLaunchID == "" {
 			observation, _, freshErr := e.fresh(ctx, candidate.pr)
 			if freshErr != nil {
@@ -258,6 +288,9 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		return err
 	}
 	if !admissionFacts(candidate, observation, review) {
+		if candidate.policy {
+			return e.incidentPolicyBeforeAdmission(ctx, sessionID, "admission_facts_drift")
+		}
 		return nil
 	}
 	now := e.clock()
@@ -356,13 +389,47 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 			return nil
 		}
 	}
-	_, _, err = e.store.EnqueueDCPReviewLabAdmission(ctx, domain.DCPReviewLabAdmission{
+	requested := domain.DCPReviewLabAdmission{
 		ID: "dcp-admission-" + candidate.run.ID, ReviewRunID: candidate.run.ID, ReviewID: candidate.run.ReviewID,
 		SessionID: candidate.session.ID, PRURL: candidate.pr.URL, PRNumber: int64(candidate.pr.Number),
 		TargetSHA: strings.ToLower(candidate.run.TargetSHA), ReviewBaseSHA: strings.ToLower(observation.PR.BaseSHA),
 		Status: domain.DCPAdmissionWaiting, CreatedAt: now, UpdatedAt: now,
+	}
+	if candidate.policy {
+		_, _, err := e.store.(policyStore).EnqueueDCPReviewLabPolicyAdmission(ctx, requested, candidate.policyTask)
+		return err
+	}
+	_, _, err = e.store.EnqueueDCPReviewLabAdmission(ctx, requested)
+	return nil
+}
+
+func (e *Engine) incidentPolicyBeforeAdmission(ctx context.Context, sessionID domain.SessionID, reason string) error {
+	store, ok := e.store.(policyStore)
+	if !ok {
+		return nil
+	}
+	current, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, sessionID)
+	if err != nil || !found || current.State.Terminal() {
+		return err
+	}
+	if current.State != domain.DCPPolicyAdmissionWait || current.AdmissionID != "" || current.CurrentHeadSHA == "" || current.ReviewRunID == "" {
+		return nil
+	}
+	packet, err := json.Marshal(map[string]string{
+		"schemaVersion": "dcp.review-lab.policy-incident/v1", "reason": reason,
+		"sessionId": string(sessionID), "reviewRunId": current.ReviewRunID,
+		"targetSha": current.CurrentHeadSHA, "recordedAt": e.clock().Format(time.RFC3339Nano),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	next := current
+	next.State, next.ErrorCode, next.IncidentPacket, next.UpdatedAt = domain.DCPPolicyIncident, reason, string(packet), e.clock()
+	updated, err := store.UpdateDCPReviewLabPolicyTaskCAS(ctx, current, next)
+	if err != nil || !updated {
+		return errors.Join(err, errors.New("dcp admission: pre-admission policy incident was not persisted"))
+	}
+	return nil
 }
 
 // drain processes only the durable queue head. A successful merge immediately
@@ -393,8 +460,14 @@ func (e *Engine) drain(ctx context.Context) error {
 			return cohortErr
 		}
 		continued, err := e.processWaiting(ctx, admission)
-		if err != nil || !continued {
+		if err != nil {
 			return err
+		}
+		if !continued {
+			terminalIncident, terminalErr := e.policyAdmissionIncidentTerminal(ctx, admission)
+			if terminalErr != nil || !terminalIncident {
+				return terminalErr
+			}
 		}
 	}
 }
@@ -406,13 +479,43 @@ func (e *Engine) nextPending(ctx context.Context) (domain.DCPReviewLabAdmission,
 	}
 	for _, row := range rows {
 		switch row.Status {
-		case domain.DCPAdmissionWaiting, domain.DCPAdmissionRefreshing, domain.DCPAdmissionIncident:
+		case domain.DCPAdmissionIncident:
+			terminal, terminalErr := e.policyAdmissionIncidentTerminal(ctx, row)
+			if terminalErr != nil {
+				return domain.DCPReviewLabAdmission{}, false, terminalErr
+			}
+			if terminal {
+				continue
+			}
+			return row, true, nil
+		case domain.DCPAdmissionWaiting, domain.DCPAdmissionRefreshing:
 			return row, true, nil
 		case domain.DCPAdmissionClaimed:
 			return domain.DCPReviewLabAdmission{}, false, errors.New("dcp admission: claimed row escaped owner reconciliation")
 		}
 	}
 	return domain.DCPReviewLabAdmission{}, false, nil
+}
+
+func (e *Engine) policyAdmissionIncidentTerminal(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
+	if admission.Status != domain.DCPAdmissionIncident {
+		fresh, found, err := e.store.GetDCPReviewLabAdmissionByRun(ctx, admission.ReviewRunID)
+		if err != nil || !found {
+			return false, err
+		}
+		admission = fresh
+	}
+	store, ok := e.store.(policyStore)
+	if !ok {
+		return false, nil
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, admission.SessionID)
+	if err != nil || !found {
+		return false, err
+	}
+	return admission.Status == domain.DCPAdmissionIncident && task.State == domain.DCPPolicyIncident &&
+		task.AdmissionID == admission.ID && task.ReviewRunID == admission.ReviewRunID && task.CurrentHeadSHA == admission.TargetSHA &&
+		task.IncidentPacket == admission.IncidentPacket && task.ErrorCode == admission.ErrorCode, nil
 }
 
 func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
@@ -448,7 +551,14 @@ func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPRevie
 		return false, err
 	}
 	if observation.PR.Merged && strings.EqualFold(observation.PR.HeadSHA, admission.TargetSHA) && validSHA(observation.PR.MergeCommitSHA) {
-		updated, updateErr := e.store.CompleteDCPReviewLabAdmission(ctx, admission, strings.ToLower(observation.PR.MergeCommitSHA), e.clock())
+		mergeSHA := strings.ToLower(observation.PR.MergeCommitSHA)
+		var updated bool
+		var updateErr error
+		if candidate.policy {
+			updated, updateErr = e.store.(policyStore).CompleteDCPReviewLabPolicyAdmission(ctx, admission, candidate.policyTask, mergeSHA, e.clock())
+		} else {
+			updated, updateErr = e.store.CompleteDCPReviewLabAdmission(ctx, admission, mergeSHA, e.clock())
+		}
 		if updateErr != nil {
 			return false, updateErr
 		}
@@ -476,6 +586,9 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 		if providerIdentityDrift(candidate, observation) {
 			return false, e.recordIncident(ctx, admission, candidate, observation, "provider_identity_drift")
 		}
+		if candidate.policy {
+			return false, e.recordIncident(ctx, admission, candidate, observation, "admission_facts_drift")
+		}
 		return false, nil
 	}
 	baseSHA := strings.ToLower(observation.PR.BaseSHA)
@@ -485,6 +598,12 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 	case dispositionIncident:
 		return false, e.recordIncident(ctx, admission, candidate, observation, "merge_conflict_or_ambiguity")
 	case dispositionRefresh:
+		if candidate.policy {
+			// Future policy heads may merge only with fresh provider CLEAN facts.
+			// BEHIND is not upgraded by a local merge-tree proof and cannot borrow
+			// the historical worker-refresh allowance.
+			return false, e.recordIncident(ctx, admission, candidate, observation, "provider_not_clean")
+		}
 		if admission.SessionID == HistoricalSession {
 			return false, e.recordIncident(ctx, admission, candidate, observation, "refresh_not_authorized")
 		}
@@ -530,47 +649,90 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
 			return false, err
 		}
-		leaseID := "dcp-merge-" + admission.ID
-		claimed, err := e.store.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, canonicalBase, e.clock())
-		if err != nil || !claimed {
-			return false, err
-		}
-		admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, canonicalBase
-		result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
-			PR: ports.SCMPRRef{
-				Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
-				Number: candidate.pr.Number, URL: candidate.pr.URL,
-			},
-			ExpectedHeadSHA: candidate.run.TargetSHA,
-			Method:          ports.SCMMergeSquash,
-		})
-		if mergeErr != nil {
-			if incidentErr := e.recordIncident(ctx, admission, candidate, observation, mergeErrorCode(mergeErr)); incidentErr != nil {
-				return false, errors.Join(mergeErr, incidentErr)
-			}
-			return false, mergeErr
-		}
-		if !validSHA(result.MergeCommitSHA) {
-			return false, e.recordIncident(ctx, admission, candidate, observation, "invalid_merge_result")
-		}
-		updated, err := e.store.CompleteDCPReviewLabAdmission(ctx, admission, strings.ToLower(result.MergeCommitSHA), e.clock())
-		if err != nil {
-			return false, err
-		}
-		if !updated {
-			return false, errors.New("dcp admission: completed provider mutation could not be recorded")
-		}
-		return true, nil
+		return e.mergeWaiting(ctx, admission, candidate, observation, canonicalBase)
 	default:
 		return false, errors.New("dcp admission: unknown disposition")
 	}
 }
 
+func (e *Engine) mergeWaiting(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate, observation ports.SCMObservation, canonicalBase string) (bool, error) {
+	if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
+		return false, err
+	}
+	leaseID := "dcp-merge-" + admission.ID
+	claimed, err := e.store.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, canonicalBase, e.clock())
+	if err != nil || !claimed {
+		return false, err
+	}
+	admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, canonicalBase
+	result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
+		PR: ports.SCMPRRef{
+			Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
+			Number: candidate.pr.Number, URL: candidate.pr.URL,
+		},
+		ExpectedHeadSHA: candidate.run.TargetSHA,
+		Method:          ports.SCMMergeSquash,
+	})
+	if mergeErr != nil {
+		if incidentErr := e.recordIncident(ctx, admission, candidate, observation, mergeErrorCode(mergeErr)); incidentErr != nil {
+			return false, errors.Join(mergeErr, incidentErr)
+		}
+		return false, mergeErr
+	}
+	if !validSHA(result.MergeCommitSHA) {
+		return false, e.recordIncident(ctx, admission, candidate, observation, "invalid_merge_result")
+	}
+	mergeSHA := strings.ToLower(result.MergeCommitSHA)
+	var updated bool
+	if candidate.policy {
+		updated, err = e.store.(policyStore).CompleteDCPReviewLabPolicyAdmission(ctx, admission, candidate.policyTask, mergeSHA, e.clock())
+	} else {
+		updated, err = e.store.CompleteDCPReviewLabAdmission(ctx, admission, mergeSHA, e.clock())
+	}
+	if err != nil {
+		return false, err
+	}
+	if !updated {
+		return false, errors.New("dcp admission: completed provider mutation could not be recorded")
+	}
+	return true, nil
+}
+
+func (e *Engine) bindPolicyAdmission(ctx context.Context, candidate mergeCandidate, admission domain.DCPReviewLabAdmission) error {
+	if !candidate.policy {
+		return nil
+	}
+	store, ok := e.store.(policyStore)
+	if !ok {
+		return errors.New("dcp admission: policy store unavailable")
+	}
+	current, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, candidate.session.ID)
+	if err != nil || !found {
+		return errors.Join(err, errors.New("dcp admission: policy task unavailable"))
+	}
+	if current.State != domain.DCPPolicyAdmissionWait || current.CurrentHeadSHA != admission.TargetSHA ||
+		current.ReviewRunID != admission.ReviewRunID || (current.AdmissionID != "" && current.AdmissionID != admission.ID) {
+		return errors.New("dcp admission: policy task exact-head binding drifted")
+	}
+	if current.AdmissionID == admission.ID {
+		return nil
+	}
+	next := current
+	next.AdmissionID, next.UpdatedAt = admission.ID, e.clock()
+	updated, err := store.UpdateDCPReviewLabPolicyTaskCAS(ctx, current, next)
+	if err != nil || !updated {
+		return errors.Join(err, errors.New("dcp admission: policy binding was rejected"))
+	}
+	return nil
+}
+
 type mergeCandidate struct {
-	session domain.SessionRecord
-	project domain.ProjectRecord
-	pr      domain.PullRequest
-	run     domain.ReviewRun
+	session    domain.SessionRecord
+	project    domain.ProjectRecord
+	pr         domain.PullRequest
+	run        domain.ReviewRun
+	policyTask domain.DCPReviewLabPolicyTask
+	policy     bool
 }
 
 func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
@@ -587,6 +749,15 @@ func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCP
 }
 
 func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandidate, bool, error) {
+	var policyTask domain.DCPReviewLabPolicyTask
+	policy := false
+	if ps, ok := e.store.(policyStore); ok {
+		var policyErr error
+		policyTask, policy, policyErr = ps.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+		if policyErr != nil {
+			return mergeCandidate{}, false, policyErr
+		}
+	}
 	session, ok, err := e.store.GetSession(ctx, id)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
@@ -594,7 +765,10 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	if session.ProjectID != domain.ProjectID(ProjectID) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
 		session.ReviewerHarness != "" || session.IssueID != "" || session.Activity.State != domain.ActivityIdle || session.IsTerminated ||
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
-		!validTaskIdentity(session) {
+		(!policy && !validTaskIdentity(session)) {
+		return mergeCandidate{}, false, nil
+	}
+	if policy && (!validPolicyTaskIdentity(policyTask, session, e.dataDir) || policyTask.State != domain.DCPPolicyAdmissionWait) {
 		return mergeCandidate{}, false, nil
 	}
 	if session.ID == ArbiterSessionA || session.ID == ArbiterSessionB {
@@ -622,6 +796,15 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 		len(project.Config.Env) != 0 || len(project.Config.Symlinks) != 0 || len(project.Config.PostCreate) != 0 {
 		return mergeCandidate{}, false, nil
 	}
+	if policy {
+		if e.providerRepository == nil {
+			return mergeCandidate{}, false, nil
+		}
+		identity, identityErr := e.providerRepository(ctx)
+		if identityErr != nil || identity != RepositoryFullName+"|false|main" {
+			return mergeCandidate{}, false, nil
+		}
+	}
 	prs, err := e.store.ListPRsBySession(ctx, id)
 	if err != nil || len(prs) != 1 {
 		return mergeCandidate{}, false, err
@@ -630,7 +813,7 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	if pr.Provider != "github" || pr.Host != "github.com" || pr.Repo != RepositoryFullName || pr.TargetBranch != TargetBranch ||
 		pr.SourceBranch != expectedBranch || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
 		!validPRURL(pr.URL, pr.Number) || !validSHA(pr.HeadSHA) || !validSHA(pr.BaseSHA) ||
-		(session.Metadata.DiffBaseSHA != "" && !strings.EqualFold(pr.BaseSHA, session.Metadata.DiffBaseSHA)) {
+		(!policy && session.Metadata.DiffBaseSHA != "" && !strings.EqualFold(pr.BaseSHA, session.Metadata.DiffBaseSHA)) {
 		return mergeCandidate{}, false, nil
 	}
 	runs, err := e.store.ListReviewRunsBySession(ctx, id)
@@ -664,7 +847,7 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 	default:
 		return mergeCandidate{}, false, nil
 	}
-	return mergeCandidate{session: session, project: project, pr: pr, run: run}, true, nil
+	return mergeCandidate{session: session, project: project, pr: pr, run: run, policyTask: policyTask, policy: policy}, true, nil
 }
 
 func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObservation, ports.SCMReviewObservation, error) {
@@ -695,11 +878,11 @@ func admissionFacts(candidate mergeCandidate, observation ports.SCMObservation, 
 	}
 	required := 0
 	for _, check := range observation.CI.Checks {
-		if check.Status != string(domain.PRCheckPassed) && check.Status != string(domain.PRCheckSkipped) {
+		if check.Status != string(domain.PRCheckPassed) {
 			return false
 		}
 		if check.Name == RequiredCheckName {
-			if check.Status != string(domain.PRCheckPassed) || check.Conclusion != "success" {
+			if check.Status != string(domain.PRCheckPassed) || check.Conclusion != "success" || (candidate.policy && !validCheckURL(check.URL)) {
 				return false
 			}
 			required++
@@ -857,6 +1040,23 @@ func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head
 	if err != nil || !sameExactPath(private, filepath.Join(projectPath, ".git", "worktrees", string(candidate.session.ID))) {
 		return errors.New("dcp admission: linked worktree private git directory is foreign")
 	}
+	if candidate.policy {
+		taskBase := strings.ToLower(candidate.session.Metadata.DiffBaseSHA)
+		if !validSHA(taskBase) || candidate.session.Metadata.DiffBaseRef == "" {
+			return errors.New("dcp admission: policy task creation base is unavailable")
+		}
+		if _, err := e.git(ctx, workspacePath, "merge-base", "--is-ancestor", taskBase, strings.ToLower(head)); err != nil {
+			return errors.New("dcp admission: policy head does not descend from its creation base")
+		}
+		countText, err := e.git(ctx, workspacePath, "rev-list", "--count", taskBase+".."+strings.ToLower(head))
+		count, parseErr := strconv.Atoi(countText)
+		if err != nil || parseErr != nil || count < 1 || count > int(1+candidate.policyTask.RepairCount) {
+			return errors.New("dcp admission: policy commit lineage exceeds its bounded worker actions")
+		}
+		if merges, err := e.git(ctx, workspacePath, "rev-list", "--merges", taskBase+".."+strings.ToLower(head)); err != nil || merges != "" {
+			return errors.New("dcp admission: policy commit lineage contains a merge commit")
+		}
+	}
 	return nil
 }
 
@@ -889,6 +1089,19 @@ type incidentPacket struct {
 }
 
 func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate, observation ports.SCMObservation, reason string) error {
+	if !candidate.policy {
+		if store, ok := e.store.(policyStore); ok {
+			task, found, lookupErr := store.GetDCPReviewLabPolicyTaskBySession(ctx, admission.SessionID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if found {
+				candidate.policy, candidate.policyTask = true, task
+				candidate.session.ID, candidate.session.DisplayName = task.SessionID, TaskDisplayPrefix+task.TaskID
+				candidate.pr.SourceBranch = task.SourceBranch
+			}
+		}
+	}
 	now := e.clock()
 	leaseID := admission.LeaseID
 	if leaseID == "" {
@@ -917,7 +1130,16 @@ func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewL
 	if err != nil {
 		return err
 	}
-	recorded, err := e.store.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, reason, string(packet), now)
+	var recorded bool
+	if candidate.policy {
+		store, ok := e.store.(policyStore)
+		if !ok {
+			return errors.New("dcp admission: policy store unavailable")
+		}
+		recorded, err = store.RecordDCPReviewLabPolicyIncident(ctx, admission, candidate.policyTask, leaseID, baseSHA, reason, string(packet), now)
+	} else {
+		recorded, err = e.store.RecordDCPReviewLabIncident(ctx, admission, leaseID, baseSHA, reason, string(packet), now)
+	}
 	if err != nil {
 		return err
 	}
@@ -936,15 +1158,50 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 	return strings.TrimSpace(string(out)), err
 }
 
+func publicRepositoryIdentity(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "gh", "repo", "view", RepositoryFullName, "--json", "nameWithOwner,isPrivate,defaultBranchRef", "--jq", `.nameWithOwner + "|" + (.isPrivate|tostring) + "|" + .defaultBranchRef.name`).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 func eligibleSessionID(id domain.SessionID) bool {
 	value := string(id)
 	return value == HistoricalSession || value == AdmissionSessionA || value == AdmissionSessionB || value == ArbiterSessionA || value == ArbiterSessionB
+}
+
+func (e *Engine) eligibleSession(ctx context.Context, id domain.SessionID) (bool, error) {
+	if eligibleSessionID(id) {
+		return true, nil
+	}
+	store, ok := e.store.(policyStore)
+	if !ok {
+		return false, nil
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+	if err != nil || !found {
+		return false, err
+	}
+	return task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.CardNumber > 12 && task.SessionID == id, nil
+}
+
+func validPolicyTaskIdentity(task domain.DCPReviewLabPolicyTask, session domain.SessionRecord, dataDir string) bool {
+	return task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.Target == ProjectID && task.Profile == "synthetic-pr" &&
+		task.Repository == RepositoryFullName && task.CardNumber > 12 && task.SessionID == session.ID &&
+		string(task.SessionID) == ProjectID+"-"+strconv.FormatInt(task.CardNumber, 10) &&
+		task.WorktreePath == filepath.Join(dataDir, "worktrees", ProjectID, string(session.ID)) &&
+		task.SourceBranch == "ao/"+string(session.ID)+"/root" && session.DisplayName == TaskDisplayPrefix+task.TaskID &&
+		session.Metadata.Prompt == TaskPromptPrefix+task.TaskID+": "+task.Prompt
 }
 
 func validPRURL(raw string, number int) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
 		u.Path == "/"+RepositoryFullName+"/pull/"+strconv.Itoa(number)
+}
+
+func validCheckURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
+		strings.HasPrefix(u.Path, "/"+RepositoryFullName+"/actions/runs/")
 }
 
 func validSHA(value string) bool {

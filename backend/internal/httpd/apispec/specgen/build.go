@@ -410,6 +410,19 @@ func dcpTaskOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/dcp/tasks/policy", id: "submitDCPReviewLabPolicyTask", tag: "dcpTasks",
+			summary: "Submit one durable future DCP review-lab policy task",
+			reqBody: controllers.SubmitDCPPolicyTaskRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.DCPPolicyTaskResponse{}},
+				{http.StatusOK, controllers.DCPPolicyTaskResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/dcp/tasks/{taskId}", id: "getDCPTask", tag: "dcpTasks",
 			summary:    "Read one durable synthetic DCP task",
 			pathParams: []any{controllers.DCPTaskIDParam{}},

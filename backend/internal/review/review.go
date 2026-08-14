@@ -76,6 +76,16 @@ type WorkspacePreparer interface {
 	PrepareReviewWorkspace(ctx stdctx.Context, id domain.SessionID, targetSHA string) (domain.SessionRecord, error)
 }
 
+// PolicyReviewGate lets the existing review engine participate in the future
+// DCP model-action lease without learning task policy. Ordinary and historical
+// reviews return policy=false and retain their exact behavior.
+type PolicyReviewGate interface {
+	IsPolicyReviewSession(stdctx.Context, domain.SessionID) (bool, error)
+	AuthorizePolicyReview(stdctx.Context, domain.SessionID, string, string) (policy, authorized bool, err error)
+	MarkPolicyReviewStarted(stdctx.Context, domain.SessionID, string, string, string) error
+	FailPolicyReviewLaunch(stdctx.Context, domain.SessionID, string, string) error
+}
+
 type preservedWorkspacePreparer struct {
 	sessions Sessions
 	projects Projects
@@ -176,6 +186,7 @@ type Deps struct {
 	// WorkspacePreparer is used only for a preserved terminated worker whose
 	// reviewer worktree must be restored model-free before a recovery launch.
 	WorkspacePreparer WorkspacePreparer
+	PolicyGate        PolicyReviewGate
 
 	// Clock and NewID are injectable for deterministic tests.
 	Clock func() time.Time
@@ -190,6 +201,7 @@ type Engine struct {
 	projects          Projects
 	launcher          Launcher
 	workspacePreparer WorkspacePreparer
+	policyGate        PolicyReviewGate
 	clock             func() time.Time
 	newID             func() string
 
@@ -217,11 +229,14 @@ func New(d Deps) *Engine {
 		projects:          d.Projects,
 		launcher:          d.Launcher,
 		workspacePreparer: d.WorkspacePreparer,
+		policyGate:        d.PolicyGate,
 		clock:             clock,
 		newID:             newID,
 		triggerLocks:      make(map[domain.SessionID]*sync.Mutex),
 	}
 }
+
+func (e *Engine) SetPolicyGate(gate PolicyReviewGate) { e.policyGate = gate }
 
 // lockWorker serialises Trigger calls for a single worker session and returns
 // the unlock func. Without it, two concurrent triggers for the same worker can
@@ -318,11 +333,13 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q", ErrNotFound, workerID)
 	}
 	reviewLab := worker.ProjectID == "dcp-review-lab"
+	futurePolicyReview := false
 	if reviewLab {
 		if mode == triggerManual {
 			return TriggerResult{}, fmt.Errorf("%w: DCP review-lab reviews are automatic only", ErrInvalid)
 		}
-		if !eligibleDCPReviewLabWorker(workerID) {
+		futurePolicyReview = !eligibleDCPReviewLabWorker(workerID)
+		if futurePolicyReview && e.policyGate == nil {
 			return TriggerResult{}, nil
 		}
 	}
@@ -362,7 +379,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	if reviewLab && !dcpReviewLabRunBudget(workerID, mode, runs) {
+	if reviewLab && !futurePolicyReview && !dcpReviewLabRunBudget(workerID, mode, runs) {
 		return TriggerResult{}, nil
 	}
 	reviews := Plan(prs, runs)
@@ -401,6 +418,7 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	}
 
 	var created []domain.ReviewRun
+	policyHead := ""
 	batchID := ""
 	for _, reviewState := range reviews {
 		// A PR that is already up to date has nothing due — unless the caller asked
@@ -418,6 +436,19 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 		}
 		if !eligible && (mode != triggerManual || !secondOpinionWanted(reviewState, override, harness)) {
 			continue
+		}
+		if futurePolicyReview {
+			policy, authorized, gateErr := e.policyGate.AuthorizePolicyReview(ctx, workerID, reviewState.PRURL, reviewState.TargetSHA)
+			if gateErr != nil {
+				return TriggerResult{}, gateErr
+			}
+			if !policy || !authorized {
+				continue
+			}
+			if policyHead != "" && policyHead != reviewState.TargetSHA {
+				return TriggerResult{}, errors.New("DCP policy review attempted more than one exact head")
+			}
+			policyHead = reviewState.TargetSHA
 		}
 		if _, err := e.store.SupersedeStaleRunningReviewRuns(ctx, workerID, reviewState.PRURL, reviewState.TargetSHA, "superseded by a review trigger for a newer commit"); err != nil {
 			return TriggerResult{}, err
@@ -484,11 +515,27 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	// the old pane atomically and also applies the selected harness's current
 	// permissions and environment.
 	if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
-		return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
+		launchErr := fmt.Errorf("reviewer preflight: %w", err)
+		if futurePolicyReview && policyHead != "" {
+			_ = e.policyGate.FailPolicyReviewLaunch(ctx, workerID, policyHead, "reviewer_preflight_failed")
+		}
+		return TriggerResult{}, failRuns(0, launchErr)
 	}
 	handleID, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, created[0], queue, 0))
 	if err != nil {
-		return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
+		launchErr := fmt.Errorf("launch reviewer: %w", err)
+		if futurePolicyReview && policyHead != "" {
+			_ = e.policyGate.FailPolicyReviewLaunch(ctx, workerID, policyHead, "reviewer_launch_failed")
+		}
+		return TriggerResult{}, failRuns(0, launchErr)
+	}
+	if futurePolicyReview {
+		if len(created) != 1 || created[0].TargetSHA != policyHead {
+			return TriggerResult{}, errors.New("DCP policy reviewer batch identity is ambiguous")
+		}
+		if err := e.policyGate.MarkPolicyReviewStarted(ctx, workerID, policyHead, created[0].ID, handleID); err != nil {
+			return TriggerResult{}, err
+		}
 	}
 	reviewRow, err = e.upsertReview(ctx, worker, harness, handleID, now)
 	if err != nil {
@@ -584,6 +631,13 @@ func (e *Engine) reconcileSession(ctx stdctx.Context, workerID domain.SessionID)
 		_, err := e.triggerLocked(ctx, workerID, "", triggerAutomatic, nil)
 		return err
 	}
+	policySession := false
+	if e.policyGate != nil {
+		policySession, err = e.policyGate.IsPolicyReviewSession(ctx, workerID)
+		if err != nil {
+			return err
+		}
+	}
 	reviewRow, ok, err := e.store.GetReviewBySession(ctx, workerID)
 	if err != nil {
 		return err
@@ -621,7 +675,10 @@ func (e *Engine) reconcileSession(ctx stdctx.Context, workerID domain.SessionID)
 			recovered[reviewKey(run.PRURL, run.TargetSHA)] = struct{}{}
 		}
 	}
-	if ambiguous || len(recovered) == 0 {
+	if policySession || ambiguous || len(recovered) == 0 {
+		// Future DCP policy reviewers have exactly one action per exact head.
+		// Their policy startup reconciliation consumes this failed run and
+		// terminally releases its slot; stock one-shot recovery is historical.
 		return nil
 	}
 	_, err = e.triggerLocked(ctx, workerID, "", triggerRecovery, recovered)

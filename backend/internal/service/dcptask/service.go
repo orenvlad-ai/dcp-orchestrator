@@ -8,14 +8,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	reviewcore "github.com/aoagents/agent-orchestrator/backend/internal/review"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
@@ -53,17 +59,25 @@ type RepositoryValidator interface {
 }
 
 type Deps struct {
-	Store      Store
-	Repository RepositoryValidator
-	Now        func() time.Time
-	NewID      func(prefix string) string
+	Store              Store
+	Repository         RepositoryValidator
+	PolicyRepository   RepositoryValidator
+	PolicyWorktreeRoot string
+	Now                func() time.Time
+	NewID              func(prefix string) string
 }
 
 type Service struct {
-	store      Store
-	repository RepositoryValidator
-	now        func() time.Time
-	newID      func(prefix string) string
+	store              Store
+	repository         RepositoryValidator
+	policyStore        PolicyStore
+	policyRepository   RepositoryValidator
+	policyWorktreeRoot string
+	policyRuntime      PolicyRuntime
+	policyReviewer     PolicyReviewer
+	policyMu           sync.Mutex
+	now                func() time.Time
+	newID              func(prefix string) string
 }
 
 func New(deps Deps) *Service {
@@ -75,7 +89,213 @@ func New(deps Deps) *Service {
 	if newID == nil {
 		newID = func(prefix string) string { return prefix + uuid.NewString() }
 	}
-	return &Service{store: deps.Store, repository: deps.Repository, now: now, newID: newID}
+	policyStore, _ := deps.Store.(PolicyStore)
+	return &Service{store: deps.Store, repository: deps.Repository, policyStore: policyStore,
+		policyRepository: deps.PolicyRepository, policyWorktreeRoot: filepath.Clean(deps.PolicyWorktreeRoot), now: now, newID: newID}
+}
+
+const (
+	PolicyTarget         = "dcp-review-lab"
+	PolicyProfile        = "synthetic-pr"
+	PolicyRepositoryName = "orenvlad-ai/dcp-review-lab"
+)
+
+var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)
+
+// PolicyStore is the additive future-task/action surface on the same SQLite
+// authority already used by this service.
+type PolicyStore interface {
+	GetProject(context.Context, string) (domain.ProjectRecord, bool, error)
+	ReserveDCPReviewLabPolicyTask(context.Context, domain.DCPReviewLabPolicyTask, domain.SessionRecord, string) (sqlitestore.DCPPolicyReserveResult, error)
+	GetDCPReviewLabPolicyTaskByTaskID(context.Context, string) (domain.DCPReviewLabPolicyTask, bool, error)
+	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+	ListDCPReviewLabPolicyTasks(context.Context) ([]domain.DCPReviewLabPolicyTask, error)
+	UpdateDCPReviewLabPolicyTaskCAS(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask) (bool, error)
+	GetDCPModelActionByID(context.Context, string) (domain.DCPModelAction, bool, error)
+	GetDCPModelActionByIdentity(context.Context, string, domain.DCPModelActionKind, string) (domain.DCPModelAction, bool, error)
+	GetActiveDCPModelActionBySession(context.Context, domain.SessionID) (domain.DCPModelAction, bool, error)
+	ListDCPModelActions(context.Context) ([]domain.DCPModelAction, error)
+	ListActiveDCPModelActions(context.Context) ([]domain.DCPModelAction, error)
+	ClaimNextDCPModelAction(context.Context, time.Time) (domain.DCPModelAction, bool, error)
+	StartDCPModelAction(context.Context, domain.DCPModelAction, string, string, time.Time) (bool, error)
+	FinishDCPModelAction(context.Context, domain.DCPModelAction, domain.DCPReviewLabPolicyTask, domain.DCPModelActionStatus, string, time.Time) (bool, error)
+	FinishDCPModelActionAndQueue(context.Context, domain.DCPModelAction, domain.DCPReviewLabPolicyTask, domain.DCPModelAction, time.Time) (bool, error)
+	QueueDCPModelAction(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask, domain.DCPModelAction) (domain.DCPModelAction, bool, error)
+	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
+	ListPRsBySession(context.Context, domain.SessionID) ([]domain.PullRequest, error)
+	ListChecks(context.Context, string) ([]domain.PullRequestCheck, error)
+	GetReviewRun(context.Context, string) (domain.ReviewRun, bool, error)
+	GetReviewRunBySessionPRAndSHA(context.Context, domain.SessionID, string, string) (domain.ReviewRun, bool, error)
+	GetReviewBySession(context.Context, domain.SessionID) (domain.Review, bool, error)
+}
+
+// PolicyRuntime is the narrow stock-session manager surface used by the
+// future policy. Provision is model-free; Launch is called only after a
+// durable action has claimed one of three slots.
+type PolicyRuntime interface {
+	ProvisionDCPReviewLabPolicySession(context.Context, domain.SessionID, ports.SpawnConfig) (domain.SessionRecord, int, int, error)
+	LaunchDCPReviewLabPolicyAction(context.Context, domain.SessionID, string) (sessionmanager.RestoreResult, error)
+	DCPReviewLabPolicyActionAlive(context.Context, domain.SessionID, string) (bool, error)
+}
+
+type PolicyReviewer interface {
+	AutoTrigger(context.Context, domain.SessionID) (reviewcore.TriggerResult, error)
+}
+
+// SetPolicyRuntime late-binds collaborators that are constructed after the
+// task service during daemon startup. It adds no background loop.
+func (s *Service) SetPolicyRuntime(runtime PolicyRuntime, reviewer PolicyReviewer) {
+	s.policyRuntime = runtime
+	s.policyReviewer = reviewer
+}
+
+type PolicySubmitInput struct {
+	TaskID     string
+	Target     string
+	Profile    string
+	Repository string
+	Prompt     string
+}
+
+type PolicySubmitResult struct {
+	Task      domain.DCPReviewLabPolicyTask
+	Duplicate bool
+}
+
+type policyPayload struct {
+	SchemaVersion string `json:"schemaVersion"`
+	TaskID        string `json:"taskId"`
+	Target        string `json:"target"`
+	Profile       string `json:"profile"`
+	Repository    string `json:"repository"`
+	Prompt        string `json:"prompt"`
+}
+
+// SubmitPolicy reserves one native identity before any model can start,
+// completes its exact worktree idempotently, then performs one model-free
+// queue drain. Equal replay returns the same identity; conflicting replay is
+// rejected by the atomic store transaction.
+func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (PolicySubmitResult, error) {
+	if s == nil || s.policyStore == nil || s.policyRepository == nil || s.policyRuntime == nil || s.policyWorktreeRoot == "." || !filepath.IsAbs(s.policyWorktreeRoot) {
+		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_UNAVAILABLE", "DCP review-lab policy is unavailable")
+	}
+	if err := validatePolicySubmit(in); err != nil {
+		return PolicySubmitResult{}, err
+	}
+	payloadBytes, err := json.Marshal(policyPayload{
+		SchemaVersion: domain.DCPReviewLabPolicyVersion, TaskID: in.TaskID, Target: in.Target,
+		Profile: in.Profile, Repository: in.Repository, Prompt: in.Prompt,
+	})
+	if err != nil {
+		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_CANONICALIZATION_FAILED", "DCP task could not be canonicalized")
+	}
+	sum := sha256.Sum256(payloadBytes)
+	now := s.now().UTC()
+	task := domain.DCPReviewLabPolicyTask{
+		TaskID: in.TaskID, PayloadJSON: string(payloadBytes), PayloadDigest: hex.EncodeToString(sum[:]),
+		Target: PolicyTarget, Profile: PolicyProfile, Repository: PolicyRepositoryName,
+		PolicyVersion: domain.DCPReviewLabPolicyVersion, Prompt: in.Prompt,
+		State: domain.DCPPolicyReserved, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	var reserved sqlitestore.DCPPolicyReserveResult
+	if existing, found, getErr := s.policyStore.GetDCPReviewLabPolicyTaskByTaskID(ctx, in.TaskID); getErr != nil {
+		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_RESERVE_FAILED", "DCP task identity could not be read")
+	} else if found {
+		if !samePolicyPayload(existing, task) {
+			return PolicySubmitResult{}, apierr.Conflict("DCP_POLICY_TASK_CONFLICT", "The task id is already bound to a different canonical payload", map[string]any{"taskId": in.TaskID})
+		}
+		if existing.State != domain.DCPPolicyReserved {
+			return PolicySubmitResult{Task: existing, Duplicate: true}, nil
+		}
+		reserved = sqlitestore.DCPPolicyReserveResult{Task: existing}
+	} else {
+		if err := s.validatePolicyTarget(ctx); err != nil {
+			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public synthetic repository identity failed validation", nil)
+		}
+		seed := domain.SessionRecord{
+			ProjectID: PolicyTarget, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+			DisplayName: "DCP:" + in.TaskID, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+			CreatedAt: now, UpdatedAt: now,
+		}
+		reserved, err = s.policyStore.ReserveDCPReviewLabPolicyTask(ctx, task, seed, s.policyWorktreeRoot)
+		if errors.Is(err, sqlitestore.ErrDCPPolicyConflict) {
+			return PolicySubmitResult{}, apierr.Conflict("DCP_POLICY_TASK_CONFLICT", "The task id is already bound to a different canonical payload", map[string]any{"taskId": in.TaskID})
+		}
+		if err != nil {
+			return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_RESERVE_FAILED", "DCP task identity could not be reserved")
+		}
+	}
+	task = reserved.Task
+	if task.State == domain.DCPPolicyReserved {
+		if err := s.validatePolicyTarget(ctx); err != nil {
+			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public synthetic repository identity failed validation", nil)
+		}
+		cfg := policySpawnConfig(task)
+		if _, _, _, err := s.policyRuntime.ProvisionDCPReviewLabPolicySession(ctx, task.SessionID, cfg); err != nil {
+			return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_PROVISION_FAILED", "The reserved native DCP card could not be provisioned safely")
+		}
+		next := task
+		next.State = domain.DCPPolicyWorkerQueued
+		next.UpdatedAt = s.now().UTC()
+		updated, updateErr := s.policyStore.UpdateDCPReviewLabPolicyTaskCAS(ctx, task, next)
+		if updateErr != nil {
+			return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_STATE_FAILED", "The reserved DCP card could not enter its durable queue")
+		}
+		if updated {
+			next.Revision = task.Revision + 1
+			task = next
+		} else if fresh, found, getErr := s.policyStore.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID); getErr == nil && found {
+			task = fresh
+		} else {
+			return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_STATE_FAILED", "The reserved DCP card state became ambiguous")
+		}
+	}
+	if err := s.DrainModelActions(ctx); err != nil {
+		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_DRAIN_FAILED", "The durable DCP action queue failed closed")
+	}
+	if fresh, found, err := s.policyStore.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID); err == nil && found {
+		task = fresh
+	}
+	return PolicySubmitResult{Task: task, Duplicate: !reserved.Created}, nil
+}
+
+func (s *Service) validatePolicyTarget(ctx context.Context) error {
+	project, ok, err := s.policyStore.GetProject(ctx, PolicyTarget)
+	if err != nil || !ok || !project.ArchivedAt.IsZero() {
+		return errors.Join(err, errors.New("exact dcp-review-lab project is unavailable"))
+	}
+	identity, err := s.policyRepository.Validate(ctx, project)
+	if err != nil || identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName {
+		return errors.Join(err, errors.New("exact public synthetic repository identity failed validation"))
+	}
+	return nil
+}
+
+func samePolicyPayload(existing, requested domain.DCPReviewLabPolicyTask) bool {
+	return existing.TaskID == requested.TaskID && existing.PayloadJSON == requested.PayloadJSON && existing.PayloadDigest == requested.PayloadDigest &&
+		existing.Target == requested.Target && existing.Profile == requested.Profile && existing.Repository == requested.Repository &&
+		existing.PolicyVersion == requested.PolicyVersion && existing.Prompt == requested.Prompt
+}
+
+func policySpawnConfig(task domain.DCPReviewLabPolicyTask) ports.SpawnConfig {
+	return ports.SpawnConfig{
+		ProjectID: PolicyTarget, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		Branch: task.SourceBranch, DisplayName: "DCP:" + task.TaskID,
+		Prompt: "DCP synthetic task " + task.TaskID + ": " + task.Prompt,
+	}
+}
+
+func validatePolicySubmit(in PolicySubmitInput) error {
+	if !policyTaskIDPattern.MatchString(in.TaskID) {
+		return apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "taskId must be 1-16 lowercase letters, digits, or internal hyphens", nil)
+	}
+	if in.Target != PolicyTarget || in.Profile != PolicyProfile || in.Repository != PolicyRepositoryName {
+		return apierr.Invalid("DCP_POLICY_IDENTITY_INVALID", "target, profile, and repository must match the exact synthetic policy", nil)
+	}
+	if strings.TrimSpace(in.Prompt) == "" || len(in.Prompt) > 512 || !utf8.ValidString(in.Prompt) || strings.ContainsAny(in.Prompt, "\x00\r\n") {
+		return apierr.Invalid("DCP_POLICY_PROMPT_INVALID", "prompt must be one line and at most 512 UTF-8 bytes", nil)
+	}
+	return nil
 }
 
 // SubmitInput is the semantic command accepted from the internal loopback lab

@@ -498,6 +498,55 @@ paths:
       summary: List the monotonic event stream for one DCP task
       tags:
       - dcpTasks
+  /api/v1/dcp/tasks/policy:
+    post:
+      operationId: submitDCPReviewLabPolicyTask
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSubmitDCPPolicyTaskRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersDCPPolicyTaskResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersDCPPolicyTaskResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit one durable future DCP review-lab policy task
+      tags:
+      - dcpTasks
   /api/v1/dev/import-projects:
     post:
       operationId: runDevImportProjects
@@ -3360,6 +3409,16 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersDCPPolicyTaskResponse:
+      properties:
+        duplicate:
+          type: boolean
+        task:
+          $ref: '#/components/schemas/DomainDCPReviewLabPolicyTask'
+      required:
+      - task
+      - duplicate
+      type: object
     ControllersSessionView:
       properties:
         activity:
@@ -3462,6 +3521,35 @@ components:
           type: string
       required:
       - data
+      type: object
+    ControllersSubmitDCPPolicyTaskRequest:
+      properties:
+        profile:
+          enum:
+          - synthetic-pr
+          type: string
+        prompt:
+          maxLength: 512
+          minLength: 1
+          type: string
+        repository:
+          enum:
+          - orenvlad-ai/dcp-review-lab
+          type: string
+        target:
+          enum:
+          - dcp-review-lab
+          type: string
+        taskId:
+          maxLength: 16
+          minLength: 1
+          type: string
+      required:
+      - taskId
+      - target
+      - profile
+      - repository
+      - prompt
       type: object
     DCPApprovedScope:
       properties:
@@ -3789,6 +3877,82 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainDCPReviewLabPolicyTask:
+      properties:
+        admissionId:
+          type: string
+        cardNumber:
+          format: int64
+          type: integer
+        createdAt:
+          format: date-time
+          type: string
+        currentHeadSha:
+          type: string
+        errorCode:
+          type: string
+        incidentPacket:
+          type: string
+        mergeCommitSha:
+          type: string
+        payloadDigest:
+          type: string
+        policyVersion:
+          type: string
+        prNumber:
+          format: int64
+          type: integer
+        prUrl:
+          type: string
+        previousHeadSha:
+          type: string
+        profile:
+          type: string
+        prompt:
+          type: string
+        repairCount:
+          format: int64
+          type: integer
+        repository:
+          type: string
+        reviewRunId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        sourceBranch:
+          type: string
+        state:
+          type: string
+        target:
+          type: string
+        taskId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+        worktreePath:
+          type: string
+      required:
+      - taskId
+      - payloadDigest
+      - target
+      - profile
+      - repository
+      - policyVersion
+      - sessionId
+      - cardNumber
+      - worktreePath
+      - sourceBranch
+      - prompt
+      - state
+      - revision
+      - repairCount
+      - createdAt
+      - updatedAt
       type: object
     DomainReviewerConfig:
       properties:

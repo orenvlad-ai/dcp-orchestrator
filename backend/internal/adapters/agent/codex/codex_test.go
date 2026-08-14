@@ -415,6 +415,15 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactDCPReviewLabWorker(t *testing
 	if contains(future, "sandbox_workspace_write.network_access=true") {
 		t.Fatalf("future card 13 unexpectedly received network: %#v", future)
 	}
+	policyFuture, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: futureDataDir,
+		SessionID: "dcp-review-lab-13", Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: futureWorkspace,
+		DCPReviewLabPolicyAuthorized: true,
+	})
+	if err != nil || !containsSubsequence(policyFuture, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
+		t.Fatalf("policy-authorized future card lacks scoped network: %#v err=%v", policyFuture, err)
+	}
 
 	ordinaryWorkspace, _, _ := linkedWorktree(t)
 	ordinary, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
