@@ -84,7 +84,7 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 		if found && existing.Status != domain.DCPFutureArbiterHold {
 			continue
 		}
-		candidate, exact, err := e.candidateForAdmission(ctx, admission)
+		candidate, exact, err := e.candidateForFutureArbiterAdmission(ctx, admission)
 		if err != nil || !exact {
 			return errors.Join(err, errors.New("DCP future arbiter candidate is not exact"))
 		}
@@ -458,7 +458,7 @@ func (e *Engine) revalidateFutureArbiter(ctx context.Context, incident domain.DC
 	if err != nil || !found {
 		return errors.Join(err, errors.New("DCP future arbiter admission disappeared"))
 	}
-	candidate, exact, err := e.candidateForAdmission(ctx, admission)
+	candidate, exact, err := e.candidateForFutureArbiterAdmission(ctx, admission)
 	if err != nil || !exact {
 		return errors.Join(err, errors.New("DCP future arbiter candidate drifted"))
 	}

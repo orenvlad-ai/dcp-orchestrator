@@ -483,6 +483,27 @@ func TestFuturePolicyNonCleanOrForeignNamedCIFailsClosedWithoutWake(t *testing.T
 	}
 }
 
+func TestFutureArbiterCandidateAcceptsOnlyExactIncidentState(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	scm.observation.PR.ProviderMergeable = "CONFLICTING"
+	scm.observation.PR.ProviderMergeStateStatus = "DIRTY"
+	scm.observation.Mergeability.State = string(domain.MergeConflicting)
+	scm.observation.Mergeability.Mergeable = false
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.policyTask.State != domain.DCPPolicyIncident || store.admission == nil || store.admission.Status != domain.DCPAdmissionIncident {
+		t.Fatalf("incident was not persisted: task=%+v admission=%+v", store.policyTask, store.admission)
+	}
+	if _, ok, err := engine.candidateForAdmission(context.Background(), *store.admission); err != nil || ok {
+		t.Fatalf("ordinary admission candidate weakened for incident: ok=%v err=%v", ok, err)
+	}
+	candidate, ok, err := engine.candidateForFutureArbiterAdmission(context.Background(), *store.admission)
+	if err != nil || !ok || candidate.policyTask.State != domain.DCPPolicyIncident || candidate.policyTask.AdmissionID != store.admission.ID {
+		t.Fatalf("future arbiter candidate rejected exact incident: ok=%v err=%v candidate=%+v", ok, err, candidate)
+	}
+}
+
 func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {
 	engine, store, scm := fixture(t)
 	scm.review.Decision = string(domain.ReviewApproved)
