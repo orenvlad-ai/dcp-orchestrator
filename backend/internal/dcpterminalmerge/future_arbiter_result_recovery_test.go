@@ -2,6 +2,7 @@ package dcpterminalmerge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,42 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type exactHumanGateRecoveryStore struct {
+	FutureArbiterStore
+	incident        domain.DCPFutureArbiterIncident
+	recovery        domain.DCPFutureArbiterResultRecovery
+	recovered       bool
+	repairRecovered bool
+	failed          bool
+}
+
+func (s *exactHumanGateRecoveryStore) ListDCPFutureArbiterIncidents(context.Context) ([]domain.DCPFutureArbiterIncident, error) {
+	return []domain.DCPFutureArbiterIncident{s.incident}, nil
+}
+
+func (s *exactHumanGateRecoveryStore) GetDCPFutureArbiterResultRecovery(context.Context, string) (domain.DCPFutureArbiterResultRecovery, bool, error) {
+	return s.recovery, true, nil
+}
+
+func (s *exactHumanGateRecoveryStore) RecoverDCPFutureArbiterExactDecision(context.Context, domain.DCPFutureArbiterIncident, string, string, string, string, string, time.Time) (bool, error) {
+	s.repairRecovered = true
+	return false, nil
+}
+
+func (s *exactHumanGateRecoveryStore) RecoverDCPFutureArbiterExactHumanGate(_ context.Context, incident domain.DCPFutureArbiterIncident, decisionJSON, _ string, orderJSON, pathsJSON, question string, _ time.Time) (bool, error) {
+	if incident.IncidentID != s.incident.IncidentID || decisionJSON == "" || orderJSON == "" ||
+		pathsJSON != `["shared.txt"]` || question != "Should shared.txt keep intent A or intent B?" {
+		return false, errors.New("recovered HumanGate fields drifted")
+	}
+	s.recovered = true
+	return true, nil
+}
+
+func (s *exactHumanGateRecoveryStore) FailDCPFutureArbiterResultRecovery(context.Context, string, string, time.Time) (bool, error) {
+	s.failed = true
+	return true, nil
+}
 
 type mappedFutureRuntime struct {
 	physical  string
@@ -121,5 +158,32 @@ func TestFutureArbiterResultRecoveryPreflightIsModelFreeAndByteExact(t *testing.
 	}
 	if err := launcher.PreflightResultRecovery(context.Background(), incident, recovery); err == nil {
 		t.Fatal("drifted result artifact was accepted")
+	}
+}
+
+func TestFutureArbiterExactResultRecoveryAcceptsHumanGateWithoutRepair(t *testing.T) {
+	incident := futureProtocolIncident(t)
+	incident.Status, incident.ModelCallCount, incident.ErrorCode = domain.DCPFutureArbiterFailed, 1, "submit_failed"
+	decision := FutureArbiterDecision{
+		SchemaVersion: futureArbiterDecisionSchema, IncidentID: incident.IncidentID,
+		Generation: incident.Generation, IdentityDigest: incident.IdentityDigest, InputDigest: incident.InputDigest,
+		Verdict: string(domain.DCPFutureVerdictHumanGate), Order: []string{"night-arb-a", "night-arb-b"},
+		AffectedPaths: []string{"shared.txt"}, HumanQuestion: "Should shared.txt keep intent A or intent B?",
+		Summary:         "The intents are mutually exclusive.",
+		EvidenceDigests: []string{incident.SourcePacketDigest, incident.CohortDigest, incident.EvidenceDigest},
+	}
+	result, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, canonical, err := ParseFutureArbiterDecision(result, incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &exactHumanGateRecoveryStore{incident: incident}
+	engine := &Engine{clock: func() time.Time { return time.Unix(500, 0).UTC() }}
+	recovered, err := engine.persistRecoveredFutureArbiterDecision(context.Background(), store, incident, parsed, canonical)
+	if err != nil || !recovered || !store.recovered || store.repairRecovered || store.failed {
+		t.Fatalf("HumanGate recovery = recovered=%v human=%v repair=%v failed=%v err=%v", recovered, store.recovered, store.repairRecovered, store.failed, err)
 	}
 }

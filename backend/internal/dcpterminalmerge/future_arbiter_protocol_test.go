@@ -89,7 +89,7 @@ func TestParseFutureArbiterDecisionAcceptsExactRepairAndRejectsReplayDrift(t *te
 	}
 }
 
-func TestParseFutureArbiterDecisionRequiresHumanQuestionAndNoMutation(t *testing.T) {
+func TestParseFutureArbiterDecisionAllowsDiagnosticHumanGatePathsWithoutMutation(t *testing.T) {
 	incident := futureProtocolIncident(t)
 	decision := FutureArbiterDecision{
 		SchemaVersion: futureArbiterDecisionSchema,
@@ -105,8 +105,13 @@ func TestParseFutureArbiterDecisionRequiresHumanQuestionAndNoMutation(t *testing
 	}
 	decision.AffectedPaths = []string{"shared.txt"}
 	data, _ = json.Marshal(decision)
+	if _, _, err := ParseFutureArbiterDecision(data, incident); err != nil {
+		t.Fatalf("HumanGate with one frozen diagnostic path was rejected: %v", err)
+	}
+	decision.AffectedPaths = []string{"foreign.txt"}
+	data, _ = json.Marshal(decision)
 	if _, _, err := ParseFutureArbiterDecision(data, incident); err == nil {
-		t.Fatal("HumanGate with mutation authority was accepted")
+		t.Fatal("HumanGate with a foreign diagnostic path was accepted")
 	}
 }
 

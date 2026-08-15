@@ -152,10 +152,11 @@ func (l *futureArbiterLauncher) PreflightResultRecovery(ctx context.Context, inc
 	if incident.FinishedAt == nil || recovery.Status != "pending" ||
 		recovery.IncidentID != incident.IncidentID || recovery.IdentityDigest != incident.IdentityDigest ||
 		recovery.InputDigest != incident.InputDigest || recovery.ModelActionID != incident.ModelActionID ||
-		recovery.PriorStatus != string(domain.DCPFutureArbiterFailed) || recovery.PriorErrorCode != "launch_failed" ||
+		recovery.PriorStatus != string(domain.DCPFutureArbiterFailed) ||
+		(recovery.PriorErrorCode != "launch_failed" && recovery.PriorErrorCode != "submit_failed") ||
 		!recovery.PriorFinishedAt.Equal(*incident.FinishedAt) || recovery.PriorModelCallCount != 1 ||
 		recovery.PriorDecisionDigest != "" || incident.Status != domain.DCPFutureArbiterFailed ||
-		incident.ErrorCode != "launch_failed" || incident.ModelCallCount != 1 || incident.DecisionJSON != "" ||
+		incident.ErrorCode != recovery.PriorErrorCode || incident.ModelCallCount != 1 || incident.DecisionJSON != "" ||
 		incident.DecisionDigest != "" || recovery.RuntimeHandleID != incident.RuntimeHandleID {
 		return errors.New("DCP future arbiter result recovery identity is invalid")
 	}
@@ -214,7 +215,7 @@ func (l *futureArbiterLauncher) LaunchFuture(ctx context.Context, incident domai
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return errors.New("DCP future arbiter supervisor is not executable")
 	}
-	prompt := "You are the bounded DCP ordinary-card release arbiter. The supplied JSON is the complete authoritative context-free evidence envelope for one exact incident generation and its full relevant cohort. Return exactly one JSON object matching the schema. Choose successor_repair only when one bounded same-task repair can preserve every compatible cohort intent on current main. Choose deterministic_order_hold only when exact predecessor order alone can resolve the incident without code mutation. If intents are mutually exclusive or evidence is insufficient, choose human_gate and ask one short specific owner question. Never edit, push, review, admit, merge, accept risk, guess owner intent, or claim owner acceptance. Evidence:\n" + incident.InputJSON
+	prompt := "You are the bounded DCP ordinary-card release arbiter. The supplied JSON is the complete authoritative context-free evidence envelope for one exact incident generation and its full relevant cohort. Return exactly one JSON object matching the schema. Choose successor_repair only when one bounded same-task repair can preserve every compatible cohort intent on current main. Choose deterministic_order_hold only when exact predecessor order alone can resolve the incident without code mutation. If intents are mutually exclusive or evidence is insufficient, choose human_gate and ask one short specific owner question. For human_gate, repairTaskId and repairObjective must be empty; affectedPaths may only identify frozen incident paths for diagnosis and grants no mutation authority. Never edit, push, review, admit, merge, accept risk, guess owner intent, or claim owner acceptance. Evidence:\n" + incident.InputJSON
 	child := append(arbiterCodexBaseArgs(), "--cd", artifacts.directory, "--output-schema", artifacts.schema,
 		"--output-last-message", artifacts.result, "--", prompt)
 	fixed := []string{executable, "arbiter", "supervise", "--handle", incident.RuntimeHandleID,

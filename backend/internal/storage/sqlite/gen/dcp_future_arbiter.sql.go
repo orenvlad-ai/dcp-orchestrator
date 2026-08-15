@@ -143,6 +143,26 @@ func (q *Queries) DecideDCPFutureArbiterIncident(ctx context.Context, arg Decide
 	return result.RowsAffected()
 }
 
+const failDCPFutureArbiterHumanGateResultRecovery = `-- name: FailDCPFutureArbiterHumanGateResultRecovery :execrows
+UPDATE dcp_future_card_arbiter_human_gate_result_recovery_v1
+SET status='failed', error_code=?, finished_at=?
+WHERE incident_id=? AND status='pending'
+`
+
+type FailDCPFutureArbiterHumanGateResultRecoveryParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	IncidentID string
+}
+
+func (q *Queries) FailDCPFutureArbiterHumanGateResultRecovery(ctx context.Context, arg FailDCPFutureArbiterHumanGateResultRecoveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPFutureArbiterHumanGateResultRecovery, arg.ErrorCode, arg.FinishedAt, arg.IncidentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const failDCPFutureArbiterIncident = `-- name: FailDCPFutureArbiterIncident :execrows
 UPDATE dcp_future_card_arbiter_v1
 SET status='failed', error_code=?, updated_at=?, finished_at=?
@@ -187,6 +207,44 @@ func (q *Queries) FailDCPFutureArbiterResultValidationRecovery(ctx context.Conte
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getDCPFutureArbiterHumanGateResultRecovery = `-- name: GetDCPFutureArbiterHumanGateResultRecovery :one
+SELECT recovery_id, incident_id, identity_digest, input_digest, model_action_id, prior_status, prior_error_code, prior_finished_at, prior_model_call_count, prior_decision_digest, runtime_handle_id, physical_runtime_handle, input_artifact_digest, input_artifact_size, schema_artifact_digest, schema_artifact_size, result_artifact_digest, result_artifact_size, codex_session_id, inference_tokens, contract_commit, status, error_code, created_at, finished_at FROM dcp_future_card_arbiter_human_gate_result_recovery_v1
+WHERE incident_id = ?
+`
+
+func (q *Queries) GetDCPFutureArbiterHumanGateResultRecovery(ctx context.Context, incidentID string) (DcpFutureCardArbiterHumanGateResultRecoveryV1, error) {
+	row := q.db.QueryRowContext(ctx, getDCPFutureArbiterHumanGateResultRecovery, incidentID)
+	var i DcpFutureCardArbiterHumanGateResultRecoveryV1
+	err := row.Scan(
+		&i.RecoveryID,
+		&i.IncidentID,
+		&i.IdentityDigest,
+		&i.InputDigest,
+		&i.ModelActionID,
+		&i.PriorStatus,
+		&i.PriorErrorCode,
+		&i.PriorFinishedAt,
+		&i.PriorModelCallCount,
+		&i.PriorDecisionDigest,
+		&i.RuntimeHandleID,
+		&i.PhysicalRuntimeHandle,
+		&i.InputArtifactDigest,
+		&i.InputArtifactSize,
+		&i.SchemaArtifactDigest,
+		&i.SchemaArtifactSize,
+		&i.ResultArtifactDigest,
+		&i.ResultArtifactSize,
+		&i.CodexSessionID,
+		&i.InferenceTokens,
+		&i.ContractCommit,
+		&i.Status,
+		&i.ErrorCode,
+		&i.CreatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
 }
 
 const getDCPFutureArbiterIncidentByAdmission = `-- name: GetDCPFutureArbiterIncidentByAdmission :one
@@ -593,6 +651,25 @@ func (q *Queries) ListDCPFutureArbiterIncidents(ctx context.Context) ([]DcpFutur
 	return items, nil
 }
 
+const markDCPFutureArbiterHumanGateResultRecoveryApplied = `-- name: MarkDCPFutureArbiterHumanGateResultRecoveryApplied :execrows
+UPDATE dcp_future_card_arbiter_human_gate_result_recovery_v1
+SET status='applied', error_code='', finished_at=?
+WHERE incident_id=? AND status='pending'
+`
+
+type MarkDCPFutureArbiterHumanGateResultRecoveryAppliedParams struct {
+	FinishedAt sql.NullTime
+	IncidentID string
+}
+
+func (q *Queries) MarkDCPFutureArbiterHumanGateResultRecoveryApplied(ctx context.Context, arg MarkDCPFutureArbiterHumanGateResultRecoveryAppliedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDCPFutureArbiterHumanGateResultRecoveryApplied, arg.FinishedAt, arg.IncidentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markDCPFutureArbiterRecoveryReviewed = `-- name: MarkDCPFutureArbiterRecoveryReviewed :execrows
 UPDATE dcp_future_card_arbiter_v1
 SET status='recovery_reviewed', recovery_review_run_id=?, recovery_head_sha=?, updated_at=?
@@ -773,6 +850,69 @@ func (q *Queries) RecoverDCPFutureArbiterExactDecision(ctx context.Context, arg 
 		arg.RepairObjective,
 		arg.RepairPathsJson,
 		arg.RepairActionID,
+		arg.DecisionAt,
+		arg.IncidentID,
+		arg.IdentityDigest,
+		arg.InputDigest,
+		arg.ModelActionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverDCPFutureArbiterExactHumanGate = `-- name: RecoverDCPFutureArbiterExactHumanGate :execrows
+UPDATE dcp_future_card_arbiter_v1
+SET status='human_gate', decision_json=?1,
+    decision_digest=?2, verdict='human_gate',
+    order_json=?3, repair_task_id='', repair_objective='',
+    repair_paths_json=?4, human_question=?5,
+    repair_action_id='', error_code='', updated_at=?6,
+    decision_at=?6, finished_at=?6
+WHERE dcp_future_card_arbiter_v1.incident_id=?7
+  AND dcp_future_card_arbiter_v1.identity_digest=?8
+  AND dcp_future_card_arbiter_v1.input_digest=?9
+  AND dcp_future_card_arbiter_v1.model_action_id=?10
+  AND dcp_future_card_arbiter_v1.status='failed' AND dcp_future_card_arbiter_v1.error_code='submit_failed'
+  AND dcp_future_card_arbiter_v1.model_call_count=1
+  AND dcp_future_card_arbiter_v1.decision_json='' AND dcp_future_card_arbiter_v1.decision_digest=''
+  AND EXISTS (
+    SELECT 1
+    FROM dcp_future_card_arbiter_human_gate_result_recovery_v1 recovery
+    WHERE recovery.incident_id=dcp_future_card_arbiter_v1.incident_id
+      AND recovery.identity_digest=dcp_future_card_arbiter_v1.identity_digest
+      AND recovery.input_digest=dcp_future_card_arbiter_v1.input_digest
+      AND recovery.model_action_id=dcp_future_card_arbiter_v1.model_action_id
+      AND recovery.prior_status=dcp_future_card_arbiter_v1.status
+      AND recovery.prior_error_code=dcp_future_card_arbiter_v1.error_code
+      AND recovery.prior_finished_at=dcp_future_card_arbiter_v1.finished_at
+      AND recovery.prior_model_call_count=dcp_future_card_arbiter_v1.model_call_count
+      AND recovery.prior_decision_digest=dcp_future_card_arbiter_v1.decision_digest
+      AND recovery.status='pending'
+  )
+`
+
+type RecoverDCPFutureArbiterExactHumanGateParams struct {
+	DecisionJson      string
+	DecisionDigest    string
+	OrderJson         string
+	AffectedPathsJson string
+	HumanQuestion     string
+	DecisionAt        time.Time
+	IncidentID        string
+	IdentityDigest    string
+	InputDigest       string
+	ModelActionID     string
+}
+
+func (q *Queries) RecoverDCPFutureArbiterExactHumanGate(ctx context.Context, arg RecoverDCPFutureArbiterExactHumanGateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverDCPFutureArbiterExactHumanGate,
+		arg.DecisionJson,
+		arg.DecisionDigest,
+		arg.OrderJson,
+		arg.AffectedPathsJson,
+		arg.HumanQuestion,
 		arg.DecisionAt,
 		arg.IncidentID,
 		arg.IdentityDigest,

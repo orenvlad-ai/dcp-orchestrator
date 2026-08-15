@@ -50,6 +50,10 @@ WHERE recovery_id = sqlc.arg(recovery_id)
 SELECT * FROM dcp_future_card_arbiter_result_validation_recovery_v1
 WHERE incident_id = ?;
 
+-- name: GetDCPFutureArbiterHumanGateResultRecovery :one
+SELECT * FROM dcp_future_card_arbiter_human_gate_result_recovery_v1
+WHERE incident_id = ?;
+
 -- name: RecoverDCPFutureArbiterExactDecision :execrows
 UPDATE dcp_future_card_arbiter_v1
 SET status='repair_queued', decision_json=sqlc.arg(decision_json),
@@ -87,8 +91,48 @@ UPDATE dcp_future_card_arbiter_result_validation_recovery_v1
 SET status='applied', error_code='', finished_at=?
 WHERE incident_id=? AND status='pending';
 
+-- name: RecoverDCPFutureArbiterExactHumanGate :execrows
+UPDATE dcp_future_card_arbiter_v1
+SET status='human_gate', decision_json=sqlc.arg(decision_json),
+    decision_digest=sqlc.arg(decision_digest), verdict='human_gate',
+    order_json=sqlc.arg(order_json), repair_task_id='', repair_objective='',
+    repair_paths_json=sqlc.arg(affected_paths_json), human_question=sqlc.arg(human_question),
+    repair_action_id='', error_code='', updated_at=sqlc.arg(decision_at),
+    decision_at=sqlc.arg(decision_at), finished_at=sqlc.arg(decision_at)
+WHERE dcp_future_card_arbiter_v1.incident_id=sqlc.arg(incident_id)
+  AND dcp_future_card_arbiter_v1.identity_digest=sqlc.arg(identity_digest)
+  AND dcp_future_card_arbiter_v1.input_digest=sqlc.arg(input_digest)
+  AND dcp_future_card_arbiter_v1.model_action_id=sqlc.arg(model_action_id)
+  AND dcp_future_card_arbiter_v1.status='failed' AND dcp_future_card_arbiter_v1.error_code='submit_failed'
+  AND dcp_future_card_arbiter_v1.model_call_count=1
+  AND dcp_future_card_arbiter_v1.decision_json='' AND dcp_future_card_arbiter_v1.decision_digest=''
+  AND EXISTS (
+    SELECT 1
+    FROM dcp_future_card_arbiter_human_gate_result_recovery_v1 recovery
+    WHERE recovery.incident_id=dcp_future_card_arbiter_v1.incident_id
+      AND recovery.identity_digest=dcp_future_card_arbiter_v1.identity_digest
+      AND recovery.input_digest=dcp_future_card_arbiter_v1.input_digest
+      AND recovery.model_action_id=dcp_future_card_arbiter_v1.model_action_id
+      AND recovery.prior_status=dcp_future_card_arbiter_v1.status
+      AND recovery.prior_error_code=dcp_future_card_arbiter_v1.error_code
+      AND recovery.prior_finished_at=dcp_future_card_arbiter_v1.finished_at
+      AND recovery.prior_model_call_count=dcp_future_card_arbiter_v1.model_call_count
+      AND recovery.prior_decision_digest=dcp_future_card_arbiter_v1.decision_digest
+      AND recovery.status='pending'
+  );
+
+-- name: MarkDCPFutureArbiterHumanGateResultRecoveryApplied :execrows
+UPDATE dcp_future_card_arbiter_human_gate_result_recovery_v1
+SET status='applied', error_code='', finished_at=?
+WHERE incident_id=? AND status='pending';
+
 -- name: FailDCPFutureArbiterResultValidationRecovery :execrows
 UPDATE dcp_future_card_arbiter_result_validation_recovery_v1
+SET status='failed', error_code=?, finished_at=?
+WHERE incident_id=? AND status='pending';
+
+-- name: FailDCPFutureArbiterHumanGateResultRecovery :execrows
+UPDATE dcp_future_card_arbiter_human_gate_result_recovery_v1
 SET status='failed', error_code=?, finished_at=?
 WHERE incident_id=? AND status='pending';
 
