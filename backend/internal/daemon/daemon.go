@@ -106,7 +106,7 @@ func Run() error {
 			AllowedWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
 		},
 		PolicyRepository: dcptasksvc.ReviewRepositoryValidator{
-			TargetPath:          filepath.Join(filepath.Dir(cfg.DataDir), "targets", "dcp-review-lab"),
+			TargetRoot:          filepath.Join(filepath.Dir(cfg.DataDir), "targets"),
 			AllowedWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),
 		},
 		PolicyWorktreeRoot: filepath.Join(cfg.DataDir, "worktrees"),

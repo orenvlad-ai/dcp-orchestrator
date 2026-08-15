@@ -7,18 +7,21 @@ independent source of DCP architecture policy.
 ## Required authority before any change
 
 Read these immutable `orenvlad-ai/dev-control-plane` sources at merged commit
-`c7fb250224ae7f70159119531db1b4f4e2ff5c28` before designing or editing this
+`4f251b7f6877d974ee80169391e89a79d1367658` before designing or editing this
 repository:
 
-1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/AGENTS.md)
-2. [current operating contract revision `2026-08-15.3`](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
-4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
-5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
-6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/c7fb250224ae7f70159119531db1b4f4e2ff5c28/upstream/dcp-orchestrator.lock)
+1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/AGENTS.md)
+2. [current operating contract revision `2026-08-15.12`](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
+4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
+5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
+6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/upstream/dcp-orchestrator.lock)
+7. [first real repo-only target v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f251b7f6877d974ee80169391e89a79d1367658/docs/DCP_REAL_TARGET_V1_CONTRACT.md)
 
-The happy-path v1 contract is the sole current rule for future synthetic
-review-lab tasks. The I11-I13 qualification and recovery contracts remain
+The happy-path v1 contract remains the rule for future synthetic review-lab
+tasks; the real-target v1 contract adds only exact target `wb-price-extension`,
+profile `repo-only`, and repository `orenvlad-ai/wb-price-extension`. The
+I11-I13 qualification and recovery contracts remain
 immutable evidence for historical cards 1-12 only; their card/cohort ceilings,
 consumed allowances and quarantine rows are not future-task policy. The live
 `dev-control-plane` repository remains the authority for later architecture,
@@ -50,13 +53,15 @@ deterministic install and stopped preflight complete.
   Orchestrator, its home-directory state, or its application data. Never use an
   upstream launcher/bootstrap path for DCP.
 - The normal DCP adapter target remains the disposable, remote-free `dcp-lab`
-  repository beneath the explicit lab root. Only exact target
-  `dcp-review-lab`, profile `synthetic-pr` and public repository
-  `orenvlad-ai/dcp-review-lab` may receive the typed worker network/PR/review/
-  admission/merge contour. Existing PRs and cards 1-12 are immutable audit
-  evidence and must not be changed or reused. Real repositories, other remotes,
-  `wb-core`, WBC, production, hosted systems and public distribution are out of
-  scope.
+  repository beneath the explicit lab root. Only exact tuples
+  `dcp-review-lab` / `synthetic-pr` / `orenvlad-ai/dcp-review-lab` and
+  `wb-price-extension` / `repo-only` / `orenvlad-ai/wb-price-extension` may
+  receive the typed worker network/PR/review/admission/merge contour. Existing
+  PRs and cards 1-12 are immutable audit evidence and must not be changed or
+  reused. Every other repository or remote, `wb-core`, WBC, production, hosted
+  systems and public distribution remain out of scope. The real target ends at
+  trusted `MERGED`; it has no deploy, Release Train, production apply, or
+  owner-acceptance implication.
 - The DCP package has no updater, feed, maker, publisher, analytics, telemetry,
   crash collection/upload, release, or external service path. Do not restore
   inherited upstream paths for any of them.
@@ -75,8 +80,9 @@ worktree/branch, a durable FIFO of model actions with at most three active
 slots globally, one initial worker, one fresh context-free review per exact
 head, at most one same-task findings repair and one shared durable FIFO merge
 lease. Queued work, CI and admission own no model or new loop. Only current
-exact public `orenvlad-ai/dcp-review-lab` provider facts may reach an ordinary
-daemon-owned expected-head terminal merge. Any other identity, stale head,
+exact public provider facts for one of the two compile-time target/profile/
+repository identities may reach an ordinary daemon-owned expected-head
+terminal merge. Any other identity, stale head,
 second findings cycle, conflict or ambiguity fails closed without arbiter,
 HumanGate, manual bypass or replacement card. Historical rows below remain
 implemented immutable evidence, not an alternative future policy.

@@ -667,6 +667,8 @@ function ReviewArbiterLaneColumn({
 	const tones = splitLaneTones(t);
 	const arbiterSessions = sessions.filter((session) => getSessionVisualStatus(session).laneSection === "arbiter");
 	const reviewSessions = sessions.filter((session) => getSessionVisualStatus(session).laneSection !== "arbiter");
+	const showArbiter = arbiterSessions.length > 0;
+	const showReview = reviewSessions.length > 0;
 
 	return (
 		<section
@@ -695,20 +697,25 @@ function ReviewArbiterLaneColumn({
 			</div>
 			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
 				<div className="flex min-h-full flex-col">
-					<ReviewLaneSection
-						sessions={arbiterSessions}
-						tone={tones.arbiter}
-						onOpen={onOpen}
-						onTerminate={onTerminate}
-					/>
-					<ReviewLaneSection
-						bordered
-						grow
-						sessions={reviewSessions}
-						tone={tones.review}
-						onOpen={onOpen}
-						onTerminate={onTerminate}
-					/>
+					{showArbiter ? (
+						<ReviewLaneSection
+							grow={!showReview}
+							sessions={arbiterSessions}
+							tone={tones.arbiter}
+							onOpen={onOpen}
+							onTerminate={onTerminate}
+						/>
+					) : null}
+					{showReview ? (
+						<ReviewLaneSection
+							bordered={showArbiter}
+							grow
+							sessions={reviewSessions}
+							tone={tones.review}
+							onOpen={onOpen}
+							onTerminate={onTerminate}
+						/>
+					) : null}
 				</div>
 			</div>
 		</section>

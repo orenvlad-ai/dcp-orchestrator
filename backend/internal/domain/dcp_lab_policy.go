@@ -6,7 +6,63 @@ import "time"
 // review-lab cards. Historical cards 1-12 never receive one of these rows.
 const DCPReviewLabPolicyVersion = "dcp.review-lab.happy-path/v1"
 
+// DCPRepoOnlyPolicyVersion is the exact first-real-target policy. It reuses
+// the durable future-task/action/admission authority without widening it into
+// a caller-defined repository launcher.
+const DCPRepoOnlyPolicyVersion = "dcp.repo-only.happy-path/v1"
+
 const DCPReviewLabPolicyAgentRules = "DCP synthetic PR profile v4. Work only in this exact public synthetic repository, current native worktree and current AO branch. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
+
+const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-price-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
+
+// DCPPolicyTargetSpec is one immutable, compile-time allowlist entry. No
+// repository, path, branch, provider identity, check, or policy value is
+// accepted from a task after this lookup succeeds.
+type DCPPolicyTargetSpec struct {
+	Target               string
+	Profile              string
+	Repository           string
+	OriginURL            string
+	ProviderRepositoryID int64
+	ProviderOwnerID      int64
+	DefaultBranch        string
+	RequiredCheck        string
+	SessionPrefix        string
+	PolicyVersion        string
+	AgentRules           string
+	MinimumCardNumber    int64
+}
+
+var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
+	{
+		Target: "dcp-review-lab", Profile: "synthetic-pr", Repository: "orenvlad-ai/dcp-review-lab",
+		OriginURL: "https://github.com/orenvlad-ai/dcp-review-lab.git", ProviderRepositoryID: 1329007118,
+		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "dcp-review-lab",
+		SessionPrefix: "dcp-review-lab", PolicyVersion: DCPReviewLabPolicyVersion,
+		AgentRules: DCPReviewLabPolicyAgentRules, MinimumCardNumber: 13,
+	},
+	{
+		Target: "wb-price-extension", Profile: "repo-only", Repository: "orenvlad-ai/wb-price-extension",
+		OriginURL: "https://github.com/orenvlad-ai/wb-price-extension.git", ProviderRepositoryID: 1335072844,
+		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
+		SessionPrefix: "wb-price-extension", PolicyVersion: DCPRepoOnlyPolicyVersion,
+		AgentRules: DCPRepoOnlyPolicyAgentRules, MinimumCardNumber: 1,
+	},
+}
+
+func DCPPolicyTarget(target, profile string) (DCPPolicyTargetSpec, bool) {
+	for _, spec := range dcpPolicyTargetSpecs {
+		if spec.Target == target && spec.Profile == profile {
+			return spec, true
+		}
+	}
+	return DCPPolicyTargetSpec{}, false
+}
+
+func DCPPolicyTargetForTask(task DCPReviewLabPolicyTask) (DCPPolicyTargetSpec, bool) {
+	spec, ok := DCPPolicyTarget(task.Target, task.Profile)
+	return spec, ok && task.Repository == spec.Repository && task.PolicyVersion == spec.PolicyVersion
+}
 
 // DCPReviewLabPolicyTask binds one immutable external task id and canonical
 // payload to one stock native session/card/worktree/branch identity.

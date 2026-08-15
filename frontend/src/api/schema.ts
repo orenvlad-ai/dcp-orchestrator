@@ -1195,12 +1195,12 @@ export interface components {
         };
         ControllersSubmitDCPPolicyTaskRequest: {
             /** @enum {string} */
-            profile: "synthetic-pr";
+            profile: "synthetic-pr" | "repo-only";
             prompt: string;
             /** @enum {string} */
-            repository: "orenvlad-ai/dcp-review-lab";
+            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension";
             /** @enum {string} */
-            target: "dcp-review-lab";
+            target: "dcp-review-lab" | "wb-price-extension";
             taskId: string;
         };
         DCPApprovedScope: {

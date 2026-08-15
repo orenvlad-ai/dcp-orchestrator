@@ -10,8 +10,8 @@ i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
-control_plane_commit='c7fb250224ae7f70159119531db1b4f4e2ff5c28'
-operating_contract_revision='2026-08-15.3'
+control_plane_commit='4f251b7f6877d974ee80169391e89a79d1367658'
+operating_contract_revision='2026-08-15.12'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -57,6 +57,7 @@ source_gates() {
 	[[ -s AGENTS.md && -s CLAUDE.md ]] || fail 'DCP coding-agent operational entry is absent'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/CURRENT_OPERATING_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane operating contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact happy-path v1 contract'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact real-target v1 contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
@@ -179,7 +180,8 @@ source_gates() {
 	future_repair_target_recovery_migration='backend/internal/storage/sqlite/migrations/0072_dcp_future_repair_target_validation_recovery.sql'
 	future_repair_ci_recovery_migration='backend/internal/storage/sqlite/migrations/0073_dcp_future_repair_ci_snapshot_recovery.sql'
 	future_human_gate_recovery_migration='backend/internal/storage/sqlite/migrations/0074_dcp_future_human_gate_result_recovery.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	repo_only_target_migration='backend/internal/storage/sqlite/migrations/0075_dcp_exact_repo_only_target_v1.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -214,6 +216,14 @@ source_gates() {
 	! sed -n '/func FutureArbiterDecisionJSONSchema/,/func validateFutureArbiterResponseSchema/p' backend/internal/dcpterminalmerge/future_arbiter_protocol.go | grep -Eq '"(oneOf|anyOf|allOf|not|const|uniqueItems|\$schema)"[[:space:]]*:' || fail 'ordinary-card response schema uses unsupported composition'
 	grep -Fq 'futureArbiterAllowsAdmission' backend/internal/dcpterminalmerge/merge.go || fail 'ordinary-card sibling hold is not event-driven admission state'
 	grep -Fq 'func (s *Service) SubmitPolicy' backend/internal/service/dcptask/service.go || fail 'policy submit path is absent'
+	[[ -s "$repo_only_target_migration" ]] || fail 'exact repo-only target migration is absent'
+	grep -Fq "target = 'wb-price-extension'" "$repo_only_target_migration" || fail 'repo-only target is not physical'
+	grep -Fq "repository = 'orenvlad-ai/wb-price-extension'" "$repo_only_target_migration" || fail 'repo-only repository is not physical'
+	grep -Fq 'ProviderRepositoryID: 1335072844' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only provider database identity is absent'
+	grep -Fq 'RequiredCheck: "baseline"' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only named check is absent'
+	grep -Fq 'const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-price-extension.git"' backend/internal/adapters/agent/codex/codex.go || fail 'repo-only worker remote is not exact'
+	grep -Fq 'showArbiter = arbiterSessions.length > 0' frontend/src/renderer/components/SessionsBoard.tsx || fail 'empty arbiter subsection is still rendered'
+	grep -Fq 'showReview = reviewSessions.length > 0' frontend/src/renderer/components/SessionsBoard.tsx || fail 'empty review subsection is still rendered'
 	grep -Fq 'func (s *Service) DrainModelActions' backend/internal/service/dcptask/policy.go || fail 'event-driven model-action drain is absent'
 	grep -Fq 'CompleteDCPReviewLabPolicyAdmission' backend/internal/storage/sqlite/store/dcp_admission_store.go || fail 'atomic policy terminal persistence is absent'
 	[[ -s "$future_human_gate_recovery_migration" ]] || fail 'exact ordinary-card HumanGate result recovery migration is absent'
@@ -387,6 +397,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/inter
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/storage/sqlite/db\.go|backend/internal/storage/sqlite/card13_creation_base_migration_test\.go)$' || true)"
 unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src/renderer/hooks/useWorkspaceQuery(\.test)?\.tsx?|frontend/src/renderer/styles\.css|frontend/src/styles/tokens\.css)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/future_arbiter_(engine|launcher|protocol|schema_recovery|result_recovery)(_test)?\.go|backend/internal/domain/dcp_future_arbiter\.go|backend/internal/storage/sqlite/(future_arbiter_result_recovery_migration_test\.go|migrations/00(69_dcp_future_card_arbiter_v1|70_dcp_future_arbiter_schema_recovery|71_dcp_future_arbiter_result_validation_recovery|72_dcp_future_repair_target_validation_recovery|73_dcp_future_repair_ci_snapshot_recovery|74_dcp_future_human_gate_result_recovery)\.sql|queries/dcp_future_arbiter\.sql|gen/dcp_future_arbiter\.sql\.go|store/dcp_future_arbiter_store(_test)?\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0075_dcp_exact_repo_only_target_v1\.sql|real_target_live_copy_migration_test\.go)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

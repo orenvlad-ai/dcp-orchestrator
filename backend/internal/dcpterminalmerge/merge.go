@@ -102,6 +102,7 @@ type Engine struct {
 	mu                     sync.Mutex
 	git                    func(context.Context, string, ...string) (string, error)
 	providerRepository     func(context.Context) (string, error)
+	providerRepositoryFor  func(context.Context, string) (string, error)
 	wake                   RefreshWaker
 	arbiter                ArbiterLauncher
 	freshWorker            FreshWorkerLauncher
@@ -118,7 +119,8 @@ type Engine struct {
 func New(store Store, scm SCM, dataDir string) *Engine {
 	return &Engine{
 		store: store, scm: scm, dataDir: filepath.Clean(dataDir),
-		git: gitOutput, providerRepository: publicRepositoryIdentity, clock: func() time.Time { return time.Now().UTC() },
+		git: gitOutput, providerRepository: publicRepositoryIdentity, providerRepositoryFor: publicRepositoryIdentityFor,
+		clock: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -753,7 +755,8 @@ func (e *Engine) mergeWaiting(ctx context.Context, admission domain.DCPReviewLab
 	admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, canonicalBase
 	result, mergeErr := e.scm.MergePullRequest(ctx, ports.SCMMergeRequest{
 		PR: ports.SCMPRRef{
-			Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
+			Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai",
+				Name: strings.TrimPrefix(candidate.spec.Repository, "orenvlad-ai/"), Repo: candidate.spec.Repository},
 			Number: candidate.pr.Number, URL: candidate.pr.URL,
 		},
 		ExpectedHeadSHA: candidate.run.TargetSHA,
@@ -818,6 +821,7 @@ type mergeCandidate struct {
 	pr         domain.PullRequest
 	run        domain.ReviewRun
 	policyTask domain.DCPReviewLabPolicyTask
+	spec       domain.DCPPolicyTargetSpec
 	policy     bool
 }
 
@@ -856,11 +860,19 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 			return mergeCandidate{}, false, policyErr
 		}
 	}
+	spec, _ := domain.DCPPolicyTarget("dcp-review-lab", "synthetic-pr")
+	if policy {
+		var exact bool
+		spec, exact = domain.DCPPolicyTargetForTask(policyTask)
+		if !exact {
+			return mergeCandidate{}, false, nil
+		}
+	}
 	session, ok, err := e.store.GetSession(ctx, id)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
-	if session.ProjectID != domain.ProjectID(ProjectID) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
+	if session.ProjectID != domain.ProjectID(spec.Target) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
 		session.ReviewerHarness != "" || session.IssueID != "" || session.Activity.State != domain.ActivityIdle || session.IsTerminated ||
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
 		(!policy && !validTaskIdentity(session)) {
@@ -874,19 +886,19 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 			return mergeCandidate{}, false, nil
 		}
 	}
-	expectedWorkspace := filepath.Join(e.dataDir, "worktrees", ProjectID, string(id))
+	expectedWorkspace := filepath.Join(e.dataDir, "worktrees", spec.Target, string(id))
 	expectedBranch := "ao/" + string(id) + "/root"
 	if !sameExactPath(session.Metadata.WorkspacePath, expectedWorkspace) || session.Metadata.Branch != expectedBranch {
 		return mergeCandidate{}, false, nil
 	}
-	project, ok, err := e.store.GetProject(ctx, ProjectID)
+	project, ok, err := e.store.GetProject(ctx, spec.Target)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
-	expectedProjectPath := filepath.Join(filepath.Dir(e.dataDir), "targets", ProjectID)
-	if !sameExactPath(project.Path, expectedProjectPath) || project.Kind.WithDefault() != domain.ProjectKindSingleRepo || project.RepoOriginURL != RepositoryURL ||
-		project.Config.DefaultBranch != TargetBranch || project.Config.SessionPrefix != SessionPrefix ||
-		project.Config.AgentRules != ProfileAgentRules || project.Config.AgentRulesFile != "" || project.Config.OrchestratorRules != "" ||
+	expectedProjectPath := filepath.Join(filepath.Dir(e.dataDir), "targets", spec.Target)
+	if !sameExactPath(project.Path, expectedProjectPath) || project.Kind.WithDefault() != domain.ProjectKindSingleRepo || project.RepoOriginURL != spec.OriginURL ||
+		project.Config.DefaultBranch != spec.DefaultBranch || project.Config.SessionPrefix != spec.SessionPrefix ||
+		project.Config.AgentRules != spec.AgentRules || project.Config.AgentRulesFile != "" || project.Config.OrchestratorRules != "" ||
 		!project.Config.AgentConfig.IsZero() || project.Config.Worker != (domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}}) ||
 		project.Config.Orchestrator != (domain.RoleOverride{}) || project.Config.TrackerIntake != (domain.TrackerIntakeConfig{}) ||
 		project.Config.ContainerReap != (domain.ContainerReapConfig{}) ||
@@ -895,11 +907,17 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 		return mergeCandidate{}, false, nil
 	}
 	if policy {
-		if e.providerRepository == nil {
+		if e.providerRepositoryFor == nil {
 			return mergeCandidate{}, false, nil
 		}
-		identity, identityErr := e.providerRepository(ctx)
-		if identityErr != nil || identity != RepositoryFullName+"|false|main" {
+		var identity string
+		var identityErr error
+		if spec.Target == ProjectID && e.providerRepository != nil {
+			identity, identityErr = e.providerRepository(ctx)
+		} else {
+			identity, identityErr = e.providerRepositoryFor(ctx, spec.Repository)
+		}
+		if identityErr != nil || identity != policyProviderIdentity(spec) {
 			return mergeCandidate{}, false, nil
 		}
 	}
@@ -908,9 +926,9 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 		return mergeCandidate{}, false, err
 	}
 	pr := prs[0]
-	if pr.Provider != "github" || pr.Host != "github.com" || pr.Repo != RepositoryFullName || pr.TargetBranch != TargetBranch ||
+	if pr.Provider != "github" || pr.Host != "github.com" || pr.Repo != spec.Repository || pr.TargetBranch != spec.DefaultBranch ||
 		pr.SourceBranch != expectedBranch || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
-		!validPRURL(pr.URL, pr.Number) || !validSHA(pr.HeadSHA) || !validSHA(pr.BaseSHA) ||
+		!validPRURL(spec, pr.URL, pr.Number) || !validSHA(pr.HeadSHA) || !validSHA(pr.BaseSHA) ||
 		(!policy && session.Metadata.DiffBaseSHA != "" && !strings.EqualFold(pr.BaseSHA, session.Metadata.DiffBaseSHA)) {
 		return mergeCandidate{}, false, nil
 	}
@@ -945,12 +963,16 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 	default:
 		return mergeCandidate{}, false, nil
 	}
-	return mergeCandidate{session: session, project: project, pr: pr, run: run, policyTask: policyTask, policy: policy}, true, nil
+	return mergeCandidate{session: session, project: project, pr: pr, run: run, policyTask: policyTask, spec: spec, policy: policy}, true, nil
 }
 
 func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObservation, ports.SCMReviewObservation, error) {
+	spec, exact := policySpecForRepository(pr.Repo)
+	if !exact {
+		return ports.SCMObservation{}, ports.SCMReviewObservation{}, errors.New("dcp admission: repository is not allowlisted")
+	}
 	ref := ports.SCMPRRef{
-		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "dcp-review-lab", Repo: RepositoryFullName},
+		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: strings.TrimPrefix(spec.Repository, "orenvlad-ai/"), Repo: spec.Repository},
 		Number: pr.Number, URL: pr.URL,
 	}
 	observations, err := e.scm.FetchPullRequests(ctx, []ports.SCMPRRef{ref})
@@ -979,8 +1001,8 @@ func admissionFacts(candidate mergeCandidate, observation ports.SCMObservation, 
 		if check.Status != string(domain.PRCheckPassed) {
 			return false
 		}
-		if check.Name == RequiredCheckName {
-			if check.Status != string(domain.PRCheckPassed) || check.Conclusion != "success" || (candidate.policy && !validCheckURL(check.URL)) {
+		if check.Name == candidate.spec.RequiredCheck {
+			if check.Status != string(domain.PRCheckPassed) || check.Conclusion != "success" || (candidate.policy && !validCheckURL(candidate.spec, check.URL)) {
 				return false
 			}
 			required++
@@ -991,9 +1013,9 @@ func admissionFacts(candidate mergeCandidate, observation ports.SCMObservation, 
 
 func providerIdentityDrift(candidate mergeCandidate, observation ports.SCMObservation) bool {
 	pr := observation.PR
-	return observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != RepositoryFullName ||
-		pr.Number != candidate.pr.Number || pr.URL != candidate.pr.URL || pr.HeadRepo != RepositoryFullName ||
-		pr.SourceBranch != candidate.pr.SourceBranch || pr.TargetBranch != TargetBranch ||
+	return observation.Provider != "github" || observation.Host != "github.com" || observation.Repo != candidate.spec.Repository ||
+		pr.Number != candidate.pr.Number || pr.URL != candidate.pr.URL || pr.HeadRepo != candidate.spec.Repository ||
+		pr.SourceBranch != candidate.pr.SourceBranch || pr.TargetBranch != candidate.spec.DefaultBranch ||
 		!strings.EqualFold(pr.HeadSHA, candidate.run.TargetSHA) || !validSHA(pr.BaseSHA) ||
 		pr.State != string(domain.PRStateOpen) || pr.ProviderState != "OPEN" || pr.Author != "orenvlad-ai" || pr.HTMLURL != pr.URL ||
 		pr.Draft || pr.Merged || pr.Closed
@@ -1051,9 +1073,9 @@ func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate
 		want string
 	}{
 		{[]string{"rev-parse", "--show-toplevel"}, projectPath},
-		{[]string{"branch", "--show-current"}, TargetBranch},
+		{[]string{"branch", "--show-current"}, candidate.spec.DefaultBranch},
 		{[]string{"remote"}, "origin"},
-		{[]string{"remote", "get-url", "origin"}, RepositoryURL},
+		{[]string{"remote", "get-url", "origin"}, candidate.spec.OriginURL},
 		{[]string{"status", "--porcelain"}, ""},
 	}
 	for _, check := range prechecks {
@@ -1062,10 +1084,10 @@ func (e *Engine) syncCanonicalMain(ctx context.Context, candidate mergeCandidate
 			return "", errors.New("dcp admission: canonical repository identity is not exact and clean")
 		}
 	}
-	if _, err := e.git(ctx, projectPath, "fetch", "--no-tags", "origin", TargetBranch); err != nil {
+	if _, err := e.git(ctx, projectPath, "fetch", "--no-tags", "origin", candidate.spec.DefaultBranch); err != nil {
 		return "", fmt.Errorf("dcp admission: fetch canonical main: %w", err)
 	}
-	originMain, err := e.git(ctx, projectPath, "rev-parse", "origin/main")
+	originMain, err := e.git(ctx, projectPath, "rev-parse", "origin/"+candidate.spec.DefaultBranch)
 	if err != nil || !validSHA(originMain) {
 		return "", errCanonicalBaseDrift
 	}
@@ -1111,16 +1133,16 @@ func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head
 		want string
 	}{
 		{projectPath, []string{"rev-parse", "--show-toplevel"}, projectPath},
-		{projectPath, []string{"branch", "--show-current"}, TargetBranch},
+		{projectPath, []string{"branch", "--show-current"}, candidate.spec.DefaultBranch},
 		{projectPath, []string{"remote"}, "origin"},
-		{projectPath, []string{"remote", "get-url", "origin"}, RepositoryURL},
-		{projectPath, []string{"rev-parse", "origin/main"}, base},
+		{projectPath, []string{"remote", "get-url", "origin"}, candidate.spec.OriginURL},
+		{projectPath, []string{"rev-parse", "origin/" + candidate.spec.DefaultBranch}, base},
 		{projectPath, []string{"rev-parse", "HEAD"}, base},
 		{projectPath, []string{"status", "--porcelain"}, ""},
 		{workspacePath, []string{"rev-parse", "--show-toplevel"}, workspacePath},
 		{workspacePath, []string{"branch", "--show-current"}, candidate.session.Metadata.Branch},
 		{workspacePath, []string{"remote"}, "origin"},
-		{workspacePath, []string{"remote", "get-url", "origin"}, RepositoryURL},
+		{workspacePath, []string{"remote", "get-url", "origin"}, candidate.spec.OriginURL},
 		{workspacePath, []string{"rev-parse", "HEAD"}, strings.ToLower(head)},
 		{workspacePath, []string{"status", "--porcelain"}, ""},
 	}
@@ -1203,6 +1225,7 @@ func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewL
 			}
 			if found {
 				candidate.policy, candidate.policyTask = true, task
+				candidate.spec, _ = domain.DCPPolicyTargetForTask(task)
 				candidate.session.ID, candidate.session.DisplayName = task.SessionID, TaskDisplayPrefix+task.TaskID
 				candidate.pr.SourceBranch = task.SourceBranch
 			}
@@ -1220,12 +1243,15 @@ func (e *Engine) recordIncident(ctx context.Context, admission domain.DCPReviewL
 	if !validSHA(baseSHA) {
 		baseSHA = admission.ReviewBaseSHA
 	}
-	evidence := strings.Join([]string{RepositoryFullName, admission.ID, leaseID, string(admission.SessionID), candidate.session.DisplayName, candidate.pr.SourceBranch, admission.ReviewRunID,
+	if candidate.spec.Repository == "" {
+		candidate.spec, _ = domain.DCPPolicyTarget("dcp-review-lab", "synthetic-pr")
+	}
+	evidence := strings.Join([]string{candidate.spec.Repository, admission.ID, leaseID, string(admission.SessionID), candidate.session.DisplayName, candidate.pr.SourceBranch, admission.ReviewRunID,
 		admission.PRURL, strconv.FormatInt(admission.PRNumber, 10), strings.ToLower(admission.TargetSHA), strings.ToLower(baseSHA),
 		observation.PR.ProviderMergeable, observation.PR.ProviderMergeStateStatus, reason}, "\x00")
 	digest := sha256.Sum256([]byte(evidence))
 	packet, err := json.Marshal(incidentPacket{
-		SchemaVersion: "dcp.review-lab.arbiter-needed/v1", Reason: reason, Repository: RepositoryFullName,
+		SchemaVersion: "dcp.review-lab.arbiter-needed/v1", Reason: reason, Repository: candidate.spec.Repository,
 		AdmissionID: admission.ID, LeaseID: leaseID, Sequence: admission.Sequence, SessionID: string(admission.SessionID),
 		TaskDisplayName: candidate.session.DisplayName, SourceBranch: candidate.pr.SourceBranch,
 		ReviewID: admission.ReviewID, ReviewRunID: admission.ReviewRunID, PRURL: admission.PRURL, PRNumber: admission.PRNumber,
@@ -1268,8 +1294,26 @@ func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 }
 
 func publicRepositoryIdentity(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, "gh", "repo", "view", RepositoryFullName, "--json", "nameWithOwner,isPrivate,defaultBranchRef", "--jq", `.nameWithOwner + "|" + (.isPrivate|tostring) + "|" + .defaultBranchRef.name`).Output()
+	return publicRepositoryIdentityFor(ctx, RepositoryFullName)
+}
+
+func publicRepositoryIdentityFor(ctx context.Context, repository string) (string, error) {
+	out, err := exec.CommandContext(ctx, "gh", "repo", "view", repository, "--json", "nameWithOwner,isPrivate,defaultBranchRef,databaseId,owner", "--jq", `[.nameWithOwner, (.isPrivate|tostring), .defaultBranchRef.name, (.databaseId|tostring), (.owner.databaseId|tostring)] | join("|")`).Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+func policyProviderIdentity(spec domain.DCPPolicyTargetSpec) string {
+	return fmt.Sprintf("%s|false|%s|%d|%d", spec.Repository, spec.DefaultBranch, spec.ProviderRepositoryID, spec.ProviderOwnerID)
+}
+
+func policySpecForRepository(repository string) (domain.DCPPolicyTargetSpec, bool) {
+	for _, identity := range [][2]string{{"dcp-review-lab", "synthetic-pr"}, {"wb-price-extension", "repo-only"}} {
+		spec, _ := domain.DCPPolicyTarget(identity[0], identity[1])
+		if repository == spec.Repository {
+			return spec, true
+		}
+	}
+	return domain.DCPPolicyTargetSpec{}, false
 }
 
 func eligibleSessionID(id domain.SessionID) bool {
@@ -1289,28 +1333,36 @@ func (e *Engine) eligibleSession(ctx context.Context, id domain.SessionID) (bool
 	if err != nil || !found {
 		return false, err
 	}
-	return task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.CardNumber > 12 && task.SessionID == id, nil
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	return exact && task.CardNumber >= spec.MinimumCardNumber && task.SessionID == id, nil
 }
 
 func validPolicyTaskIdentity(task domain.DCPReviewLabPolicyTask, session domain.SessionRecord, dataDir string) bool {
-	return task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.Target == ProjectID && task.Profile == "synthetic-pr" &&
-		task.Repository == RepositoryFullName && task.CardNumber > 12 && task.SessionID == session.ID &&
-		string(task.SessionID) == ProjectID+"-"+strconv.FormatInt(task.CardNumber, 10) &&
-		task.WorktreePath == filepath.Join(dataDir, "worktrees", ProjectID, string(session.ID)) &&
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	return exact && task.CardNumber >= spec.MinimumCardNumber && task.SessionID == session.ID &&
+		string(task.SessionID) == spec.SessionPrefix+"-"+strconv.FormatInt(task.CardNumber, 10) &&
+		task.WorktreePath == filepath.Join(dataDir, "worktrees", spec.Target, string(session.ID)) &&
 		task.SourceBranch == "ao/"+string(session.ID)+"/root" && session.DisplayName == TaskDisplayPrefix+task.TaskID &&
-		session.Metadata.Prompt == TaskPromptPrefix+task.TaskID+": "+task.Prompt
+		session.Metadata.Prompt == policyTaskPrompt(task)
 }
 
-func validPRURL(raw string, number int) bool {
-	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
-		u.Path == "/"+RepositoryFullName+"/pull/"+strconv.Itoa(number)
+func policyTaskPrompt(task domain.DCPReviewLabPolicyTask) string {
+	if task.Profile == "repo-only" {
+		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
+	}
+	return TaskPromptPrefix + task.TaskID + ": " + task.Prompt
 }
 
-func validCheckURL(raw string) bool {
+func validPRURL(spec domain.DCPPolicyTargetSpec, raw string, number int) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
-		strings.HasPrefix(u.Path, "/"+RepositoryFullName+"/actions/runs/")
+		u.Path == "/"+spec.Repository+"/pull/"+strconv.Itoa(number)
+}
+
+func validCheckURL(spec domain.DCPPolicyTargetSpec, raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
+		strings.HasPrefix(u.Path, "/"+spec.Repository+"/actions/runs/")
 }
 
 func validSHA(value string) bool {
