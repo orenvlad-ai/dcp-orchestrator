@@ -58,6 +58,15 @@ type RepositoryValidator interface {
 	Validate(ctx context.Context, project domain.ProjectRecord) (domain.DCPRepositoryIdentity, error)
 }
 
+// ContinuationRepositoryValidator preserves the exact repository identity
+// checks for an already-reserved policy card while allowing the clean local
+// main ref to be a strict ancestor of its refreshed origin/main. A cohort
+// member can legitimately observe that state after an earlier FIFO owner
+// merges; new submissions still require Validate's exact equality.
+type ContinuationRepositoryValidator interface {
+	ValidateContinuation(ctx context.Context, project domain.ProjectRecord) (domain.DCPRepositoryIdentity, error)
+}
+
 type Deps struct {
 	Store              Store
 	Repository         RepositoryValidator
@@ -279,6 +288,22 @@ func (s *Service) validatePolicyTarget(ctx context.Context) error {
 	identity, err := s.policyRepository.Validate(ctx, project)
 	if err != nil || identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName {
 		return errors.Join(err, errors.New("exact public synthetic repository identity failed validation"))
+	}
+	return nil
+}
+
+func (s *Service) validatePolicyContinuationTarget(ctx context.Context) error {
+	project, ok, err := s.policyStore.GetProject(ctx, PolicyTarget)
+	if err != nil || !ok || !project.ArchivedAt.IsZero() {
+		return errors.Join(err, errors.New("exact dcp-review-lab project is unavailable"))
+	}
+	validator, ok := s.policyRepository.(ContinuationRepositoryValidator)
+	if !ok {
+		return s.validatePolicyTarget(ctx)
+	}
+	identity, err := validator.ValidateContinuation(ctx, project)
+	if err != nil || identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName {
+		return errors.Join(err, errors.New("exact public synthetic continuation identity failed validation"))
 	}
 	return nil
 }
