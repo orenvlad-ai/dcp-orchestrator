@@ -1085,6 +1085,26 @@ describe("Sidebar", () => {
 						},
 						{
 							...session,
+							id: "proj-1-arbiter-waiting",
+							title: "arbiter waiting task",
+							status: "review_failed",
+							dcpPolicyState: "incident",
+							dcpPolicyActionActive: false,
+							dcpArbiterStatus: "requested",
+							dcpArbiterActionStatus: "queued",
+						},
+						{
+							...session,
+							id: "proj-1-arbiter-active",
+							title: "arbiter active task",
+							status: "review_failed",
+							dcpPolicyState: "incident",
+							dcpPolicyActionActive: true,
+							dcpArbiterStatus: "running",
+							dcpArbiterActionStatus: "running",
+						},
+						{
+							...session,
 							id: "proj-1-human-gate",
 							title: "human gate task",
 							status: "review_failed",
@@ -1110,6 +1130,11 @@ describe("Sidebar", () => {
 		expect(sessionDot("admission task")).toHaveClass("bg-status-ready");
 		expect(sessionDot("merged task")).toHaveClass("bg-status-merged");
 		expect(sessionDot("incident task")).toHaveClass("bg-status-exited");
+		expect(sessionDot("arbiter waiting task")).toHaveClass("bg-status-arbiter");
+		expect(sessionDot("arbiter waiting task")).not.toHaveClass("animate-status-pulse");
+		expect(sessionDot("arbiter waiting task")).toHaveAttribute("aria-label", expect.stringContaining("Waiting for arbiter"));
+		expect(sessionDot("arbiter active task")).toHaveClass("bg-status-arbiter", "animate-status-pulse");
+		expect(sessionDot("arbiter active task")).toHaveAttribute("aria-label", expect.stringContaining("Arbiter evaluating"));
 		expect(sessionDot("human gate task")).toHaveClass("bg-status-needs-you");
 		expect(sessionDot("human gate task")).not.toHaveClass("animate-status-pulse");
 		expect(sessionDot("human gate task")).toHaveAttribute("data-session-status-active", "false");

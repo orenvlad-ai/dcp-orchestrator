@@ -400,14 +400,30 @@ describe("SessionsBoard", () => {
 		expect(within(cardFor("policy needs you")).getByText("Review failed")).toHaveClass("text-status-exited");
 	});
 
-	it("keeps an active arbiter inside Needs You without pulse and exposes its durable detail", () => {
+	it("groups review and arbiter in one lane with ordered sections, paired counts, and exact precedence", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
 					boardSession({
+						id: "s-review-queued",
+						title: "policy review queued",
+						status: "review_pending",
+						dcpPolicyState: "review_queued",
+					}),
+					boardSession({
+						id: "s-arbiter-waiting",
+						title: "policy arbiter waiting",
+						status: "review_failed",
+						dcpPolicyState: "incident",
+						dcpArbiterStatus: "requested",
+						dcpArbiterGeneration: 2,
+						dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+						dcpArbiterActionStatus: "queued",
+					}),
+					boardSession({
 						id: "s-arbiter-running",
 						title: "policy arbiter running",
-						status: "working",
+						status: "review_failed",
 						dcpPolicyState: "incident",
 						dcpPolicyActionActive: true,
 						dcpArbiterStatus: "running",
@@ -426,25 +442,54 @@ describe("SessionsBoard", () => {
 						dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
 						dcpArbiterCohort: ["night-a", "night-b"],
 						dcpArbiterActionStatus: "failed",
-						dcpHumanGateQuestion: "Should the shared value use intent A or intent B?",
-					}),
-				]),
+							dcpHumanGateQuestion: "Should the shared value use intent A or intent B?",
+						}),
+						boardSession({
+							id: "s-real-failure",
+							title: "policy genuine failure",
+							status: "review_failed",
+							dcpPolicyState: "incident",
+							dcpArbiterStatus: "failed",
+							dcpArbiterActionStatus: "failed",
+						}),
+					]),
 			],
 			isError: false,
 			isSuccess: true,
 		});
 
 		renderBoard("p1");
-		const needsYou = screen.getByRole("region", { name: "Needs you sessions" });
-		const runningCard = within(needsYou)
+		const lane = screen.getByRole("region", { name: "In review / Arbiter sessions" });
+		const summary = within(lane).getByRole("group", { name: "In review / Arbiter lane summary" });
+		expect(summary).toHaveTextContent("In review/Arbiter");
+		expect(within(lane).getByLabelText("1 in review session")).toHaveTextContent("1");
+		expect(within(lane).getByLabelText("2 arbiter sessions")).toHaveTextContent("2");
+		const arbiter = within(lane).getByRole("region", { name: "Arbiter sessions" });
+		const review = within(lane).getByRole("region", { name: "In review sessions" });
+		expect(arbiter.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(within(arbiter).getByText("policy arbiter waiting")).toBeInTheDocument();
+		expect(within(review).getByText("policy review queued")).toBeInTheDocument();
+		expect(screen.getAllByText("policy arbiter running")).toHaveLength(1);
+
+		const waitingCard = within(arbiter)
+			.getByText("policy arbiter waiting")
+			.closest('[data-testid="board-session-card"]') as HTMLElement;
+		const waitingDot = waitingCard.querySelector<HTMLElement>("[data-session-status]");
+		expect(waitingDot).toHaveClass("bg-status-arbiter");
+		expect(waitingDot).not.toHaveClass("animate-status-pulse");
+		expect(within(waitingCard).getByText("Waiting for arbiter")).toHaveClass("text-status-arbiter");
+
+		const runningCard = within(arbiter)
 			.getByText("policy arbiter running")
 			.closest('[data-testid="board-session-card"]') as HTMLElement;
 		const dot = runningCard.querySelector<HTMLElement>("[data-session-status]");
-		expect(dot).toHaveClass("bg-status-exited");
-		expect(dot).not.toHaveClass("animate-status-pulse");
+		expect(dot).toHaveClass("bg-status-arbiter", "animate-status-pulse");
+		expect(dot).toHaveAttribute("aria-label", expect.stringContaining("Arbiter evaluating"));
 		expect(within(runningCard).getByRole("status")).toHaveTextContent(
 			"Arbiter evaluating this incident · incident merge_conflict_or_ambiguity · generation 2 · cohort night-a → night-b · action running",
 		);
+
+		const needsYou = screen.getByRole("region", { name: "Needs you sessions" });
 		const humanCard = within(needsYou)
 			.getByText("policy arbiter gate")
 			.closest('[data-testid="board-session-card"]') as HTMLElement;
@@ -457,6 +502,14 @@ describe("SessionsBoard", () => {
 		expect(within(humanCard).getByRole("status")).toHaveTextContent(
 			"Should the shared value use intent A or intent B? · incident merge_conflict_or_ambiguity · generation 1 · cohort night-a → night-b · action failed",
 		);
+		expect(within(lane).queryByText("policy arbiter gate")).not.toBeInTheDocument();
+
+		const failureCard = within(needsYou)
+			.getByText("policy genuine failure")
+			.closest('[data-testid="board-session-card"]') as HTMLElement;
+		const failureDot = failureCard.querySelector<HTMLElement>("[data-session-status]");
+		expect(failureDot).toHaveClass("bg-status-exited");
+		expect(failureDot).not.toHaveClass("animate-status-pulse");
 	});
 
 	it("does not show a stale secondary open PR after the durable policy merges", () => {

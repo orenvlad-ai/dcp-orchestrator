@@ -81,21 +81,25 @@ export function isAgentActivityWorking(activity?: SessionActivity | null): boole
 
 export type SessionVisualStatus = {
 	policyPhase?: DCPPolicyPhase;
+	laneSection?: DCPReviewLaneSection;
 	zone: AttentionZone;
 	displayStatus: SessionStatus;
 	statusLabelKey?: MessageKey;
 	statusClassName?: string;
-	tone: "working" | "review" | "ready" | "attention" | "merged" | "failed" | "idle";
+	detail?: string;
+	tone: "working" | "review" | "arbiter" | "ready" | "attention" | "merged" | "failed" | "idle";
 	dotClassName: string;
 	indicatorClassName: string;
 	active: boolean;
 };
 
-export type DCPPolicyPhase = "working" | "in_review" | "ready_to_merge" | "merged" | "needs_you";
+export type DCPPolicyPhase = "working" | "in_review" | "arbiter" | "ready_to_merge" | "merged" | "needs_you";
+export type DCPReviewLaneSection = "in_review" | "arbiter";
 
 const policyPhaseStatusClassNames: Record<DCPPolicyPhase, string> = {
 	working: "text-status-working",
 	in_review: "text-status-in-review",
+	arbiter: "text-status-arbiter",
 	ready_to_merge: "text-status-ready",
 	merged: "text-status-merged",
 	needs_you: "text-status-exited",
@@ -105,7 +109,12 @@ function visualStatus(
 	tone: SessionVisualStatus["tone"],
 	dotClassName: string,
 	options: Pick<SessionVisualStatus, "zone" | "displayStatus"> &
-		Partial<Pick<SessionVisualStatus, "policyPhase" | "statusLabelKey" | "statusClassName" | "active">>,
+		Partial<
+			Pick<
+				SessionVisualStatus,
+				"policyPhase" | "laneSection" | "statusLabelKey" | "statusClassName" | "detail" | "active"
+			>
+		>,
 ): SessionVisualStatus {
 	const active = options.active === true;
 	return {
@@ -145,6 +154,25 @@ function policyVisualStatus(
 			displayStatus: "review_failed",
 			statusLabelKey: "status.human_gate",
 			statusClassName: "text-status-needs-you",
+			detail: dcpArbiterDetail(session),
+		});
+	}
+
+	if (state === "incident" && isAutomaticArbiterContinuation(session.dcpArbiterStatus)) {
+		const running =
+			session.dcpArbiterStatus === "running" &&
+			session.dcpArbiterActionStatus === "running" &&
+			policyActive;
+		const evaluating = session.dcpArbiterStatus === "claimed" || session.dcpArbiterStatus === "running";
+		return visualStatus("arbiter", "bg-status-arbiter", {
+			policyPhase: "arbiter",
+			laneSection: "arbiter",
+			zone: "pending",
+			displayStatus: "review_pending",
+			statusLabelKey: evaluating ? "status.arbiter_evaluating" : arbiterStatusLabelKey(session),
+			statusClassName: "text-status-arbiter",
+			detail: dcpArbiterDetail(session),
+			active: running,
 		});
 	}
 
@@ -165,23 +193,92 @@ function policyVisualStatus(
 				"bg-status-working",
 			);
 		case "review_queued":
-			return policy("in_review", "pending", "review_pending", "review", "bg-status-in-review");
+			return {
+				...policy("in_review", "pending", "review_pending", "review", "bg-status-in-review"),
+				laneSection: "in_review",
+			};
 		case "review_running":
-			return policy(
-				"in_review",
-				"pending",
-				"review_pending",
-				"review",
-				"bg-status-in-review",
-				policyActive,
-			);
+			return {
+				...policy(
+					"in_review",
+					"pending",
+					"review_pending",
+					"review",
+					"bg-status-in-review",
+					policyActive,
+				),
+				laneSection: "in_review",
+				statusLabelKey: "status.review_running",
+			};
 		case "admission_waiting":
 			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready");
 		case "merged":
 			return policy("merged", "merge", "merged", "merged", "bg-status-merged");
 		case "failed":
-		case "incident":
 			return policy("needs_you", "action", "review_failed", "failed", "bg-status-exited");
+		case "incident":
+			return {
+				...policy("needs_you", "action", "review_failed", "failed", "bg-status-exited"),
+				detail: dcpArbiterDetail(session),
+			};
+	}
+}
+
+function isAutomaticArbiterContinuation(status: WorkspaceSession["dcpArbiterStatus"]): boolean {
+	return (
+		status === "requested" ||
+		status === "claimed" ||
+		status === "running" ||
+		status === "hold" ||
+		status === "repair_queued" ||
+		status === "recovery_reviewed" ||
+		status === "succeeded"
+	);
+}
+
+function arbiterStatusLabelKey(session: WorkspaceSession): MessageKey {
+	switch (session.dcpArbiterStatus) {
+		case "requested":
+			return "status.arbiter_waiting";
+		case "hold":
+		case "repair_queued":
+		case "recovery_reviewed":
+		case "succeeded":
+			return "status.arbiter_decision_pending";
+		default:
+			return "status.arbiter_evaluating";
+	}
+}
+
+function dcpArbiterDetail(session: WorkspaceSession): string | undefined {
+	if (!session.dcpArbiterStatus) return undefined;
+	const metadata = [
+		session.dcpArbiterIncidentKind ? `incident ${session.dcpArbiterIncidentKind}` : null,
+		session.dcpArbiterGeneration ? `generation ${session.dcpArbiterGeneration}` : null,
+		session.dcpArbiterCohort?.length ? `cohort ${session.dcpArbiterCohort.join(" → ")}` : null,
+		session.dcpArbiterActionStatus ? `action ${session.dcpArbiterActionStatus}` : null,
+	]
+		.filter(Boolean)
+		.join(" · ");
+	const suffix = metadata ? ` · ${metadata}` : "";
+	switch (session.dcpArbiterStatus) {
+		case "requested":
+			return `Waiting for the automatic arbiter${suffix}`;
+		case "claimed":
+		case "running":
+			return `Arbiter evaluating this incident${suffix}`;
+		case "hold":
+			return `Held passively for the arbiter-approved order${suffix}`;
+		case "repair_queued":
+			return `Arbiter-approved bounded repair is pending${suffix}`;
+		case "recovery_reviewed":
+			return `Repaired head approved; waiting for trusted merge${suffix}`;
+		case "human_gate":
+			return `${session.dcpHumanGateQuestion || "Owner decision required"}${suffix}`;
+		case "failed":
+			return `Arbiter failed closed${suffix}`;
+		case "succeeded":
+			return `Automatic arbiter decision accepted; deterministic transition pending${suffix}`;
 	}
 }
 
@@ -220,6 +317,7 @@ export function getSessionVisualStatus(session: WorkspaceSession): SessionVisual
 			return visualStatus("attention", "bg-status-needs-you", {
 				zone: stockAttentionZone(session.status),
 				displayStatus: session.status,
+				laneSection: stockAttentionZone(session.status) === "pending" ? "in_review" : undefined,
 			});
 		case "merged":
 			return visualStatus("merged", "bg-status-merged", { zone: "merge", displayStatus: session.status });
@@ -303,6 +401,15 @@ export function getSessionStatusViewForSession(
 		label: projection.statusLabelKey ? t(projection.statusLabelKey) : view.label,
 		className: projection.statusClassName ?? view.className,
 	};
+}
+
+export function getSessionAccessibilityStatus(
+	session: WorkspaceSession,
+	t: TFunction = appI18n.t,
+): string {
+	const projection = getSessionVisualStatus(session);
+	const label = getSessionStatusViewForSession(session, t).label;
+	return projection.detail ? `${label}. ${projection.detail}` : label;
 }
 
 export type AttentionZone = "merge" | "action" | "pending" | "working" | "done";
