@@ -2,6 +2,7 @@ package dcptask
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,8 +94,8 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorkt
 	head := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
 	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
 	root := filepath.Join(filepath.Dir(repo), "worktrees")
-	validator := ReviewRepositoryValidator{TargetPath: repo, AllowedWorktreeRoot: root, RunProvider: func(context.Context, string) (string, error) {
-		return PolicyRepositoryName + "|false|main|1329007118|237411244", nil
+	validator := ReviewRepositoryValidator{TargetPath: repo, AllowedWorktreeRoot: root, RunProvider: func(context.Context, string) (ReviewRepositoryProviderIdentity, error) {
+		return ReviewRepositoryProviderIdentity{NameWithOwner: PolicyRepositoryName, DefaultBranch: "main", RepositoryID: 1329007118, OwnerID: 237411244}, nil
 	}}
 	project := domain.ProjectRecord{
 		ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
@@ -118,8 +119,8 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorkt
 		t.Fatal("validator accepted foreign push authority")
 	}
 	runGitTest(t, repo, "remote", "set-url", "--push", "origin", reviewLabOrigin)
-	validator.RunProvider = func(context.Context, string) (string, error) {
-		return PolicyRepositoryName + "|true|main|1329007118|237411244", nil
+	validator.RunProvider = func(context.Context, string) (ReviewRepositoryProviderIdentity, error) {
+		return ReviewRepositoryProviderIdentity{NameWithOwner: PolicyRepositoryName, Private: true, DefaultBranch: "main", RepositoryID: 1329007118, OwnerID: 237411244}, nil
 	}
 	if _, err := validator.Validate(context.Background(), project); err == nil {
 		t.Fatal("validator accepted private provider repository")
@@ -144,8 +145,8 @@ func TestReviewRepositoryValidatorAllowsOnlyAncestralContinuationBehindMain(t *t
 	}
 	validator := ReviewRepositoryValidator{
 		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
-		RunProvider: func(context.Context, string) (string, error) {
-			return PolicyRepositoryName + "|false|main|1329007118|237411244", nil
+		RunProvider: func(context.Context, string) (ReviewRepositoryProviderIdentity, error) {
+			return ReviewRepositoryProviderIdentity{NameWithOwner: PolicyRepositoryName, DefaultBranch: "main", RepositoryID: 1329007118, OwnerID: 237411244}, nil
 		},
 	}
 	project := domain.ProjectRecord{ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo, RepoOriginURL: reviewLabOrigin, Config: reviewLabProjectConfig()}
@@ -181,11 +182,11 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *te
 	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
 	validator := ReviewRepositoryValidator{
 		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
-		RunProvider: func(_ context.Context, repository string) (string, error) {
+		RunProvider: func(_ context.Context, repository string) (ReviewRepositoryProviderIdentity, error) {
 			if repository != RepoOnlyRepositoryName {
 				t.Fatalf("provider lookup repository = %q", repository)
 			}
-			return RepoOnlyRepositoryName + "|false|main|1335072844|237411244", nil
+			return ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}, nil
 		},
 	}
 	project := domain.ProjectRecord{ID: RepoOnlyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
@@ -195,11 +196,102 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *te
 	if err != nil || identity.ProjectID != RepoOnlyTarget || identity.Repository != RepoOnlyRepositoryName || identity.HeadSHA != head {
 		t.Fatalf("repo-only identity=%+v err=%v", identity, err)
 	}
-	validator.RunProvider = func(context.Context, string) (string, error) {
-		return RepoOnlyRepositoryName + "|false|main|1329007118|237411244", nil
+	exact := ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}
+	tests := []struct {
+		name     string
+		identity ReviewRepositoryProviderIdentity
+		err      error
+	}{
+		{name: "private", identity: ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, Private: true, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}},
+		{name: "wrong repository", identity: ReviewRepositoryProviderIdentity{NameWithOwner: "orenvlad-ai/foreign", DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}},
+		{name: "wrong default branch", identity: ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "master", RepositoryID: 1335072844, OwnerID: 237411244}},
+		{name: "wrong repository id", identity: ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1329007118, OwnerID: 237411244}},
+		{name: "wrong owner id", identity: ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 1}},
+		{name: "provider error", identity: exact, err: errors.New("provider unavailable")},
 	}
-	if _, err := validator.Validate(context.Background(), project); err == nil {
-		t.Fatal("repo-only validator accepted the synthetic repository database id")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			validator.RunProvider = func(context.Context, string) (ReviewRepositoryProviderIdentity, error) {
+				return test.identity, test.err
+			}
+			if _, err := validator.Validate(context.Background(), project); err == nil {
+				t.Fatal("repo-only validator accepted inexact provider identity")
+			}
+		})
+	}
+}
+
+func TestReadPublicReviewRepositoryUsesSupportedGHAPI(t *testing.T) {
+	bin := t.TempDir()
+	gh := filepath.Join(bin, "gh")
+	script := `#!/bin/sh
+set -eu
+test "$#" -eq 4
+test "$1" = api
+test "$2" = --method
+test "$3" = GET
+test "$4" = repos/orenvlad-ai/wb-price-extension
+printf '%s\n' '{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":{"id":237411244}}'
+`
+	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	identity, err := readPublicReviewRepository(context.Background(), RepoOnlyRepositoryName)
+	want := ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}
+	if err != nil || identity != want {
+		t.Fatalf("provider identity=%+v err=%v", identity, err)
+	}
+}
+
+func TestReadPublicReviewRepositoryRejectsMalformedOrIncompleteJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "malformed", json: `{`},
+		{name: "missing repository", json: `{"private":false,"default_branch":"main","id":1335072844,"owner":{"id":237411244}}`},
+		{name: "null repository id", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":null,"owner":{"id":237411244}}`},
+		{name: "null owner", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":null}`},
+		{name: "missing owner id", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":{}}`},
+		{name: "wrong id type", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":"1335072844","owner":{"id":237411244}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bin := t.TempDir()
+			gh := filepath.Join(bin, "gh")
+			script := "#!/bin/sh\nprintf '%s\\n' '" + test.json + "'\n"
+			if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+			if _, err := readPublicReviewRepository(context.Background(), RepoOnlyRepositoryName); err == nil {
+				t.Fatal("provider lookup accepted malformed or incomplete JSON")
+			}
+		})
+	}
+}
+
+func TestReadPublicReviewRepositoryRejectsCommandFailure(t *testing.T) {
+	bin := t.TempDir()
+	gh := filepath.Join(bin, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if _, err := readPublicReviewRepository(context.Background(), RepoOnlyRepositoryName); err == nil {
+		t.Fatal("provider lookup accepted command failure")
+	}
+}
+
+func TestReadPublicReviewRepositoryLiveExactProvider(t *testing.T) {
+	if os.Getenv("DCP_PROVIDER_IDENTITY_LIVE_TEST") != "1" {
+		t.Skip("set DCP_PROVIDER_IDENTITY_LIVE_TEST=1 for the model-free exact-provider harness")
+	}
+	identity, err := readPublicReviewRepository(context.Background(), RepoOnlyRepositoryName)
+	want := ReviewRepositoryProviderIdentity{NameWithOwner: RepoOnlyRepositoryName, DefaultBranch: "main", RepositoryID: 1335072844, OwnerID: 237411244}
+	if err != nil || identity != want {
+		t.Fatalf("live provider identity=%+v err=%v", identity, err)
 	}
 }
 

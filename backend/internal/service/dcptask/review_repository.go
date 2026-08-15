@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,14 @@ import (
 
 const reviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
 
+type ReviewRepositoryProviderIdentity struct {
+	NameWithOwner string
+	Private       bool
+	DefaultBranch string
+	RepositoryID  int64
+	OwnerID       int64
+}
+
 // ReviewRepositoryValidator proves one compile-time-allowlisted public
 // PR-capable target without
 // fetching or mutating it. The canonical submit adapter performs its own
@@ -23,7 +32,7 @@ type ReviewRepositoryValidator struct {
 	TargetRoot          string
 	AllowedWorktreeRoot string
 	Run                 func(context.Context, string, ...string) (string, error)
-	RunProvider         func(context.Context, string) (string, error)
+	RunProvider         func(context.Context, string) (ReviewRepositoryProviderIdentity, error)
 }
 
 func (v ReviewRepositoryValidator) Validate(ctx context.Context, project domain.ProjectRecord) (domain.DCPRepositoryIdentity, error) {
@@ -123,11 +132,15 @@ func (v ReviewRepositoryValidator) validate(ctx context.Context, project domain.
 		provider = readPublicReviewRepository
 	}
 	providerIdentity, err := provider(ctx, spec.Repository)
-	wantProvider := fmt.Sprintf("%s|false|%s|%d|%d", spec.Repository, spec.DefaultBranch, spec.ProviderRepositoryID, spec.ProviderOwnerID)
+	wantProvider := ReviewRepositoryProviderIdentity{
+		NameWithOwner: spec.Repository, Private: false, DefaultBranch: spec.DefaultBranch,
+		RepositoryID: spec.ProviderRepositoryID, OwnerID: spec.ProviderOwnerID,
+	}
 	if err != nil || providerIdentity != wantProvider {
 		return domain.DCPRepositoryIdentity{}, invalidTarget("policy provider identity is not exact and public")
 	}
-	digestInput := strings.Join([]string{spec.Target, spec.Repository, target, strings.ToLower(originMain), wantProvider}, "\x00")
+	providerDigest := fmt.Sprintf("%s|%t|%s|%d|%d", wantProvider.NameWithOwner, wantProvider.Private, wantProvider.DefaultBranch, wantProvider.RepositoryID, wantProvider.OwnerID)
+	digestInput := strings.Join([]string{spec.Target, spec.Repository, target, strings.ToLower(originMain), providerDigest}, "\x00")
 	sum := sha256.Sum256([]byte(digestInput))
 	return domain.DCPRepositoryIdentity{
 		SchemaVersion: RepositorySchema, ProjectID: spec.Target, Repository: spec.Repository,
@@ -135,9 +148,31 @@ func (v ReviewRepositoryValidator) validate(ctx context.Context, project domain.
 	}, nil
 }
 
-func readPublicReviewRepository(ctx context.Context, repository string) (string, error) {
-	out, err := exec.CommandContext(ctx, "gh", "repo", "view", repository, "--json", "nameWithOwner,isPrivate,defaultBranchRef,databaseId,owner", "--jq", `[.nameWithOwner, (.isPrivate|tostring), .defaultBranchRef.name, (.databaseId|tostring), (.owner.databaseId|tostring)] | join("|")`).Output()
-	return strings.TrimSpace(string(out)), err
+func readPublicReviewRepository(ctx context.Context, repository string) (ReviewRepositoryProviderIdentity, error) {
+	out, err := exec.CommandContext(ctx, "gh", "api", "--method", "GET", "repos/"+repository).Output()
+	if err != nil {
+		return ReviewRepositoryProviderIdentity{}, err
+	}
+	var response struct {
+		Repository    *string `json:"full_name"`
+		Private       *bool   `json:"private"`
+		DefaultBranch *string `json:"default_branch"`
+		RepositoryID  *int64  `json:"id"`
+		Owner         *struct {
+			ID *int64 `json:"id"`
+		} `json:"owner"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		return ReviewRepositoryProviderIdentity{}, err
+	}
+	if response.Repository == nil || response.Private == nil || response.DefaultBranch == nil ||
+		response.RepositoryID == nil || response.Owner == nil || response.Owner.ID == nil {
+		return ReviewRepositoryProviderIdentity{}, fmt.Errorf("provider repository identity is incomplete")
+	}
+	return ReviewRepositoryProviderIdentity{
+		NameWithOwner: *response.Repository, Private: *response.Private, DefaultBranch: *response.DefaultBranch,
+		RepositoryID: *response.RepositoryID, OwnerID: *response.Owner.ID,
+	}, nil
 }
 
 func physicalPolicyPath(path string) (string, error) {
