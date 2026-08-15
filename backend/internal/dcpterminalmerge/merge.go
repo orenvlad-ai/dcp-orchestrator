@@ -1105,12 +1105,20 @@ func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head
 		if _, err := e.git(ctx, workspacePath, "merge-base", "--is-ancestor", taskBase, strings.ToLower(head)); err != nil {
 			return errors.New("dcp admission: policy head does not descend from its creation base")
 		}
-		countText, err := e.git(ctx, workspacePath, "rev-list", "--count", taskBase+".."+strings.ToLower(head))
+		// Count only commits that are not already part of the exact canonical
+		// base admitted for this head. A successor repair is rebuilt directly on
+		// a later main, so creationBase..head also contains unrelated commits
+		// that reached main through earlier FIFO admissions. Those commits are
+		// trusted by the canonical-base proof above, not worker output for this
+		// task. The canonical delta still bounds every task-owned side commit to
+		// the initial worker plus the one permitted repair.
+		canonicalDelta := base + ".." + strings.ToLower(head)
+		countText, err := e.git(ctx, workspacePath, "rev-list", "--count", canonicalDelta)
 		count, parseErr := strconv.Atoi(countText)
 		if err != nil || parseErr != nil || count < 1 || count > int(1+candidate.policyTask.RepairCount) {
 			return errors.New("dcp admission: policy commit lineage exceeds its bounded worker actions")
 		}
-		if merges, err := e.git(ctx, workspacePath, "rev-list", "--merges", taskBase+".."+strings.ToLower(head)); err != nil || merges != "" {
+		if merges, err := e.git(ctx, workspacePath, "rev-list", "--merges", canonicalDelta); err != nil || merges != "" {
 			return errors.New("dcp admission: policy commit lineage contains a merge commit")
 		}
 	}
