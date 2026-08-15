@@ -28,6 +28,7 @@ import {
 	boardAttentionZoneOrder,
 	getAgentActivityView,
 	getAttentionZoneViewForZone,
+	getSessionAccessibilityStatus,
 	getSessionStatusViewForSession,
 	getSessionVisualStatus,
 	isSessionIdle,
@@ -459,6 +460,9 @@ function BoardColumn({
 	if (col.zone === "working") {
 		return <WorkLaneColumn dcpTasks={dcpTasks} sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
 	}
+	if (col.zone === "pending") {
+		return <ReviewArbiterLaneColumn sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
+	}
 	if (col.zone === "merge") return <MergeLaneColumn sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
 	return <ZoneColumn col={col} sessions={sessions} onOpen={onOpen} onTerminate={onTerminate} />;
 }
@@ -524,6 +528,8 @@ type SplitLaneTone = {
 function splitLaneTones(t: TFunction): {
 	idle: SplitLaneTone;
 	working: SplitLaneTone;
+	review: SplitLaneTone;
+	arbiter: SplitLaneTone;
 	ready: SplitLaneTone;
 	merged: SplitLaneTone;
 } {
@@ -545,6 +551,24 @@ function splitLaneTones(t: TFunction): {
 			titleClassName: "text-status-working",
 			color: "var(--color-status-working)",
 			dotGlow: true,
+		},
+		review: {
+			label: t("zone.pending"),
+			countLabel: t("shell.countLabel.inReview"),
+			regionLabel: t("shell.inReviewSessions"),
+			dotClassName: "bg-status-in-review",
+			titleClassName: "text-status-in-review",
+			color: "var(--color-status-in-review)",
+			dotGlow: false,
+		},
+		arbiter: {
+			label: t("zone.arbiter"),
+			countLabel: t("shell.countLabel.arbiter"),
+			regionLabel: t("shell.arbiterSessions"),
+			dotClassName: "bg-status-arbiter",
+			titleClassName: "text-status-arbiter",
+			color: "var(--color-status-arbiter)",
+			dotGlow: false,
 		},
 		ready: {
 			label: t("zone.merge"),
@@ -627,6 +651,110 @@ function MergeLaneColumn({
 			onOpen={onOpen}
 			onTerminate={onTerminate}
 		/>
+	);
+}
+
+function ReviewArbiterLaneColumn({
+	sessions,
+	onOpen,
+	onTerminate,
+}: {
+	sessions: WorkspaceSession[];
+	onOpen: (s: WorkspaceSession) => void;
+	onTerminate: (s: WorkspaceSession) => void;
+}) {
+	const { t } = useTranslation();
+	const tones = splitLaneTones(t);
+	const arbiterSessions = sessions.filter((session) => getSessionVisualStatus(session).laneSection === "arbiter");
+	const reviewSessions = sessions.filter((session) => getSessionVisualStatus(session).laneSection !== "arbiter");
+
+	return (
+		<section
+			aria-label={t("shell.reviewArbiterSessions")}
+			className="flex min-w-0 flex-col overflow-hidden"
+			data-column="pending"
+			data-testid="board-column"
+		>
+			<div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
+				<div
+					aria-label={t("shell.laneSummaryAria", { primary: tones.review.label, secondary: tones.arbiter.label })}
+					className="flex min-w-0 items-center gap-2 font-mono text-2xs font-medium uppercase tracking-wide-sm"
+					role="group"
+				>
+					<LaneStatusLabel tone={tones.review} />
+					<span className="text-passive" aria-hidden="true">
+						/
+					</span>
+					<LaneStatusLabel tone={tones.arbiter} />
+				</div>
+				<div className="ml-auto flex shrink-0 items-center gap-2 font-mono text-2xs leading-none text-passive">
+					<SessionCount count={reviewSessions.length} label={tones.review.countLabel} />
+					<span aria-hidden="true">/</span>
+					<SessionCount count={arbiterSessions.length} label={tones.arbiter.countLabel} />
+				</div>
+			</div>
+			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
+				<div className="flex min-h-full flex-col">
+					<ReviewLaneSection
+						sessions={arbiterSessions}
+						tone={tones.arbiter}
+						onOpen={onOpen}
+						onTerminate={onTerminate}
+					/>
+					<ReviewLaneSection
+						bordered
+						grow
+						sessions={reviewSessions}
+						tone={tones.review}
+						onOpen={onOpen}
+						onTerminate={onTerminate}
+					/>
+				</div>
+			</div>
+		</section>
+	);
+}
+
+function ReviewLaneSection({
+	bordered = false,
+	grow = false,
+	sessions,
+	tone,
+	onOpen,
+	onTerminate,
+}: {
+	bordered?: boolean;
+	grow?: boolean;
+	sessions: WorkspaceSession[];
+	tone: SplitLaneTone;
+	onOpen: (s: WorkspaceSession) => void;
+	onTerminate: (s: WorkspaceSession) => void;
+}) {
+	return (
+		<div
+			aria-label={tone.regionLabel}
+			className={cn("flex flex-col", bordered && "border-t border-border-strong", grow && "flex-1")}
+			role="region"
+		>
+			<div className="flex shrink-0 items-center gap-2.5 px-4 py-2.5">
+				<div className="font-mono text-2xs font-medium uppercase tracking-wide-sm">
+					<LaneStatusLabel tone={tone} />
+				</div>
+				<span className="ml-auto font-mono text-2xs leading-none text-passive">{sessions.length}</span>
+			</div>
+			{sessions.length > 0 ? (
+				<div className="flex flex-col gap-2.5 pb-3 pt-3">
+					{sessions.map((session) => (
+						<SessionCard
+							key={session.id}
+							session={session}
+							onOpen={() => onOpen(session)}
+							onTerminate={() => onTerminate(session)}
+						/>
+					))}
+				</div>
+			) : null}
+		</div>
 	);
 }
 
@@ -846,7 +974,6 @@ function SessionCard({
 	const termination = useTerminateSessionState(session.id);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;
 	const keepTerminateVisible = visual.displayStatus === "merged";
-	const arbiterDetail = dcpArbiterCardDetail(session);
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		if (!interactive || !onOpen) return;
 		if (event.currentTarget !== event.target) return;
@@ -872,6 +999,7 @@ function SessionCard({
 			)}
 			data-testid="board-session-card"
 			data-session-id={session.id}
+			aria-label={`${session.title}. ${getSessionAccessibilityStatus(session, t)}`}
 		>
 			{showTerminate ? (
 				<SessionTerminationPopover
@@ -941,11 +1069,12 @@ function SessionCard({
 						className={cn("inline-flex min-w-0 items-center gap-1.5 truncate text-2xs font-medium", badge.className)}
 					>
 						<span
-							aria-hidden="true"
+							aria-label={getSessionAccessibilityStatus(session, t)}
 							className={cn("size-dot-sm shrink-0 rounded-full", visual.indicatorClassName)}
 							data-session-status-active={String(visual.active)}
 							data-session-status-tone={visual.tone}
 							data-session-status=""
+							role="img"
 						/>
 						{badge.label}
 					</span>
@@ -956,14 +1085,14 @@ function SessionCard({
 						{formatTimeCompact(session.updatedAt)}
 					</span>
 				</div>
-				{arbiterDetail ? (
+				{visual.detail ? (
 					<div
 						className={cn("line-clamp-3 text-2xs leading-normal", visual.statusClassName)}
 						data-testid="board-session-arbiter-detail"
 						role="status"
-						title={arbiterDetail}
+						title={visual.detail}
 					>
-						{arbiterDetail}
+						{visual.detail}
 					</div>
 				) : null}
 				{prSummaries.length > 0 && (
@@ -990,37 +1119,6 @@ function SessionCard({
 			{footer}
 		</div>
 	);
-}
-
-function dcpArbiterCardDetail(session: WorkspaceSession): string | null {
-	if (!session.dcpArbiterStatus) return null;
-	const metadata = [
-		session.dcpArbiterIncidentKind ? `incident ${session.dcpArbiterIncidentKind}` : null,
-		session.dcpArbiterGeneration ? `generation ${session.dcpArbiterGeneration}` : null,
-		session.dcpArbiterCohort?.length ? `cohort ${session.dcpArbiterCohort.join(" → ")}` : null,
-		session.dcpArbiterActionStatus ? `action ${session.dcpArbiterActionStatus}` : null,
-	]
-		.filter(Boolean)
-		.join(" · ");
-	const suffix = metadata ? ` · ${metadata}` : "";
-	switch (session.dcpArbiterStatus) {
-		case "requested":
-		case "claimed":
-		case "running":
-			return `Arbiter evaluating this incident${suffix}`;
-		case "hold":
-			return `Held passively for the arbiter-approved order${suffix}`;
-		case "repair_queued":
-			return `Arbiter-approved bounded repair${suffix}`;
-		case "recovery_reviewed":
-			return `Repaired head approved; waiting for trusted merge${suffix}`;
-		case "human_gate":
-			return `${session.dcpHumanGateQuestion || "Owner decision required"}${suffix}`;
-		case "failed":
-			return `Arbiter failed closed${suffix}`;
-		case "succeeded":
-			return null;
-	}
 }
 
 function ArchiveSessionItem({

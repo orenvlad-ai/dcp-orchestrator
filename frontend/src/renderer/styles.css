@@ -257,6 +257,7 @@
 	--color-status-working: var(--bridge-status-working);
 	--color-status-needs-you: var(--bridge-status-needs-you);
 	--color-status-in-review: var(--bridge-status-in-review);
+	--color-status-arbiter: var(--bridge-status-arbiter);
 	--color-status-ready: var(--bridge-status-ready);
 	--color-status-merged: var(--bridge-status-merged);
 	--color-status-idle: var(--bridge-status-idle);

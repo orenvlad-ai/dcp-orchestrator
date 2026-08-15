@@ -4,6 +4,7 @@ import {
 	attentionZone,
 	getAgentActivityView,
 	getAttentionZoneView,
+	getSessionAccessibilityStatus,
 	getSessionStatusView,
 	getSessionStatusViewForSession,
 	getSessionVisualStatus,
@@ -209,6 +210,122 @@ describe("session presentation", () => {
 		expect(getSessionStatusViewForSession(failure).label).toBe("Review failed");
 	});
 
+	it.each([
+		["waiting", "requested", "queued", false, "Waiting for arbiter", false],
+		["claimed", "claimed", "claimed", true, "Arbiter evaluating", false],
+		["running", "running", "running", true, "Arbiter evaluating", true],
+		["running without active fence", "running", "running", false, "Arbiter evaluating", false],
+		["passive hold", "hold", "succeeded", false, "Arbiter decision pending", false],
+		["accepted decision", "succeeded", "failed", false, "Arbiter decision pending", false],
+	] as const)(
+		"projects an automatic arbiter %s into the shared review lane",
+		(_name, arbiterStatus, actionStatus, policyActive, label, active) => {
+			const session = sessionWith({
+				status: "review_failed",
+				dcpPolicyState: "incident",
+				dcpPolicyActionActive: policyActive,
+				dcpArbiterStatus: arbiterStatus,
+				dcpArbiterActionStatus: actionStatus,
+				dcpArbiterGeneration: 2,
+				dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+			});
+			const visual = getSessionVisualStatus(session);
+
+			expect(visual).toMatchObject({
+				policyPhase: "arbiter",
+				laneSection: "arbiter",
+				zone: "pending",
+				tone: "arbiter",
+				dotClassName: "bg-status-arbiter",
+				active,
+			});
+			expect(visual.indicatorClassName).toBe(`bg-status-arbiter${active ? " animate-status-pulse" : ""}`);
+			expect(getSessionStatusViewForSession(session).label).toBe(label);
+			expect(getSessionAccessibilityStatus(session)).toContain(label);
+		},
+	);
+
+	it("gives successor repair lifecycle precedence over the older arbiter decision", () => {
+		const repair = sessionWith({
+			status: "review_failed",
+			dcpPolicyState: "repair_running",
+			dcpPolicyActionActive: true,
+			dcpArbiterStatus: "hold",
+			dcpArbiterActionStatus: "succeeded",
+		});
+
+		expect(getSessionVisualStatus(repair)).toMatchObject({
+			policyPhase: "working",
+			zone: "working",
+			tone: "working",
+			dotClassName: "bg-status-working",
+			active: true,
+		});
+	});
+
+	it("returns the same arbiter-approved task through repair, review, ready, and merged", () => {
+		const arbiterDecision = {
+			id: "same-task",
+			dcpArbiterStatus: "repair_queued" as const,
+			dcpArbiterActionStatus: "succeeded" as const,
+		};
+		const frames = [
+			sessionWith({ ...arbiterDecision, dcpPolicyState: "repair_queued" }),
+			sessionWith({ ...arbiterDecision, dcpPolicyState: "repair_running", dcpPolicyActionActive: true }),
+			sessionWith({ ...arbiterDecision, dcpPolicyState: "review_queued" }),
+			sessionWith({ ...arbiterDecision, dcpPolicyState: "admission_waiting" }),
+			sessionWith({ ...arbiterDecision, dcpPolicyState: "merged" }),
+		];
+
+		expect(frames.map((frame) => frame.id)).toEqual(Array(5).fill("same-task"));
+		expect(frames.map((frame) => getSessionVisualStatus(frame).policyPhase)).toEqual([
+			"working",
+			"working",
+			"in_review",
+			"ready_to_merge",
+			"merged",
+		]);
+	});
+
+	it("reprojects one durable task across restart snapshots without bouncing through failure", () => {
+		const base = {
+			id: "same-task",
+			status: "review_failed" as const,
+			dcpPolicyState: "incident" as const,
+			dcpArbiterGeneration: 1,
+			dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+		};
+		const snapshots = [
+			sessionWith({ ...base, dcpArbiterStatus: "requested", dcpArbiterActionStatus: "queued" }),
+			sessionWith({
+				...base,
+				dcpPolicyActionActive: true,
+				dcpArbiterStatus: "running",
+				dcpArbiterActionStatus: "running",
+			}),
+			sessionWith({ ...base, dcpArbiterStatus: "hold", dcpArbiterActionStatus: "succeeded" }),
+			sessionWith({
+				...base,
+				dcpArbiterStatus: "human_gate",
+				dcpArbiterActionStatus: "succeeded",
+				dcpHumanGateQuestion: "Choose left or right?",
+			}),
+		];
+		const projections = snapshots.map(getSessionVisualStatus);
+
+		expect(snapshots.map((snapshot) => snapshot.id)).toEqual(["same-task", "same-task", "same-task", "same-task"]);
+		expect(projections.map((projection) => projection.policyPhase)).toEqual([
+			"arbiter",
+			"arbiter",
+			"arbiter",
+			"needs_you",
+		]);
+		expect(projections.map((projection) => projection.zone)).toEqual(["pending", "pending", "pending", "action"]);
+		expect(projections.map((projection) => projection.active)).toEqual([false, true, false, false]);
+		expect(projections.slice(0, 3).every((projection) => projection.tone === "arbiter")).toBe(true);
+		expect(projections[3]).toMatchObject({ tone: "attention", dotClassName: "bg-status-needs-you" });
+	});
+
 	it("keeps the normal policy sequence forward when stock status frames are stale", () => {
 		const frames = [
 			sessionWith({ status: "idle", dcpPolicyState: "reserved" }),
@@ -220,7 +337,7 @@ describe("session presentation", () => {
 			sessionWith({ status: "review_pending", dcpPolicyState: "admission_waiting" }),
 			sessionWith({ status: "pr_open", dcpPolicyState: "merged" }),
 		];
-		const phaseRank = { working: 0, in_review: 1, ready_to_merge: 2, merged: 3, needs_you: 4 } as const;
+		const phaseRank = { working: 0, in_review: 1, arbiter: 2, ready_to_merge: 3, merged: 4, needs_you: 5 } as const;
 		const projections = frames.map(getSessionVisualStatus);
 		const ranks = projections.map((projection) => phaseRank[projection.policyPhase!]);
 
@@ -260,6 +377,16 @@ describe("session presentation", () => {
 		expect(css).toMatch(
 			/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.animate-status-pulse,[\s\S]*?animation:\s*none;/,
 		);
+	});
+
+	it("defines a dedicated high-contrast purple arbiter signal for both themes", () => {
+		const tokens = readFileSync("src/styles/tokens.css", "utf8");
+		const renderer = readFileSync("src/renderer/styles.css", "utf8");
+		expect(tokens.match(/--color-status-arbiter:\s*#c084fc;/g)).toHaveLength(1);
+		expect(tokens.match(/--color-status-arbiter:\s*#7e22ce;/g)).toHaveLength(1);
+		expect(tokens).toContain("--bridge-status-arbiter: var(--color-status-arbiter);");
+		expect(renderer).toContain("--color-status-arbiter: var(--bridge-status-arbiter);");
+		expect(new Set(["#c084fc", "#60a5fa", "#fb923c", "#facc15", "#4ade80"]).size).toBe(5);
 	});
 
 	it("uses a muted accent treatment for In Review instead of idle gray", () => {

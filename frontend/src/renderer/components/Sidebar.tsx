@@ -23,7 +23,7 @@ import {
 	type WorkspaceSummary,
 	workerSessions,
 } from "../types/workspace";
-import { getSessionVisualStatus } from "../lib/session-presentation";
+import { getSessionAccessibilityStatus, getSessionVisualStatus } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -136,14 +136,16 @@ function useSelection() {
 }
 
 function SessionStatusDot({ session }: { session: WorkspaceSession }) {
+	const { t } = useTranslation();
 	const visual = getSessionVisualStatus(session);
 	return (
 		<span
-			aria-hidden="true"
+			aria-label={getSessionAccessibilityStatus(session, t)}
 			className={cn("size-2 shrink-0 rounded-full", visual.indicatorClassName)}
 			data-session-status-active={String(visual.active)}
 			data-session-status-tone={visual.tone}
 			data-session-status=""
+			role="img"
 		/>
 	);
 }
