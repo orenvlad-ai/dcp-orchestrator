@@ -181,6 +181,8 @@ type fakePRs struct{ prs []domain.PullRequest }
 
 type fakePolicyReviewGate struct {
 	authorized bool
+	notPolicy  bool
+	checked    int
 	marked     int
 	failed     int
 	head       string
@@ -189,7 +191,8 @@ type fakePolicyReviewGate struct {
 }
 
 func (f *fakePolicyReviewGate) IsPolicyReviewSession(context.Context, domain.SessionID) (bool, error) {
-	return true, nil
+	f.checked++
+	return !f.notPolicy, nil
 }
 
 func (f *fakePolicyReviewGate) AuthorizePolicyReview(_ context.Context, _ domain.SessionID, _ string, head string) (bool, bool, error) {
@@ -502,6 +505,40 @@ func TestDCPReviewLabPolicyAuthorizesOneFreshExactHead(t *testing.T) {
 	duplicate, err := eng.AutoTrigger(context.Background(), worker.ID)
 	if err != nil || duplicate.Created || launcher.spawnCount != 1 || gate.marked != 1 {
 		t.Fatalf("duplicate policy trigger = %+v err=%v spawns=%d marked=%d", duplicate, err, launcher.spawnCount, gate.marked)
+	}
+}
+
+func TestRepoOnlyPolicyReviewUsesGlobalActionGateAndRejectsManualTrigger(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "wb-price-extension-1", "wb-price-extension", domain.HarnessCodex
+	store := &fakeStore{}
+	launcher := &fakeLauncher{handle: "review-wb-price-extension-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha-policy"), fakeProjects{}, launcher)
+	gate := &fakePolicyReviewGate{authorized: true}
+	eng.SetPolicyGate(gate)
+
+	if result, err := eng.Trigger(context.Background(), worker.ID, ""); err == nil || result.Created || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("manual repo-only policy review = %+v err=%v", result, err)
+	}
+	result, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !result.Created || launcher.spawnCount != 1 || gate.checked < 2 || gate.marked != 1 {
+		t.Fatalf("repo-only policy trigger = %+v err=%v spawns=%d gate=%+v", result, err, launcher.spawnCount, gate)
+	}
+	if gate.head != "sha-policy" || gate.runID != result.Run.ID || gate.handleID != launcher.handle {
+		t.Fatalf("repo-only exact-head binding = %+v run=%+v", gate, result.Run)
+	}
+}
+
+func TestOrdinarySessionDoesNotUsePolicyActionGate(t *testing.T) {
+	worker := idleWorker()
+	gate := &fakePolicyReviewGate{notPolicy: true}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng.SetPolicyGate(gate)
+
+	result, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !result.Created || launcher.spawnCount != 1 || gate.checked != 1 || gate.marked != 0 {
+		t.Fatalf("ordinary trigger = %+v err=%v spawns=%d gate=%+v", result, err, launcher.spawnCount, gate)
 	}
 }
 

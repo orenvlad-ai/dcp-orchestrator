@@ -27,6 +27,9 @@ type dcpPolicySubmitRequest struct {
 type dcpPolicySubmitResponse struct {
 	Task struct {
 		TaskID       string `json:"taskId"`
+		Target       string `json:"target"`
+		Profile      string `json:"profile"`
+		Repository   string `json:"repository"`
 		SessionID    string `json:"sessionId"`
 		CardNumber   int64  `json:"cardNumber"`
 		WorktreePath string `json:"worktreePath"`
