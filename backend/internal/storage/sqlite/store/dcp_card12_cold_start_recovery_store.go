@@ -66,8 +66,7 @@ func (s *Store) EstablishDCPGovernedStartupQuarantine(ctx context.Context, now t
 		}
 		for _, task := range policyTasks {
 			session, found, getErr := getSessionForStartupQuarantine(ctx, q, task.SessionID)
-			if getErr != nil || !found || session.ProjectID != "dcp-review-lab" || session.Num != task.CardNumber ||
-				task.CardNumber <= 12 || task.SessionID != "dcp-review-lab-"+fmt.Sprint(task.CardNumber) {
+			if getErr != nil || !found || !isExactDCPPolicyStartupQuarantineSession(task, session) {
 				return errors.Join(getErr, errors.New("future DCP policy session classification drifted"))
 			}
 			quarantine[domain.SessionID(task.SessionID)] = struct{}{}
@@ -75,6 +74,25 @@ func (s *Store) EstablishDCPGovernedStartupQuarantine(ctx context.Context, now t
 		return nil
 	})
 	return quarantine, err
+}
+
+func isExactDCPPolicyStartupQuarantineSession(task gen.DcpReviewLabPolicyTask, session gen.Session) bool {
+	prefix := ""
+	minimumCard := int64(0)
+	switch {
+	case task.Target == "dcp-review-lab" && task.Profile == "synthetic-pr" &&
+		task.Repository == "orenvlad-ai/dcp-review-lab" && task.PolicyVersion == "dcp.review-lab.happy-path/v1":
+		prefix = "dcp-review-lab"
+		minimumCard = 12
+	case task.Target == "wb-price-extension" && task.Profile == "repo-only" &&
+		task.Repository == "orenvlad-ai/wb-price-extension" && task.PolicyVersion == "dcp.repo-only.happy-path/v1":
+		prefix = "wb-price-extension"
+	default:
+		return false
+	}
+	return task.CardNumber > minimumCard && session.ProjectID == domain.ProjectID(prefix) &&
+		session.Num == task.CardNumber && task.SessionID == prefix+"-"+fmt.Sprint(task.CardNumber) &&
+		session.ID == domain.SessionID(task.SessionID)
 }
 
 func getSessionForStartupQuarantine(ctx context.Context, q *gen.Queries, id string) (gen.Session, bool, error) {
