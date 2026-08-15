@@ -262,6 +262,9 @@ func Run() error {
 				}
 			}()
 		}
+		terminalMerger.SetAdmissionCommittedHandler(func(signalCtx context.Context, signal dcpterminalmerge.AdmissionCommitSignal) {
+			triggerTerminalMerge(signalCtx, signal.SessionID)
+		})
 		reviewSvc.SetApprovedStructuredHandler(triggerTerminalMerge)
 		reviewSvc.SetStructuredResultHandler(func(resultCtx context.Context, id domain.SessionID, run domain.ReviewRun) bool {
 			handled, handleErr := terminalMerger.HandleFreshRecoveryReview(resultCtx, id, run)

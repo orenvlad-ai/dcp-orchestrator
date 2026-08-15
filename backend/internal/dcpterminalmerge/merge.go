@@ -83,6 +83,18 @@ type SCM interface {
 
 type RefreshWaker func(context.Context, domain.SessionID, string) error
 
+// AdmissionCommitSignal is the exact durable identity returned only after the
+// future-policy admission transaction has committed. Delivery owns no SCM,
+// claim, lease, Git or merge action; it only schedules another ordinary Try.
+type AdmissionCommitSignal struct {
+	AdmissionID string
+	ReviewRunID string
+	SessionID   domain.SessionID
+	TargetSHA   string
+}
+
+type AdmissionCommittedHandler func(context.Context, AdmissionCommitSignal)
+
 type Engine struct {
 	store                  Store
 	scm                    SCM
@@ -99,6 +111,7 @@ type Engine struct {
 	modelFreeReviewTrigger func(context.Context, domain.SessionID) error
 	futureArbiter          FutureArbiterLauncher
 	policyActionDrain      func(context.Context) error
+	admissionCommitted     AdmissionCommittedHandler
 	clock                  func() time.Time
 }
 
@@ -110,6 +123,10 @@ func New(store Store, scm SCM, dataDir string) *Engine {
 }
 
 func (e *Engine) SetRefreshWaker(wake RefreshWaker) { e.wake = wake }
+
+func (e *Engine) SetAdmissionCommittedHandler(handler AdmissionCommittedHandler) {
+	e.admissionCommitted = handler
+}
 
 // ReconcileStartup first fences or completes the one persisted merge owner,
 // then deterministically enrols exact approved sessions and drains at most the
@@ -249,11 +266,19 @@ func (e *Engine) Try(ctx context.Context, sessionID domain.SessionID) error {
 	} else if !eligible {
 		return nil
 	}
+	var committed *AdmissionCommitSignal
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if err := e.enrol(ctx, sessionID); err != nil {
+	if err := e.enrolAfterCommit(ctx, sessionID, func(signal AdmissionCommitSignal) { committed = &signal }); err != nil {
+		e.mu.Unlock()
 		return err
 	}
+	if committed != nil && e.admissionCommitted != nil {
+		handler := e.admissionCommitted
+		e.mu.Unlock()
+		handler(ctx, *committed)
+		return nil
+	}
+	defer e.mu.Unlock()
 	if err := e.reconcileFutureArbiters(ctx); err != nil {
 		return err
 	}
@@ -271,6 +296,10 @@ func (e *Engine) configured() error {
 }
 
 func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
+	return e.enrolAfterCommit(ctx, sessionID, nil)
+}
+
+func (e *Engine) enrolAfterCommit(ctx context.Context, sessionID domain.SessionID, afterCommit func(AdmissionCommitSignal)) error {
 	candidate, ok, err := e.candidate(ctx, sessionID)
 	if err != nil {
 		return err
@@ -416,7 +445,19 @@ func (e *Engine) enrol(ctx context.Context, sessionID domain.SessionID) error {
 		Status: domain.DCPAdmissionWaiting, CreatedAt: now, UpdatedAt: now,
 	}
 	if candidate.policy {
-		_, _, err := e.store.(policyStore).EnqueueDCPReviewLabPolicyAdmission(ctx, requested, candidate.policyTask)
+		persisted, created, err := e.store.(policyStore).EnqueueDCPReviewLabPolicyAdmission(ctx, requested, candidate.policyTask)
+		if err == nil && created && afterCommit != nil {
+			if persisted.ID != requested.ID || persisted.ReviewRunID != requested.ReviewRunID ||
+				persisted.SessionID != requested.SessionID || !strings.EqualFold(persisted.TargetSHA, requested.TargetSHA) {
+				return errors.New("dcp admission: committed policy admission signal identity drifted")
+			}
+			afterCommit(AdmissionCommitSignal{
+				AdmissionID: persisted.ID,
+				ReviewRunID: persisted.ReviewRunID,
+				SessionID:   persisted.SessionID,
+				TargetSHA:   strings.ToLower(persisted.TargetSHA),
+			})
+		}
 		return err
 	}
 	_, _, err = e.store.EnqueueDCPReviewLabAdmission(ctx, requested)

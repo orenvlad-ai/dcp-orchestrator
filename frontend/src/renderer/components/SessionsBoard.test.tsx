@@ -423,6 +423,9 @@ describe("SessionsBoard", () => {
 						dcpPolicyState: "incident",
 						dcpArbiterStatus: "human_gate",
 						dcpArbiterGeneration: 1,
+						dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+						dcpArbiterCohort: ["night-a", "night-b"],
+						dcpArbiterActionStatus: "failed",
 						dcpHumanGateQuestion: "Should the shared value use intent A or intent B?",
 					}),
 				]),
@@ -445,7 +448,15 @@ describe("SessionsBoard", () => {
 		const humanCard = within(needsYou)
 			.getByText("policy arbiter gate")
 			.closest('[data-testid="board-session-card"]') as HTMLElement;
-		expect(within(humanCard).getByRole("status")).toHaveTextContent("Should the shared value use intent A or intent B? · generation 1");
+		const humanDot = humanCard.querySelector<HTMLElement>("[data-session-status]");
+		expect(humanDot).toHaveClass("bg-status-needs-you");
+		expect(humanDot).not.toHaveClass("animate-status-pulse");
+		expect(within(humanCard).getByText("Needs your decision")).toHaveClass("text-status-needs-you");
+		expect(within(humanCard).queryByText("Review failed")).not.toBeInTheDocument();
+		expect(within(humanCard).getByRole("status")).toHaveClass("text-status-needs-you");
+		expect(within(humanCard).getByRole("status")).toHaveTextContent(
+			"Should the shared value use intent A or intent B? · incident merge_conflict_or_ambiguity · generation 1 · cohort night-a → night-b · action failed",
+		);
 	});
 
 	it("does not show a stale secondary open PR after the durable policy merges", () => {

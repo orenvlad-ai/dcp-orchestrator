@@ -743,6 +743,7 @@
 	"status.ci_failed": "CI en échec",
 	"status.draft": "PR en brouillon",
 	"status.exited": "Terminé",
+	"status.human_gate": "Votre décision est requise",
 	"status.idle": "Inactif",
 	"status.mergeable": "Prêt",
 	"status.merged": "Fusionné",

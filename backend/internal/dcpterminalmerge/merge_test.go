@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +207,375 @@ type fakeSCM struct {
 	mergeCalls   int
 	expectedHead string
 	mergeSHA     string
+}
+
+type queueSelectionStore struct {
+	*fakeStore
+	rows  []domain.DCPReviewLabAdmission
+	tasks map[domain.SessionID]domain.DCPReviewLabPolicyTask
+}
+
+type tripleQueueStore struct {
+	*fakeStore
+	sessions   map[domain.SessionID]domain.SessionRecord
+	prs        map[domain.SessionID]domain.PullRequest
+	runs       map[domain.SessionID]domain.ReviewRun
+	tasks      map[domain.SessionID]domain.DCPReviewLabPolicyTask
+	rows       []domain.DCPReviewLabAdmission
+	claims     int
+	mergeOrder []int64
+}
+
+func (s *tripleQueueStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	session, ok := s.sessions[id]
+	return session, ok, nil
+}
+
+func (s *tripleQueueStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	result := make([]domain.SessionRecord, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		result = append(result, session)
+	}
+	return result, nil
+}
+
+func (s *tripleQueueStore) ListPRsBySession(_ context.Context, id domain.SessionID) ([]domain.PullRequest, error) {
+	pr, ok := s.prs[id]
+	if !ok {
+		return nil, nil
+	}
+	return []domain.PullRequest{pr}, nil
+}
+
+func (s *tripleQueueStore) ListReviewRunsBySession(_ context.Context, id domain.SessionID) ([]domain.ReviewRun, error) {
+	run, ok := s.runs[id]
+	if !ok {
+		return nil, nil
+	}
+	return []domain.ReviewRun{run}, nil
+}
+
+func (s *tripleQueueStore) GetDCPReviewLabAdmissionByRun(_ context.Context, runID string) (domain.DCPReviewLabAdmission, bool, error) {
+	for _, row := range s.rows {
+		if row.ReviewRunID == runID {
+			return row, true, nil
+		}
+	}
+	return domain.DCPReviewLabAdmission{}, false, nil
+}
+
+func (s *tripleQueueStore) GetClaimedDCPReviewLabAdmission(context.Context) (domain.DCPReviewLabAdmission, bool, error) {
+	for _, row := range s.rows {
+		if row.Status == domain.DCPAdmissionClaimed {
+			return row, true, nil
+		}
+	}
+	return domain.DCPReviewLabAdmission{}, false, nil
+}
+
+func (s *tripleQueueStore) ListDCPReviewLabAdmissions(context.Context) ([]domain.DCPReviewLabAdmission, error) {
+	return append([]domain.DCPReviewLabAdmission(nil), s.rows...), nil
+}
+
+func (s *tripleQueueStore) ClaimDCPReviewLabAdmission(_ context.Context, admission domain.DCPReviewLabAdmission, leaseID, baseSHA string, now time.Time) (bool, error) {
+	for _, row := range s.rows {
+		if row.Status == domain.DCPAdmissionClaimed {
+			return false, nil
+		}
+	}
+	for i := range s.rows {
+		if s.rows[i].ID != admission.ID || s.rows[i].Status != domain.DCPAdmissionWaiting {
+			continue
+		}
+		run := s.runs[admission.SessionID]
+		if run.TerminalMergeStatus != "" {
+			return false, nil
+		}
+		s.rows[i].Status, s.rows[i].LeaseID, s.rows[i].AdmittedBaseSHA, s.rows[i].UpdatedAt = domain.DCPAdmissionClaimed, leaseID, baseSHA, now
+		run.TerminalMergeStatus = "running"
+		s.runs[admission.SessionID] = run
+		s.claims++
+		return true, nil
+	}
+	return false, nil
+}
+
+func (s *tripleQueueStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	task, ok := s.tasks[id]
+	return task, ok, nil
+}
+
+func (s *tripleQueueStore) CompleteDCPReviewLabPolicyAdmission(_ context.Context, admission domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, sha string, now time.Time) (bool, error) {
+	for i := range s.rows {
+		if s.rows[i].ID != admission.ID || s.rows[i].Status != domain.DCPAdmissionClaimed || s.rows[i].LeaseID != admission.LeaseID {
+			continue
+		}
+		current := s.tasks[admission.SessionID]
+		run := s.runs[admission.SessionID]
+		if current.TaskID != task.TaskID || current.State != domain.DCPPolicyAdmissionWait || run.TerminalMergeStatus != "running" {
+			return false, nil
+		}
+		s.rows[i].Status, s.rows[i].MergeCommitSHA, s.rows[i].UpdatedAt = domain.DCPAdmissionSucceeded, sha, now
+		current.State, current.MergeCommitSHA, current.Revision = domain.DCPPolicyMerged, sha, current.Revision+1
+		run.TerminalMergeStatus, run.TerminalMergeCommitSHA = "succeeded", sha
+		s.tasks[admission.SessionID], s.runs[admission.SessionID] = current, run
+		s.mergeOrder = append(s.mergeOrder, admission.Sequence)
+		return true, nil
+	}
+	return false, nil
+}
+
+type tripleQueueSCM struct {
+	store       *tripleQueueStore
+	currentBase string
+	mergeSHAs   map[int]string
+	fetchedBase []string
+	mergePRs    []int
+	files       map[string]string
+}
+
+func (s *tripleQueueSCM) FetchPullRequests(_ context.Context, refs []ports.SCMPRRef) ([]ports.SCMObservation, error) {
+	if len(refs) != 1 {
+		return nil, errors.New("expected one exact PR refresh")
+	}
+	var pr domain.PullRequest
+	for _, candidate := range s.store.prs {
+		if candidate.Number == refs[0].Number && candidate.URL == refs[0].URL {
+			pr = candidate
+			break
+		}
+	}
+	if pr.URL == "" {
+		return nil, errors.New("unknown PR refresh")
+	}
+	s.fetchedBase = append(s.fetchedBase, s.currentBase)
+	return []ports.SCMObservation{{
+		Fetched: true, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
+		PR: ports.SCMPRObservation{
+			URL: pr.URL, Number: pr.Number, HeadRepo: RepositoryFullName, SourceBranch: pr.SourceBranch,
+			TargetBranch: TargetBranch, HeadSHA: pr.HeadSHA, BaseSHA: s.currentBase,
+			State: string(domain.PRStateOpen), ProviderState: "OPEN", Author: "orenvlad-ai", HTMLURL: pr.URL,
+			ProviderMergeable: "MERGEABLE", ProviderMergeStateStatus: "CLEAN",
+		},
+		CI: ports.SCMCIObservation{Summary: string(domain.CIPassing), HeadSHA: pr.HeadSHA, Checks: []ports.SCMCheckObservation{{
+			Name: RequiredCheckName, Status: string(domain.PRCheckPassed), Conclusion: "success",
+			URL: fmt.Sprintf("https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/%d/job/%d", pr.Number, pr.Number),
+		}}},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable), Mergeable: true},
+	}}, nil
+}
+
+func (s *tripleQueueSCM) FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCMReviewObservation, error) {
+	return ports.SCMReviewObservation{Decision: string(domain.ReviewNone)}, nil
+}
+
+func (s *tripleQueueSCM) MergePullRequest(_ context.Context, request ports.SCMMergeRequest) (ports.SCMMergeResult, error) {
+	var pr domain.PullRequest
+	for _, candidate := range s.store.prs {
+		if candidate.Number == request.PR.Number {
+			pr = candidate
+			break
+		}
+	}
+	if pr.URL == "" || request.ExpectedHeadSHA != pr.HeadSHA || request.Method != ports.SCMMergeSquash {
+		return ports.SCMMergeResult{}, errors.New("unexpected triple merge request")
+	}
+	sha := s.mergeSHAs[pr.Number]
+	if !validSHA(sha) {
+		return ports.SCMMergeResult{}, errors.New("missing triple merge SHA")
+	}
+	s.currentBase = sha
+	s.mergePRs = append(s.mergePRs, pr.Number)
+	s.files[fmt.Sprintf("qualification/manual-triple-20260815-%c.txt", 'a'+rune(pr.Number-25))] = fmt.Sprintf("manual-triple-%c=ok", 'a'+rune(pr.Number-25))
+	return ports.SCMMergeResult{MergeCommitSHA: sha}, nil
+}
+
+func (s *queueSelectionStore) ListDCPReviewLabAdmissions(context.Context) ([]domain.DCPReviewLabAdmission, error) {
+	return append([]domain.DCPReviewLabAdmission(nil), s.rows...), nil
+}
+
+func (s *queueSelectionStore) GetDCPReviewLabAdmissionByRun(_ context.Context, runID string) (domain.DCPReviewLabAdmission, bool, error) {
+	for _, row := range s.rows {
+		if row.ReviewRunID == runID {
+			return row, true, nil
+		}
+	}
+	return domain.DCPReviewLabAdmission{}, false, nil
+}
+
+func (s *queueSelectionStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	task, ok := s.tasks[id]
+	return task, ok, nil
+}
+
+func TestNextPendingSkipsTerminalHumanGateThenSelectsTwentyThroughTwentyTwoFIFO(t *testing.T) {
+	const packet = `{"reason":"merge_conflict_or_ambiguity"}`
+	rows := []domain.DCPReviewLabAdmission{
+		{Sequence: 19, ID: "admission-19", ReviewRunID: "run-19", SessionID: "dcp-review-lab-27", TargetSHA: strings.Repeat("1", 40), Status: domain.DCPAdmissionIncident, ErrorCode: "merge_conflict_or_ambiguity", IncidentPacket: packet},
+		{Sequence: 20, ID: "admission-20", ReviewRunID: "run-20", SessionID: "dcp-review-lab-28", TargetSHA: strings.Repeat("2", 40), Status: domain.DCPAdmissionWaiting},
+		{Sequence: 21, ID: "admission-21", ReviewRunID: "run-21", SessionID: "dcp-review-lab-29", TargetSHA: strings.Repeat("3", 40), Status: domain.DCPAdmissionWaiting},
+		{Sequence: 22, ID: "admission-22", ReviewRunID: "run-22", SessionID: "dcp-review-lab-30", TargetSHA: strings.Repeat("4", 40), Status: domain.DCPAdmissionWaiting},
+	}
+	store := &queueSelectionStore{
+		fakeStore: &fakeStore{},
+		rows:      rows,
+		tasks: map[domain.SessionID]domain.DCPReviewLabPolicyTask{
+			"dcp-review-lab-27": {SessionID: "dcp-review-lab-27", State: domain.DCPPolicyIncident, AdmissionID: "admission-19", ReviewRunID: "run-19", CurrentHeadSHA: strings.Repeat("1", 40), ErrorCode: "merge_conflict_or_ambiguity", IncidentPacket: packet},
+		},
+	}
+	engine := New(store, &fakeSCM{}, t.TempDir())
+	for want := int64(20); want <= 22; want++ {
+		got, ok, err := engine.nextPending(context.Background())
+		if err != nil || !ok || got.Sequence != want {
+			t.Fatalf("next after terminal Human Gate = %+v ok=%v err=%v, want sequence %d", got, ok, err, want)
+		}
+		store.rows[want-19].Status = domain.DCPAdmissionSucceeded
+	}
+	if got, ok, err := engine.nextPending(context.Background()); err != nil || ok {
+		t.Fatalf("queue after sequence 22 = %+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestDrainThreeCleanOldBasePolicyPRsRefreshesProviderMainAndPreservesAllChanges(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	projectPath := filepath.Join(root, "targets", ProjectID)
+	oldBase := strings.Repeat("d", 40)
+	mergeSHAs := map[int]string{25: strings.Repeat("e", 40), 26: strings.Repeat("f", 40), 27: strings.Repeat("1", 40)}
+	store := &tripleQueueStore{
+		fakeStore: &fakeStore{project: domain.ProjectRecord{
+			ID: ProjectID, Path: projectPath, RepoOriginURL: RepositoryURL, Kind: domain.ProjectKindSingleRepo,
+			Config: domain.ProjectConfig{
+				DefaultBranch: TargetBranch, SessionPrefix: SessionPrefix, AgentRules: ProfileAgentRules,
+				Worker:    domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}},
+				Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}},
+			},
+		}},
+		sessions: map[domain.SessionID]domain.SessionRecord{}, prs: map[domain.SessionID]domain.PullRequest{},
+		runs: map[domain.SessionID]domain.ReviewRun{}, tasks: map[domain.SessionID]domain.DCPReviewLabPolicyTask{},
+	}
+	for offset, taskID := range []string{"manual-triple-a", "manual-triple-b", "manual-triple-c"} {
+		card := 28 + offset
+		prNumber := 25 + offset
+		id := domain.SessionID(fmt.Sprintf("dcp-review-lab-%d", card))
+		head := strings.Repeat(string(rune('a'+offset)), 40)
+		branch := "ao/" + string(id) + "/root"
+		workspace := filepath.Join(dataDir, "worktrees", ProjectID, string(id))
+		privateGitDir := filepath.Join(projectPath, ".git", "worktrees", string(id))
+		for _, path := range []string{workspace, privateGitDir} {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prompt := fmt.Sprintf("Add qualification/manual-triple-20260815-%c.txt.", 'a'+rune(offset))
+		prURL := fmt.Sprintf("https://github.com/orenvlad-ai/dcp-review-lab/pull/%d", prNumber)
+		runID := fmt.Sprintf("run-%d", prNumber)
+		store.sessions[id] = domain.SessionRecord{
+			ID: id, ProjectID: ProjectID, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+			DisplayName: TaskDisplayPrefix + taskID, Activity: domain.Activity{State: domain.ActivityIdle},
+			Metadata: domain.SessionMetadata{WorkspacePath: workspace, Branch: branch, DiffBaseSHA: oldBase, DiffBaseRef: "origin/main", Prompt: TaskPromptPrefix + taskID + ": " + prompt},
+		}
+		store.prs[id] = domain.PullRequest{
+			URL: prURL, SessionID: id, Number: prNumber, Provider: "github", Host: "github.com", Repo: RepositoryFullName,
+			SourceBranch: branch, TargetBranch: TargetBranch, HeadSHA: head, BaseSHA: oldBase,
+			Author: "orenvlad-ai", ProviderState: "OPEN", HTMLURL: prURL,
+		}
+		store.runs[id] = domain.ReviewRun{
+			ID: runID, ReviewID: "review-" + runID, BatchID: "batch-" + runID, SessionID: id,
+			Harness: domain.ReviewerCodex, PRURL: prURL, TargetSHA: head, Body: "No blocking findings.",
+			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, ResultChannel: structuredChannel,
+		}
+		store.tasks[id] = domain.DCPReviewLabPolicyTask{
+			TaskID: taskID, Target: ProjectID, Profile: "synthetic-pr", Repository: RepositoryFullName,
+			PolicyVersion: domain.DCPReviewLabPolicyVersion, SessionID: id, CardNumber: int64(card),
+			WorktreePath: workspace, SourceBranch: branch, Prompt: prompt, State: domain.DCPPolicyAdmissionWait,
+			Revision: 9, PRURL: prURL, PRNumber: int64(prNumber), CurrentHeadSHA: head, ReviewRunID: runID,
+			AdmissionID: "admission-" + runID,
+		}
+		store.rows = append(store.rows, domain.DCPReviewLabAdmission{
+			Sequence: int64(20 + offset), ID: "admission-" + runID, ReviewRunID: runID, ReviewID: "review-" + runID,
+			SessionID: id, PRURL: prURL, PRNumber: int64(prNumber), TargetSHA: head, ReviewBaseSHA: oldBase,
+			Status: domain.DCPAdmissionWaiting,
+		})
+	}
+	scm := &tripleQueueSCM{store: store, currentBase: oldBase, mergeSHAs: mergeSHAs, files: map[string]string{}}
+	engine := New(store, scm, dataDir)
+	engine.providerRepository = func(context.Context) (string, error) { return RepositoryFullName + "|false|main", nil }
+	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
+		cmd := strings.Join(args, " ")
+		switch cmd {
+		case "status --porcelain":
+			return "", nil
+		case "remote":
+			return "origin", nil
+		case "remote get-url origin":
+			return RepositoryURL, nil
+		case "fetch --no-tags origin main":
+			return "", nil
+		}
+		if path == projectPath {
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return projectPath, nil
+			case "branch --show-current":
+				return TargetBranch, nil
+			case "rev-parse origin/main", "rev-parse HEAD":
+				return scm.currentBase, nil
+			}
+		}
+		for id, session := range store.sessions {
+			if path != session.Metadata.WorkspacePath {
+				continue
+			}
+			head := store.prs[id].HeadSHA
+			switch cmd {
+			case "rev-parse --show-toplevel":
+				return path, nil
+			case "branch --show-current":
+				return session.Metadata.Branch, nil
+			case "rev-parse HEAD":
+				return head, nil
+			case "rev-parse --path-format=absolute --git-common-dir":
+				return filepath.Join(projectPath, ".git"), nil
+			case "rev-parse --path-format=absolute --absolute-git-dir":
+				return filepath.Join(projectPath, ".git", "worktrees", string(id)), nil
+			case "merge-base --is-ancestor " + oldBase + " " + head:
+				return "", nil
+			case "rev-list --count " + scm.currentBase + ".." + head:
+				return "1", nil
+			case "rev-list --merges " + scm.currentBase + ".." + head:
+				return "", nil
+			}
+		}
+		return "", fmt.Errorf("unexpected triple git command in %s: %s", path, cmd)
+	}
+
+	if err := engine.Try(context.Background(), "dcp-review-lab-28"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(store.mergeOrder, []int64{20, 21, 22}) || !slices.Equal(scm.mergePRs, []int{25, 26, 27}) || store.claims != 3 {
+		t.Fatalf("triple order=%v PRs=%v claims=%d", store.mergeOrder, scm.mergePRs, store.claims)
+	}
+	wantBases := []string{oldBase, mergeSHAs[25], mergeSHAs[26]}
+	if !slices.Equal(scm.fetchedBase, wantBases) {
+		t.Fatalf("fresh provider bases=%v, want %v", scm.fetchedBase, wantBases)
+	}
+	for offset, letter := range []rune{'a', 'b', 'c'} {
+		row := store.rows[offset]
+		if row.Status != domain.DCPAdmissionSucceeded || row.AdmittedBaseSHA != wantBases[offset] || row.MergeCommitSHA != mergeSHAs[25+offset] {
+			t.Fatalf("terminal row %d = %+v", offset, row)
+		}
+		path := fmt.Sprintf("qualification/manual-triple-20260815-%c.txt", letter)
+		if scm.files[path] != fmt.Sprintf("manual-triple-%c=ok", letter) {
+			t.Fatalf("preserved files=%v", scm.files)
+		}
+	}
+	if err := engine.Try(context.Background(), "dcp-review-lab-30"); err != nil {
+		t.Fatal(err)
+	}
+	if store.claims != 3 || len(scm.mergePRs) != 3 || len(scm.fetchedBase) != 3 {
+		t.Fatalf("terminal replay duplicated work: claims=%d PRs=%v fetches=%v", store.claims, scm.mergePRs, scm.fetchedBase)
+	}
 }
 
 func (f *fakeSCM) FetchPullRequests(context.Context, []ports.SCMPRRef) ([]ports.SCMObservation, error) {
@@ -425,6 +796,71 @@ func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T)
 	}
 	if scm.mergeCalls != 1 {
 		t.Fatalf("future terminal merge duplicated: %d", scm.mergeCalls)
+	}
+}
+
+func TestFuturePolicyAdmissionCommitSignalsExactIdentityBeforeClaimAndReplaysOnce(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	var signals []AdmissionCommitSignal
+	var nestedErr error
+	engine.SetAdmissionCommittedHandler(func(ctx context.Context, signal AdmissionCommitSignal) {
+		signals = append(signals, signal)
+		if store.admission == nil || store.admission.Status != domain.DCPAdmissionWaiting ||
+			store.policyTask.AdmissionID != signal.AdmissionID || store.claims != 0 || scm.mergeCalls != 0 {
+			t.Fatalf("post-commit signal ran before exact durable waiting identity: signal=%+v task=%+v admission=%+v claims=%d merges=%d", signal, store.policyTask, store.admission, store.claims, scm.mergeCalls)
+		}
+		// The callback is synchronous on purpose: Try must have released its
+		// process mutex before the existing terminal-merger entry is signalled.
+		nestedErr = engine.Try(ctx, signal.SessionID)
+	})
+
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if nestedErr != nil {
+		t.Fatal(nestedErr)
+	}
+	if len(signals) != 1 || signals[0].AdmissionID != "dcp-admission-"+store.run.ID ||
+		signals[0].ReviewRunID != store.run.ID || signals[0].SessionID != store.session.ID ||
+		signals[0].TargetSHA != testHead {
+		t.Fatalf("commit signals=%+v", signals)
+	}
+	if store.claims != 1 || scm.mergeCalls != 1 || store.policyTask.State != domain.DCPPolicyMerged ||
+		store.admission == nil || store.admission.Status != domain.DCPAdmissionSucceeded {
+		t.Fatalf("trusted drain did not merge once: claims=%d merges=%d task=%+v admission=%+v", store.claims, scm.mergeCalls, store.policyTask, store.admission)
+	}
+
+	// Lifecycle/SCM replay and startup reconciliation all reach the same
+	// admission/lease owner and cannot recreate the post-commit signal or merge.
+	for range 3 {
+		if err := engine.Try(context.Background(), store.session.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted := New(store, scm, engine.dataDir)
+	restarted.git = engine.git
+	restarted.providerRepository = engine.providerRepository
+	restarted.SetAdmissionCommittedHandler(func(_ context.Context, signal AdmissionCommitSignal) {
+		signals = append(signals, signal)
+	})
+	if err := restarted.ReconcileStartup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 || store.claims != 1 || scm.mergeCalls != 1 {
+		t.Fatalf("replay duplicated identity: signals=%d claims=%d merges=%d", len(signals), store.claims, scm.mergeCalls)
+	}
+}
+
+func TestFuturePolicyAdmissionCommitSignalFailsClosedForStaleIdentity(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	scm.observation.PR.HeadSHA = strings.Repeat("f", 40)
+	signals := 0
+	engine.SetAdmissionCommittedHandler(func(context.Context, AdmissionCommitSignal) { signals++ })
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if signals != 0 || store.admission != nil || store.policyTask.State != domain.DCPPolicyIncident {
+		t.Fatalf("stale identity reached signal/admission: signals=%d admission=%+v task=%+v", signals, store.admission, store.policyTask)
 	}
 }
 

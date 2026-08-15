@@ -743,6 +743,7 @@
 	"status.ci_failed": "CI falhou",
 	"status.draft": "PR em rascunho",
 	"status.exited": "Encerrado",
+	"status.human_gate": "Precisa da sua decisão",
 	"status.idle": "Inativo",
 	"status.mergeable": "Pronto",
 	"status.merged": "Mesclado",

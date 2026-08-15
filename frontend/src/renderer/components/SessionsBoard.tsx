@@ -958,7 +958,7 @@ function SessionCard({
 				</div>
 				{arbiterDetail ? (
 					<div
-						className="line-clamp-3 text-2xs leading-normal text-status-exited"
+						className={cn("line-clamp-3 text-2xs leading-normal", visual.statusClassName)}
 						data-testid="board-session-arbiter-detail"
 						role="status"
 						title={arbiterDetail}

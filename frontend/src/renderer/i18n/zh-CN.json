@@ -718,6 +718,7 @@
 	"status.ci_failed": "CI 失败",
 	"status.draft": "草稿 PR",
 	"status.exited": "已退出",
+	"status.human_gate": "需要你做出决定",
 	"status.idle": "空闲",
 	"status.mergeable": "可合并",
 	"status.merged": "已合并",

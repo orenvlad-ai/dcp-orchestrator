@@ -171,6 +171,44 @@ describe("session presentation", () => {
 		},
 	);
 
+	it("projects an exact terminal Human Gate above stale Review failed state", () => {
+		const session = sessionWith({
+			status: "review_failed",
+			dcpPolicyState: "incident",
+			dcpPolicyActionActive: true,
+			dcpArbiterStatus: "human_gate",
+			dcpArbiterGeneration: 1,
+			dcpArbiterIncidentKind: "merge_conflict_or_ambiguity",
+			dcpArbiterCohort: ["arb-c-left", "arb-c-right"],
+			dcpArbiterActionStatus: "failed",
+			dcpHumanGateQuestion: "Should the shared value remain left or be replaced with right?",
+		});
+		expect(getSessionVisualStatus(session)).toMatchObject({
+			policyPhase: "needs_you",
+			zone: "action",
+			displayStatus: "review_failed",
+			statusLabelKey: "status.human_gate",
+			statusClassName: "text-status-needs-you",
+			tone: "attention",
+			dotClassName: "bg-status-needs-you",
+			indicatorClassName: "bg-status-needs-you",
+			active: false,
+		});
+		expect(getSessionStatusViewForSession(session)).toMatchObject({
+			label: "Needs your decision",
+			className: "text-status-needs-you",
+		});
+
+		const failure = { ...session, dcpArbiterStatus: "failed" as const };
+		expect(getSessionVisualStatus(failure)).toMatchObject({
+			tone: "failed",
+			dotClassName: "bg-status-exited",
+			indicatorClassName: "bg-status-exited",
+			active: false,
+		});
+		expect(getSessionStatusViewForSession(failure).label).toBe("Review failed");
+	});
+
 	it("keeps the normal policy sequence forward when stock status frames are stale", () => {
 		const frames = [
 			sessionWith({ status: "idle", dcpPolicyState: "reserved" }),
