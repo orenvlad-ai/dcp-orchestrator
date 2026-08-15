@@ -310,6 +310,28 @@ type DcpFutureCardArbiterV1 struct {
 	FinishedAt          sql.NullTime
 }
 
+type DcpFutureCardRepairCISnapshotRecoveryV1 struct {
+	RecoveryID         string
+	IncidentID         string
+	TaskID             string
+	RepairActionID     string
+	ReviewActionID     string
+	PriorTaskState     string
+	PriorTaskRevision  int64
+	PriorTaskErrorCode string
+	PriorTaskUpdatedAt time.Time
+	RepairLaunchID     string
+	RepairFinishedAt   time.Time
+	PriorHeadSha       string
+	RecoveryHeadSha    string
+	CurrentMainSha     string
+	HistoricalCheckURL string
+	RecoveryCheckURL   string
+	Authority          string
+	Status             string
+	CreatedAt          time.Time
+}
+
 type DcpFutureCardRepairTargetValidationRecoveryV1 struct {
 	RecoveryID            string
 	IncidentID            string

@@ -598,14 +598,22 @@ func (s *Service) exactPolicyNamedCI(ctx context.Context, pr domain.PullRequest,
 	if err != nil {
 		return false, false, err
 	}
+	return validateExactPolicyNamedCI(pr, checks, head)
+}
+
+func validateExactPolicyNamedCI(pr domain.PullRequest, checks []domain.PullRequestCheck, head string) (ready, terminal bool, err error) {
 	if len(checks) == 0 || pr.CI == domain.CIUnknown || pr.CI == domain.CIPending {
 		return false, false, nil
 	}
-	required := 0
+	required, exactHeadChecks := 0, 0
 	for _, check := range checks {
 		if !strings.EqualFold(check.CommitHash, head) {
-			return false, true, errors.New("named CI exact head drifted")
+			// Stock SCM history is durable across a PR head update. A check for
+			// an earlier exact head is immutable evidence, not contradictory
+			// evidence about the current head.
+			continue
 		}
+		exactHeadChecks++
 		if check.Status != domain.PRCheckPassed || !strings.EqualFold(check.Conclusion, "success") {
 			return false, true, errors.New("named CI is not successful")
 		}
@@ -615,6 +623,11 @@ func (s *Service) exactPolicyNamedCI(ctx context.Context, pr domain.PullRequest,
 				return false, true, errors.New("named CI provider identity drifted")
 			}
 		}
+	}
+	if exactHeadChecks == 0 {
+		// The enriched PR row can arrive before its current-head check row.
+		// Preserve the existing model-free wait until that stock fact lands.
+		return false, false, nil
 	}
 	if pr.CI != domain.CIPassing || required != 1 {
 		return false, true, errors.New("exactly one successful named CI check is required")

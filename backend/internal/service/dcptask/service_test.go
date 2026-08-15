@@ -122,6 +122,31 @@ func TestValidateExactPolicyPRWaitsForEnrichmentAndRejectsContradiction(t *testi
 	}
 }
 
+func TestValidateExactPolicyNamedCIIgnoresHistoricalHeadChecks(t *testing.T) {
+	head := "931a69637be0b14d9ca145909d0f6060ad81c2fc"
+	oldHead := "8b3f601ae7b82b68bfd3f3810069c7a91774ca72"
+	pr := domain.PullRequest{CI: domain.CIPassing}
+	checks := []domain.PullRequestCheck{
+		{Name: "dcp-review-lab", CommitHash: oldHead, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/31847795164/job/94917645974"},
+		{Name: "dcp-review-lab", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/31854288545/job/94935989369"},
+	}
+	ready, terminal, err := validateExactPolicyNamedCI(pr, checks, head)
+	if err != nil || !ready || terminal {
+		t.Fatalf("historical/current check snapshot = ready %v terminal %v err %v", ready, terminal, err)
+	}
+
+	ready, terminal, err = validateExactPolicyNamedCI(pr, checks[:1], head)
+	if err != nil || ready || terminal {
+		t.Fatalf("historical-only snapshot = ready %v terminal %v err %v, want model-free wait", ready, terminal, err)
+	}
+
+	checks[1].Status, checks[1].Conclusion = domain.PRCheckFailed, "failure"
+	ready, terminal, err = validateExactPolicyNamedCI(pr, checks, head)
+	if err == nil || ready || !terminal {
+		t.Fatalf("failed current-head check = ready %v terminal %v err %v", ready, terminal, err)
+	}
+}
+
 func TestExactPolicyNativeIdentityAcceptsOnlyTerminalArchivedShell(t *testing.T) {
 	task := domain.DCPReviewLabPolicyTask{
 		TaskID: "archived-1", Target: PolicyTarget, Profile: PolicyProfile,

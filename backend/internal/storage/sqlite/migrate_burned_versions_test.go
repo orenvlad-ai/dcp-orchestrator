@@ -88,6 +88,7 @@ var shippedMigrations = map[int64]string{
 	70: "0070_dcp_future_arbiter_schema_recovery.sql",
 	71: "0071_dcp_future_arbiter_result_validation_recovery.sql",
 	72: "0072_dcp_future_repair_target_validation_recovery.sql",
+	73: "0073_dcp_future_repair_ci_snapshot_recovery.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
