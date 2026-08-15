@@ -169,6 +169,26 @@ func (q *Queries) FailDCPFutureArbiterIncident(ctx context.Context, arg FailDCPF
 	return result.RowsAffected()
 }
 
+const failDCPFutureArbiterResultValidationRecovery = `-- name: FailDCPFutureArbiterResultValidationRecovery :execrows
+UPDATE dcp_future_card_arbiter_result_validation_recovery_v1
+SET status='failed', error_code=?, finished_at=?
+WHERE incident_id=? AND status='pending'
+`
+
+type FailDCPFutureArbiterResultValidationRecoveryParams struct {
+	ErrorCode  string
+	FinishedAt sql.NullTime
+	IncidentID string
+}
+
+func (q *Queries) FailDCPFutureArbiterResultValidationRecovery(ctx context.Context, arg FailDCPFutureArbiterResultValidationRecoveryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failDCPFutureArbiterResultValidationRecovery, arg.ErrorCode, arg.FinishedAt, arg.IncidentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getDCPFutureArbiterIncidentByAdmission = `-- name: GetDCPFutureArbiterIncidentByAdmission :one
 SELECT incident_id, generation, identity_digest, task_id, session_id, admission_id, admission_sequence, incident_lease_id, incident_kind, source_packet_json, source_packet_digest, pr_url, pr_number, candidate_head_sha, reviewed_base_sha, current_main_sha, review_run_id, affected_paths_json, cohort_json, cohort_digest, evidence_json, evidence_digest, input_json, input_digest, model_action_id, runtime_handle_id, model, reasoning, token_budget, status, model_call_count, decision_json, decision_digest, verdict, order_json, repair_task_id, repair_objective, repair_paths_json, human_question, repair_action_id, recovery_review_run_id, recovery_head_sha, merge_commit_sha, error_code, created_at, updated_at, decision_at, finished_at FROM dcp_future_card_arbiter_v1 WHERE admission_id = ? ORDER BY generation DESC LIMIT 1
 `
@@ -344,6 +364,44 @@ func (q *Queries) GetDCPFutureArbiterIncidentByTask(ctx context.Context, taskID 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DecisionAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getDCPFutureArbiterResultValidationRecovery = `-- name: GetDCPFutureArbiterResultValidationRecovery :one
+SELECT recovery_id, incident_id, identity_digest, input_digest, model_action_id, prior_status, prior_error_code, prior_finished_at, prior_model_call_count, prior_decision_digest, runtime_handle_id, physical_runtime_handle, input_artifact_digest, input_artifact_size, schema_artifact_digest, schema_artifact_size, result_artifact_digest, result_artifact_size, codex_session_id, inference_tokens, contract_commit, status, error_code, created_at, finished_at FROM dcp_future_card_arbiter_result_validation_recovery_v1
+WHERE incident_id = ?
+`
+
+func (q *Queries) GetDCPFutureArbiterResultValidationRecovery(ctx context.Context, incidentID string) (DcpFutureCardArbiterResultValidationRecoveryV1, error) {
+	row := q.db.QueryRowContext(ctx, getDCPFutureArbiterResultValidationRecovery, incidentID)
+	var i DcpFutureCardArbiterResultValidationRecoveryV1
+	err := row.Scan(
+		&i.RecoveryID,
+		&i.IncidentID,
+		&i.IdentityDigest,
+		&i.InputDigest,
+		&i.ModelActionID,
+		&i.PriorStatus,
+		&i.PriorErrorCode,
+		&i.PriorFinishedAt,
+		&i.PriorModelCallCount,
+		&i.PriorDecisionDigest,
+		&i.RuntimeHandleID,
+		&i.PhysicalRuntimeHandle,
+		&i.InputArtifactDigest,
+		&i.InputArtifactSize,
+		&i.SchemaArtifactDigest,
+		&i.SchemaArtifactSize,
+		&i.ResultArtifactDigest,
+		&i.ResultArtifactSize,
+		&i.CodexSessionID,
+		&i.InferenceTokens,
+		&i.ContractCommit,
+		&i.Status,
+		&i.ErrorCode,
+		&i.CreatedAt,
 		&i.FinishedAt,
 	)
 	return i, err
@@ -562,6 +620,25 @@ func (q *Queries) MarkDCPFutureArbiterRecoveryReviewed(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
+const markDCPFutureArbiterResultValidationRecoveryApplied = `-- name: MarkDCPFutureArbiterResultValidationRecoveryApplied :execrows
+UPDATE dcp_future_card_arbiter_result_validation_recovery_v1
+SET status='applied', error_code='', finished_at=?
+WHERE incident_id=? AND status='pending'
+`
+
+type MarkDCPFutureArbiterResultValidationRecoveryAppliedParams struct {
+	FinishedAt sql.NullTime
+	IncidentID string
+}
+
+func (q *Queries) MarkDCPFutureArbiterResultValidationRecoveryApplied(ctx context.Context, arg MarkDCPFutureArbiterResultValidationRecoveryAppliedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markDCPFutureArbiterResultValidationRecoveryApplied, arg.FinishedAt, arg.IncidentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markDCPFutureArbiterSucceeded = `-- name: MarkDCPFutureArbiterSucceeded :execrows
 UPDATE dcp_future_card_arbiter_v1
 SET status='succeeded', merge_commit_sha=?, updated_at=?, finished_at=?
@@ -632,6 +709,75 @@ func (q *Queries) RebindDCPFutureArbiterAdmission(ctx context.Context, arg Rebin
 		arg.TargetSha_2,
 		arg.LeaseID,
 		arg.ErrorCode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverDCPFutureArbiterExactDecision = `-- name: RecoverDCPFutureArbiterExactDecision :execrows
+UPDATE dcp_future_card_arbiter_v1
+SET status='repair_queued', decision_json=?1,
+    decision_digest=?2, verdict='successor_repair',
+    order_json=?3, repair_task_id=?4,
+    repair_objective=?5,
+    repair_paths_json=?6, human_question='',
+    repair_action_id=?7, error_code='',
+    updated_at=?8, decision_at=?8,
+    finished_at=NULL
+WHERE dcp_future_card_arbiter_v1.incident_id=?9
+  AND dcp_future_card_arbiter_v1.identity_digest=?10
+  AND dcp_future_card_arbiter_v1.input_digest=?11
+  AND dcp_future_card_arbiter_v1.model_action_id=?12
+  AND dcp_future_card_arbiter_v1.status='failed' AND dcp_future_card_arbiter_v1.error_code='launch_failed'
+  AND dcp_future_card_arbiter_v1.model_call_count=1
+  AND dcp_future_card_arbiter_v1.decision_json='' AND dcp_future_card_arbiter_v1.decision_digest=''
+  AND EXISTS (
+    SELECT 1
+    FROM dcp_future_card_arbiter_result_validation_recovery_v1 recovery
+    WHERE recovery.incident_id=dcp_future_card_arbiter_v1.incident_id
+      AND recovery.identity_digest=dcp_future_card_arbiter_v1.identity_digest
+      AND recovery.input_digest=dcp_future_card_arbiter_v1.input_digest
+      AND recovery.model_action_id=dcp_future_card_arbiter_v1.model_action_id
+      AND recovery.prior_status=dcp_future_card_arbiter_v1.status
+      AND recovery.prior_error_code=dcp_future_card_arbiter_v1.error_code
+      AND recovery.prior_finished_at=dcp_future_card_arbiter_v1.finished_at
+      AND recovery.prior_model_call_count=dcp_future_card_arbiter_v1.model_call_count
+      AND recovery.prior_decision_digest=dcp_future_card_arbiter_v1.decision_digest
+      AND recovery.status='pending'
+  )
+`
+
+type RecoverDCPFutureArbiterExactDecisionParams struct {
+	DecisionJson    string
+	DecisionDigest  string
+	OrderJson       string
+	RepairTaskID    string
+	RepairObjective string
+	RepairPathsJson string
+	RepairActionID  string
+	DecisionAt      time.Time
+	IncidentID      string
+	IdentityDigest  string
+	InputDigest     string
+	ModelActionID   string
+}
+
+func (q *Queries) RecoverDCPFutureArbiterExactDecision(ctx context.Context, arg RecoverDCPFutureArbiterExactDecisionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverDCPFutureArbiterExactDecision,
+		arg.DecisionJson,
+		arg.DecisionDigest,
+		arg.OrderJson,
+		arg.RepairTaskID,
+		arg.RepairObjective,
+		arg.RepairPathsJson,
+		arg.RepairActionID,
+		arg.DecisionAt,
+		arg.IncidentID,
+		arg.IdentityDigest,
+		arg.InputDigest,
+		arg.ModelActionID,
 	)
 	if err != nil {
 		return 0, err

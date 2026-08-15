@@ -905,6 +905,16 @@ func tmuxSessionName(id domain.SessionID) (string, error) {
 	return SessionName(raw), nil
 }
 
+// ResolveSessionHandle maps one durable logical session identity to the exact
+// opaque handle Create returns. It performs no runtime mutation.
+func (r *Runtime) ResolveSessionHandle(sessionID domain.SessionID) (ports.RuntimeHandle, error) {
+	id, err := tmuxSessionName(sessionID)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
+	return ports.RuntimeHandle{ID: id}, nil
+}
+
 // SessionName returns the tmux session name the runtime registers for a given
 // session id, applying the same sanitisation Create does. Callers that print an
 // attach hint must use this rather than the raw id.

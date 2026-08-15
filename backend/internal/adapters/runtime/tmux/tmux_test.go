@@ -250,6 +250,18 @@ func TestSessionNameMatchesCreateNaming(t *testing.T) {
 	}
 }
 
+func TestResolveSessionHandleMatchesCreateNaming(t *testing.T) {
+	r, _ := newTestRuntime(0)
+	logical := domain.SessionID(strings.Repeat("dcp-future-arbiter-", 4))
+	handle, err := r.ResolveSessionHandle(logical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handle.ID != SessionName(string(logical)) || handle.ID == string(logical) {
+		t.Fatalf("resolved handle = %q for logical %q", handle.ID, logical)
+	}
+}
+
 // -- env key validation --
 
 func TestCreateRejectsInvalidEnvKeys(t *testing.T) {

@@ -18,9 +18,20 @@ import (
 type FutureArbiterLauncher interface {
 	PreflightFuture(context.Context, domain.DCPFutureArbiterIncident) error
 	PreflightSchemaRecovery(context.Context, domain.DCPFutureArbiterIncident, domain.DCPFutureArbiterSchemaRecovery) error
+	PreflightResultRecovery(context.Context, domain.DCPFutureArbiterIncident, domain.DCPFutureArbiterResultRecovery) error
 	LaunchFuture(context.Context, domain.DCPFutureArbiterIncident) error
 	FutureProcessAlive(context.Context, domain.DCPFutureArbiterIncident) (bool, error)
 	FutureResultPath(domain.DCPFutureArbiterIncident) (string, error)
+}
+
+func (l *futureArbiterLauncher) physicalHandle(logical string) (ports.RuntimeHandle, error) {
+	if resolver, ok := l.runtime.(ports.RuntimeSessionHandleResolver); ok {
+		return resolver.ResolveSessionHandle(domain.SessionID(logical))
+	}
+	if strings.TrimSpace(logical) == "" {
+		return ports.RuntimeHandle{}, errors.New("DCP future arbiter runtime handle is empty")
+	}
+	return ports.RuntimeHandle{ID: logical}, nil
 }
 
 type futureArbiterLauncher struct {
@@ -134,6 +145,58 @@ func (l *futureArbiterLauncher) PreflightSchemaRecovery(_ context.Context, prede
 	return nil
 }
 
+// PreflightResultRecovery proves that the one generation-2 process is gone
+// and that all three frozen artifacts still have their byte-exact identities.
+// It never starts a runtime or invokes Codex.
+func (l *futureArbiterLauncher) PreflightResultRecovery(ctx context.Context, incident domain.DCPFutureArbiterIncident, recovery domain.DCPFutureArbiterResultRecovery) error {
+	if incident.FinishedAt == nil || recovery.Status != "pending" ||
+		recovery.IncidentID != incident.IncidentID || recovery.IdentityDigest != incident.IdentityDigest ||
+		recovery.InputDigest != incident.InputDigest || recovery.ModelActionID != incident.ModelActionID ||
+		recovery.PriorStatus != string(domain.DCPFutureArbiterFailed) || recovery.PriorErrorCode != "launch_failed" ||
+		!recovery.PriorFinishedAt.Equal(*incident.FinishedAt) || recovery.PriorModelCallCount != 1 ||
+		recovery.PriorDecisionDigest != "" || incident.Status != domain.DCPFutureArbiterFailed ||
+		incident.ErrorCode != "launch_failed" || incident.ModelCallCount != 1 || incident.DecisionJSON != "" ||
+		incident.DecisionDigest != "" || recovery.RuntimeHandleID != incident.RuntimeHandleID {
+		return errors.New("DCP future arbiter result recovery identity is invalid")
+	}
+	handle, err := l.physicalHandle(incident.RuntimeHandleID)
+	if err != nil || handle.ID != recovery.PhysicalRuntimeHandle {
+		return errors.Join(err, errors.New("DCP future arbiter result recovery physical handle drifted"))
+	}
+	alive, err := l.FutureProcessAlive(ctx, incident)
+	if err != nil {
+		return err
+	}
+	if alive {
+		return errors.New("DCP future arbiter result recovery process is still active")
+	}
+	artifacts, err := l.artifacts(incident)
+	if err != nil {
+		return err
+	}
+	type expectedArtifact struct {
+		path   string
+		digest string
+		size   int64
+	}
+	for _, artifact := range []expectedArtifact{
+		{artifacts.input, recovery.InputArtifactDigest, recovery.InputArtifactSize},
+		{artifacts.schema, recovery.SchemaArtifactDigest, recovery.SchemaArtifactSize},
+		{artifacts.result, recovery.ResultArtifactDigest, recovery.ResultArtifactSize},
+	} {
+		info, statErr := os.Lstat(artifact.path)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+			info.Mode().Perm()&0o022 != 0 || info.Size() != artifact.size {
+			return errors.Join(statErr, errors.New("DCP future arbiter result recovery artifact identity drifted"))
+		}
+		data, readErr := os.ReadFile(artifact.path)
+		if readErr != nil || digestBytes(data) != artifact.digest {
+			return errors.Join(readErr, errors.New("DCP future arbiter result recovery artifact digest drifted"))
+		}
+	}
+	return nil
+}
+
 func (l *futureArbiterLauncher) LaunchFuture(ctx context.Context, incident domain.DCPFutureArbiterIncident) error {
 	artifacts, err := l.artifacts(incident)
 	if err != nil {
@@ -162,7 +225,10 @@ func (l *futureArbiterLauncher) LaunchFuture(ctx context.Context, incident domai
 	argv := make([]string, len(fixed)+len(child))
 	copy(argv, fixed)
 	copy(argv[len(fixed):], child)
-	handle := ports.RuntimeHandle{ID: incident.RuntimeHandleID}
+	handle, err := l.physicalHandle(incident.RuntimeHandleID)
+	if err != nil {
+		return err
+	}
 	if err := l.runtime.Destroy(ctx, handle); err != nil {
 		return fmt.Errorf("DCP future arbiter stale runtime: %w", err)
 	}
@@ -171,7 +237,7 @@ func (l *futureArbiterLauncher) LaunchFuture(ctx context.Context, incident domai
 	if err != nil {
 		return fmt.Errorf("DCP future arbiter runtime create: %w", err)
 	}
-	if created.ID != incident.RuntimeHandleID {
+	if created.ID != handle.ID {
 		return errors.New("DCP future arbiter runtime returned foreign handle")
 	}
 	return nil
@@ -182,7 +248,11 @@ func (l *futureArbiterLauncher) FutureProcessAlive(ctx context.Context, incident
 	if !ok {
 		return false, errors.New("DCP future arbiter process inspection is unavailable")
 	}
-	return inspector.IsSupervisedProcessAlive(ctx, ports.RuntimeHandle{ID: incident.RuntimeHandleID}, ports.SupervisedProcessRef{SessionID: domain.SessionID(incident.RuntimeHandleID), LaunchID: incident.IncidentID})
+	handle, err := l.physicalHandle(incident.RuntimeHandleID)
+	if err != nil {
+		return false, err
+	}
+	return inspector.IsSupervisedProcessAlive(ctx, handle, ports.SupervisedProcessRef{SessionID: domain.SessionID(incident.RuntimeHandleID), LaunchID: incident.IncidentID})
 }
 
 func (l *futureArbiterLauncher) FutureResultPath(incident domain.DCPFutureArbiterIncident) (string, error) {
