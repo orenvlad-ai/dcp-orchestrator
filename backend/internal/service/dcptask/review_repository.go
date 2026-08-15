@@ -25,6 +25,14 @@ type ReviewRepositoryValidator struct {
 }
 
 func (v ReviewRepositoryValidator) Validate(ctx context.Context, project domain.ProjectRecord) (domain.DCPRepositoryIdentity, error) {
+	return v.validate(ctx, project, false)
+}
+
+func (v ReviewRepositoryValidator) ValidateContinuation(ctx context.Context, project domain.ProjectRecord) (domain.DCPRepositoryIdentity, error) {
+	return v.validate(ctx, project, true)
+}
+
+func (v ReviewRepositoryValidator) validate(ctx context.Context, project domain.ProjectRecord, allowBehind bool) (domain.DCPRepositoryIdentity, error) {
 	target, err := physicalPolicyPath(v.TargetPath)
 	if err != nil {
 		return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab target path is invalid")
@@ -59,8 +67,16 @@ func (v ReviewRepositoryValidator) Validate(ctx context.Context, project domain.
 		return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab HEAD is invalid")
 	}
 	originMain, err := run(ctx, target, "rev-parse", "refs/remotes/origin/main")
-	if err != nil || originMain != head {
+	if err != nil || !validPolicySHA(originMain) {
+		return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab origin/main is invalid")
+	}
+	if originMain != head && !allowBehind {
 		return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab main is not the exact refreshed origin/main")
+	}
+	if originMain != head {
+		if _, err := run(ctx, target, "merge-base", "--is-ancestor", head, originMain); err != nil {
+			return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab main is not an ancestor of refreshed origin/main")
+		}
 	}
 	worktrees, err := run(ctx, target, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -91,11 +107,11 @@ func (v ReviewRepositoryValidator) Validate(ctx context.Context, project domain.
 	if err != nil || providerIdentity != PolicyRepositoryName+"|false|main" {
 		return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab provider visibility is not exact and public")
 	}
-	digestInput := strings.Join([]string{PolicyTarget, PolicyRepositoryName, target, strings.ToLower(head)}, "\x00")
+	digestInput := strings.Join([]string{PolicyTarget, PolicyRepositoryName, target, strings.ToLower(originMain)}, "\x00")
 	sum := sha256.Sum256([]byte(digestInput))
 	return domain.DCPRepositoryIdentity{
 		SchemaVersion: RepositorySchema, ProjectID: PolicyTarget, Repository: PolicyRepositoryName,
-		Path: target, HeadSHA: strings.ToLower(head), IdentityDigest: hex.EncodeToString(sum[:]),
+		Path: target, HeadSHA: strings.ToLower(originMain), IdentityDigest: hex.EncodeToString(sum[:]),
 	}, nil
 }
 

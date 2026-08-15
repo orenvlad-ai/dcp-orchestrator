@@ -123,3 +123,49 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorkt
 		t.Fatal("validator accepted private provider repository")
 	}
 }
+
+func TestReviewRepositoryValidatorAllowsOnlyAncestralContinuationBehindMain(t *testing.T) {
+	repo := createDCPTestRepository(t)
+	runGitTest(t, repo, "remote", "add", "origin", reviewLabOrigin)
+	base := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "checkout", "-b", "provider-main")
+	if err := os.WriteFile(filepath.Join(repo, "provider.txt"), []byte("advanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repo, "add", "provider.txt")
+	runGitTest(t, repo, "-c", "user.email=dcp-test@example.invalid", "-c", "user.name=DCP Test", "commit", "-m", "provider advance")
+	advanced := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", advanced)
+	runGitTest(t, repo, "checkout", "main")
+	if got := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD")); got != base {
+		t.Fatalf("local main = %s, want preserved base %s", got, base)
+	}
+	validator := ReviewRepositoryValidator{
+		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
+		RunProvider: func(context.Context, string) (string, error) { return PolicyRepositoryName + "|false|main", nil },
+	}
+	project := domain.ProjectRecord{ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo, RepoOriginURL: reviewLabOrigin}
+	if _, err := validator.Validate(context.Background(), project); err == nil {
+		t.Fatal("new-submit validator accepted a local main behind origin/main")
+	}
+	identity, err := validator.ValidateContinuation(context.Background(), project)
+	if err != nil {
+		t.Fatalf("continuation validator rejected ancestral local main: %v", err)
+	}
+	if identity.HeadSHA != advanced {
+		t.Fatalf("continuation identity head = %s, want origin/main %s", identity.HeadSHA, advanced)
+	}
+	runGitTest(t, repo, "checkout", "provider-main")
+	runGitTest(t, repo, "checkout", "--orphan", "foreign-main")
+	if err := os.WriteFile(filepath.Join(repo, "foreign.txt"), []byte("foreign\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repo, "add", "foreign.txt")
+	runGitTest(t, repo, "-c", "user.email=dcp-test@example.invalid", "-c", "user.name=DCP Test", "commit", "-m", "foreign main")
+	foreign := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/heads/main", foreign)
+	runGitTest(t, repo, "checkout", "main")
+	if _, err := validator.ValidateContinuation(context.Background(), project); err == nil {
+		t.Fatal("continuation validator accepted a divergent local main")
+	}
+}

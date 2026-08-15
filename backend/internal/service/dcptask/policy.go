@@ -34,7 +34,11 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 		}
 		switch action.Kind {
 		case domain.DCPActionInitialWorker, domain.DCPActionRepairWorker:
-			if err := s.validatePolicyTarget(ctx); err != nil {
+			validate := s.validatePolicyTarget
+			if action.Kind == domain.DCPActionRepairWorker {
+				validate = s.validatePolicyContinuationTarget
+			}
+			if err := validate(ctx); err != nil {
 				if failErr := s.failClaimedAction(ctx, task, action, "worker_target_invalid"); failErr != nil {
 					return errors.Join(err, failErr)
 				}
@@ -234,7 +238,7 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 	if err != nil || !policy {
 		return policy, false, err
 	}
-	if err := s.validatePolicyTarget(ctx); err != nil {
+	if err := s.validatePolicyContinuationTarget(ctx); err != nil {
 		if task.State == domain.DCPPolicyReviewRunning {
 			if action, active, actionErr := s.policyStore.GetActiveDCPModelActionBySession(ctx, id); actionErr == nil && active && action.Kind == domain.DCPActionReviewer && action.Status == domain.DCPActionClaimed {
 				_ = s.failClaimedAction(ctx, task, action, "provider_identity_drift")
