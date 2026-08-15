@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -282,6 +283,138 @@ INSERT INTO dcp_future_card_arbiter_schema_recovery_v1 (
 	}
 	if counts[domain.DCPActionArbiter] != 2 || counts[domain.DCPActionRepairWorker] != 1 || counts[domain.DCPActionReviewer] != 1 {
 		t.Fatalf("deduped action counts = %v", counts)
+	}
+}
+
+func TestDCPAdmissionClaimSkipsOnlyExactLatestHumanGate(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedProject(t, s, "dcp-review-lab")
+	for i := 1; i <= 12; i++ {
+		rec := sampleRecord("dcp-review-lab")
+		rec.Harness = domain.HarnessCodex
+		if _, err := s.CreateSession(ctx, rec); err != nil {
+			t.Fatalf("seed historical session %d: %v", i, err)
+		}
+	}
+
+	now := time.Unix(307, 0).UTC()
+	seed := domain.SessionRecord{
+		ProjectID: "dcp-review-lab", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		DisplayName: "DCP:claim-human-gate", Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	reserved, err := s.ReserveDCPReviewLabPolicyTask(ctx, policyTaskFixture("claim-human-gate", now), seed, filepath.Join(t.TempDir(), "worktrees"))
+	if err != nil || !reserved.Created {
+		t.Fatalf("reserve policy task = %+v, %v", reserved, err)
+	}
+	queued := reserved.Task
+	queued.State = domain.DCPPolicyWorkerQueued
+	if ok, err := s.UpdateDCPReviewLabPolicyTaskCAS(ctx, reserved.Task, queued); err != nil || !ok {
+		t.Fatalf("queue policy worker = %v, %v", ok, err)
+	}
+	worker, ok, err := s.ClaimNextDCPModelAction(ctx, now.Add(time.Second))
+	if err != nil || !ok || worker.Kind != domain.DCPActionInitialWorker {
+		t.Fatalf("claim policy worker = %+v, %v, %v", worker, ok, err)
+	}
+	if ok, err := s.StartDCPModelAction(ctx, worker, "claim-human-gate-worker", "", now.Add(2*time.Second)); err != nil || !ok {
+		t.Fatalf("start policy worker = %v, %v", ok, err)
+	}
+	task, _, _ := s.GetDCPReviewLabPolicyTaskByTaskID(ctx, reserved.Task.TaskID)
+	task.State = domain.DCPPolicyCIWaiting
+	if ok, err := s.FinishDCPModelAction(ctx, worker, task, domain.DCPActionSucceeded, "", now.Add(3*time.Second)); err != nil || !ok {
+		t.Fatalf("finish policy worker = %v, %v", ok, err)
+	}
+
+	head := strings.Repeat("a", 40)
+	request := seedPolicyAdmissionFacts(t, s, task, "claim-human-gate-run", head, 82)
+	task, _, _ = s.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+	ready := task
+	ready.State, ready.CurrentHeadSHA, ready.ReviewRunID = domain.DCPPolicyAdmissionWait, head, request.ReviewRunID
+	ready.PRURL, ready.PRNumber = request.PRURL, request.PRNumber
+	if ok, err := s.UpdateDCPReviewLabPolicyTaskCAS(ctx, task, ready); err != nil || !ok {
+		t.Fatalf("prepare policy admission = %v, %v", ok, err)
+	}
+	ready, _, _ = s.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+	admission, created, err := s.EnqueueDCPReviewLabPolicyAdmission(ctx, request, ready)
+	if err != nil || !created {
+		t.Fatalf("enqueue policy admission = %+v, %v, %v", admission, created, err)
+	}
+	ready, _, _ = s.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+	packet := fmt.Sprintf(`{"schemaVersion":"dcp.review-lab.arbiter-needed/v1","reason":"merge_conflict_or_ambiguity","admissionId":%q}`, admission.ID)
+	lease := "dcp-incident-" + admission.ID
+	if ok, err := s.RecordDCPReviewLabPolicyIncident(ctx, admission, ready, lease, request.ReviewBaseSHA, "merge_conflict_or_ambiguity", packet, now.Add(5*time.Second)); err != nil || !ok {
+		t.Fatalf("record policy incident = %v, %v", ok, err)
+	}
+
+	digest := func(r byte) string { return strings.Repeat(string(r), 64) }
+	incidentID := "dcp-future-arbiter-" + digest('1')
+	incident := domain.DCPFutureArbiterIncident{
+		IncidentID: incidentID, Generation: 1, IdentityDigest: digest('1'), TaskID: task.TaskID,
+		SessionID: task.SessionID, AdmissionID: admission.ID, AdmissionSequence: admission.Sequence, IncidentLeaseID: lease,
+		IncidentKind: "merge_conflict_or_ambiguity", SourcePacketJSON: packet, SourcePacketDigest: digest('2'),
+		PRURL: admission.PRURL, PRNumber: admission.PRNumber, CandidateHeadSHA: head, ReviewedBaseSHA: admission.ReviewBaseSHA,
+		CurrentMainSHA: strings.Repeat("b", 40), ReviewRunID: admission.ReviewRunID,
+		AffectedPathsJSON: `["shared.txt"]`, CohortJSON: `[{"taskId":"claim-human-gate"}]`, CohortDigest: digest('3'),
+		EvidenceJSON: `{}`, EvidenceDigest: digest('4'), InputJSON: `{"schemaVersion":"dcp.review-lab.future-arbiter-input/v1"}`,
+		InputDigest: digest('5'), ModelActionID: "dcp-model-claim-human-gate-arbiter-1", RuntimeHandleID: incidentID,
+		Status: domain.DCPFutureArbiterRequested, CreatedAt: now.Add(6 * time.Second), UpdatedAt: now.Add(6 * time.Second),
+	}
+	action := domain.DCPModelAction{
+		ID: incident.ModelActionID, TaskID: task.TaskID, SessionID: task.SessionID, Kind: domain.DCPActionArbiter,
+		ExactHeadSHA: head, IncidentID: incidentID, Status: domain.DCPActionQueued,
+		CreatedAt: incident.CreatedAt, UpdatedAt: incident.UpdatedAt,
+	}
+	if opened, created, err := s.OpenDCPFutureArbiterIncident(ctx, incident, action); err != nil || !created || opened.IncidentID != incidentID {
+		t.Fatalf("open policy arbiter = %+v, %v, %v", opened, created, err)
+	}
+
+	later := seedAdmissionCandidate(t, s, "dcp-review-lab", 2)
+	if claimed, err := s.ClaimDCPReviewLabAdmission(ctx, later, "merge-"+later.ID, later.ReviewBaseSHA, now.Add(7*time.Second)); err != nil || claimed {
+		t.Fatalf("pending incident released later claim = %v, %v", claimed, err)
+	}
+	claimedAction, ok, err := s.ClaimNextDCPModelAction(ctx, now.Add(8*time.Second))
+	if err != nil || !ok || claimedAction.ID != action.ID {
+		t.Fatalf("claim arbiter action = %+v, %v, %v", claimedAction, ok, err)
+	}
+	if ok, err := s.StartDCPModelAction(ctx, claimedAction, incidentID, "", now.Add(9*time.Second)); err != nil || !ok {
+		t.Fatalf("start arbiter action = %v, %v", ok, err)
+	}
+	claimedAction.Status, claimedAction.LaunchID = domain.DCPActionRunning, incidentID
+	decision := `{"schemaVersion":"dcp.review-lab.future-arbiter-decision/v1","verdict":"human_gate"}`
+	question := "Should the frozen left intent or right intent own shared.txt?"
+	if ok, err := s.RecordDCPFutureArbiterDecision(ctx, incident, claimedAction, decision, digest('6'), domain.DCPFutureVerdictHumanGate,
+		`[]`, "", `[]`, question, now.Add(10*time.Second)); err != nil || !ok {
+		t.Fatalf("record exact Human Gate = %v, %v", ok, err)
+	}
+
+	var wg sync.WaitGroup
+	winners := make(chan bool, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, claimErr := s.ClaimDCPReviewLabAdmission(ctx, later, "merge-"+later.ID, later.ReviewBaseSHA, now.Add(11*time.Second))
+			if claimErr != nil {
+				t.Errorf("claim after Human Gate: %v", claimErr)
+			}
+			winners <- claimed
+		}()
+	}
+	wg.Wait()
+	close(winners)
+	winnerCount := 0
+	for won := range winners {
+		if won {
+			winnerCount++
+		}
+	}
+	if winnerCount != 1 {
+		t.Fatalf("claim winners after exact Human Gate = %d, want 1", winnerCount)
+	}
+	claimedAdmission, found, err := s.GetClaimedDCPReviewLabAdmission(ctx)
+	if err != nil || !found || claimedAdmission.ID != later.ID || claimedAdmission.Sequence != later.Sequence {
+		t.Fatalf("claimed FIFO row = %+v, %v, %v", claimedAdmission, found, err)
 	}
 }
 
