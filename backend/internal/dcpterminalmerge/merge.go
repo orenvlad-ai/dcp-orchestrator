@@ -1298,8 +1298,28 @@ func publicRepositoryIdentity(ctx context.Context) (string, error) {
 }
 
 func publicRepositoryIdentityFor(ctx context.Context, repository string) (string, error) {
-	out, err := exec.CommandContext(ctx, "gh", "repo", "view", repository, "--json", "nameWithOwner,isPrivate,defaultBranchRef,databaseId,owner", "--jq", `[.nameWithOwner, (.isPrivate|tostring), .defaultBranchRef.name, (.databaseId|tostring), (.owner.databaseId|tostring)] | join("|")`).Output()
-	return strings.TrimSpace(string(out)), err
+	out, err := exec.CommandContext(ctx, "gh", "api", "--method", "GET", "repos/"+repository).Output()
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		Repository    *string `json:"full_name"`
+		Private       *bool   `json:"private"`
+		DefaultBranch *string `json:"default_branch"`
+		RepositoryID  *int64  `json:"id"`
+		Owner         *struct {
+			ID *int64 `json:"id"`
+		} `json:"owner"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		return "", err
+	}
+	if response.Repository == nil || response.Private == nil || response.DefaultBranch == nil ||
+		response.RepositoryID == nil || response.Owner == nil || response.Owner.ID == nil {
+		return "", errors.New("dcp admission: provider repository identity is incomplete")
+	}
+	return fmt.Sprintf("%s|%t|%s|%d|%d", *response.Repository, *response.Private,
+		*response.DefaultBranch, *response.RepositoryID, *response.Owner.ID), nil
 }
 
 func policyProviderIdentity(spec domain.DCPPolicyTargetSpec) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,24 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 				t.Fatalf("accepted out-of-policy input: %+v", input)
 			}
 		})
+	}
+}
+
+func TestValidatePolicySubmitPreservesExactRealTargetPromptByteLimit(t *testing.T) {
+	const prompt = "Write only docs/ARCHITECTURE.md for Chrome MV3 MVP: authenticated owner changes own WB product price on-page. Cover scope/non-goals; components; user-confirmed Draft->Validate->Confirm->Queue->Apply; permissions/security; typed WB API adapter boundary, no invented endpoints; no token storage/embedding; offline/server-unavailable; failure/rollback; tests; acceptance. No code, deps, credentials, live calls, deploy, or server work. Run baseline; open one ready PR to main; stop for DCP review/admission/merge."
+	if len([]byte(prompt)) != 510 {
+		t.Fatalf("exact product prompt bytes = %d, want 510", len([]byte(prompt)))
+	}
+	exact := PolicySubmitInput{
+		TaskID: "price-arch-v1", Target: RepoOnlyTarget, Profile: RepoOnlyProfile,
+		Repository: RepoOnlyRepositoryName, Prompt: prompt,
+	}
+	if _, err := validatePolicySubmit(exact); err != nil {
+		t.Fatalf("exact 510-byte product prompt was rejected: %v", err)
+	}
+	exact.Prompt = strings.Repeat("x", 513)
+	if _, err := validatePolicySubmit(exact); err == nil {
+		t.Fatal("513-byte prompt crossed the immutable policy limit")
 	}
 }
 

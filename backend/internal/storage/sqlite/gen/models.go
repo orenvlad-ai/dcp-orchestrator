@@ -429,6 +429,43 @@ type DcpPolicyProviderPendingRecovery struct {
 	RearmedAt        time.Time
 }
 
+type DcpRealTargetSubmitRecoveryV1 struct {
+	RecoveryID             string
+	ContractCommit         string
+	PredecessorSource      string
+	PredecessorTree        string
+	PredecessorReceipt     string
+	TaskID                 string
+	PayloadDigest          string
+	SessionID              string
+	CardNumber             int64
+	WorktreePath           string
+	SourceBranch           string
+	PriorState             string
+	PriorRevision          int64
+	WorkerActionSequence   int64
+	WorkerActionID         string
+	WorkerLaunchID         string
+	WorkerTokenCount       int64
+	ReviewerActionSequence int64
+	ReviewerActionID       string
+	ReviewerHandleID       string
+	ReviewerTokenCount     int64
+	ReviewID               string
+	ReviewRunID            string
+	ReviewBatchID          string
+	ReviewSummaryDigest    string
+	ReviewStartedAt        time.Time
+	ReviewCompletedAt      time.Time
+	PRURL                  string
+	PRNumber               int64
+	PRHead                 string
+	PRBase                 string
+	CheckURL               string
+	PriorUpdatedAt         time.Time
+	RecoveredAt            time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string

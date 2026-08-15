@@ -334,14 +334,22 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	}
 	reviewLab := worker.ProjectID == "dcp-review-lab"
 	futurePolicyReview := false
+	if e.policyGate != nil {
+		futurePolicyReview, err = e.policyGate.IsPolicyReviewSession(ctx, workerID)
+		if err != nil {
+			return TriggerResult{}, err
+		}
+	}
 	if reviewLab {
 		if mode == triggerManual {
 			return TriggerResult{}, fmt.Errorf("%w: DCP review-lab reviews are automatic only", ErrInvalid)
 		}
-		futurePolicyReview = !eligibleDCPReviewLabWorker(workerID)
-		if futurePolicyReview && e.policyGate == nil {
+		if !eligibleDCPReviewLabWorker(workerID) && !futurePolicyReview {
 			return TriggerResult{}, nil
 		}
+	}
+	if futurePolicyReview && mode == triggerManual {
+		return TriggerResult{}, fmt.Errorf("%w: DCP policy reviews are automatic only", ErrInvalid)
 	}
 	if mode == triggerManual && worker.IsTerminated {
 		return TriggerResult{}, fmt.Errorf("%w: worker session %q is terminated", ErrInvalid, workerID)

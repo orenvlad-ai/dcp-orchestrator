@@ -7,17 +7,18 @@ independent source of DCP architecture policy.
 ## Required authority before any change
 
 Read these immutable `orenvlad-ai/dev-control-plane` sources at merged commit
-`9db6ea4856cb834f45aa5f59417a5955a01bc623` before designing or editing this
+`cf6c39fb46257da0c6dd7c856d52381fd5ca59ac` before designing or editing this
 repository:
 
-1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/AGENTS.md)
-2. [current operating contract revision `2026-08-15.13`](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/CURRENT_OPERATING_CONTRACT.md)
-3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
-4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
-5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
-6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/upstream/dcp-orchestrator.lock)
-7. [first real repo-only target v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/DCP_REAL_TARGET_V1_CONTRACT.md)
-8. [runtime provider identity v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/9db6ea4856cb834f45aa5f59417a5955a01bc623/docs/DCP_REAL_TARGET_PROVIDER_IDENTITY_V1_CONTRACT.md)
+1. [root repository rules](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/AGENTS.md)
+2. [current operating contract revision `2026-08-15.14`](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/CURRENT_OPERATING_CONTRACT.md)
+3. [DCP Lab happy-path v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md)
+4. [Phase UI and ordinary-card arbiter v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_LAB_PHASE_UI_ARBITER_V1_CONTRACT.md)
+5. [Phase 1 installed evidence](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_LAB_PHASE_UI_V1_INSTALL_EVIDENCE.md)
+6. [exact managed-fork lock before this source change](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/upstream/dcp-orchestrator.lock)
+7. [first real repo-only target v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_REAL_TARGET_V1_CONTRACT.md)
+8. [runtime provider identity v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_REAL_TARGET_PROVIDER_IDENTITY_V1_CONTRACT.md)
+9. [exact first-submit recovery v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/cf6c39fb46257da0c6dd7c856d52381fd5ca59ac/docs/DCP_REAL_TARGET_SUBMIT_RECOVERY_V1_CONTRACT.md)
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the real-target v1 contract adds only exact target `wb-price-extension`,
