@@ -385,6 +385,7 @@ func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 			}
 		}
 		if path == workspace {
+			canonicalDelta := strings.ToLower(store.pr.BaseSHA) + ".." + testHead
 			switch cmd {
 			case "rev-parse --show-toplevel":
 				return path, nil
@@ -398,9 +399,9 @@ func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 				return privateGitDir, nil
 			case "merge-base --is-ancestor " + testBase + " " + testHead:
 				return "", nil
-			case "rev-list --count " + testBase + ".." + testHead:
+			case "rev-list --count " + canonicalDelta:
 				return "1", nil
-			case "rev-list --merges " + testBase + ".." + testHead:
+			case "rev-list --merges " + canonicalDelta:
 				return "", nil
 			}
 		}
@@ -424,6 +425,20 @@ func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T)
 	}
 	if scm.mergeCalls != 1 {
 		t.Fatalf("future terminal merge duplicated: %d", scm.mergeCalls)
+	}
+}
+
+func TestFuturePolicySuccessorRepairCountsOnlyExactCanonicalDelta(t *testing.T) {
+	engine, store, scm := futurePolicyFixture(t)
+	advancedMain := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	store.pr.BaseSHA, scm.observation.PR.BaseSHA = advancedMain, advancedMain
+	store.policyTask.RepairCount = 1
+
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.claims != 1 || store.policyTask.State != domain.DCPPolicyMerged {
+		t.Fatalf("successor repair did not merge from exact advanced base: merges=%d claims=%d task=%+v", scm.mergeCalls, store.claims, store.policyTask)
 	}
 }
 
