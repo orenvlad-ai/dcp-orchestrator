@@ -234,6 +234,8 @@ source_gates() {
 	! grep -Fq '"gh", "repo", "view"' backend/internal/dcpterminalmerge/merge.go || fail 'terminal merge still uses unsupported repo-view projection'
 	grep -Fq 'futurePolicyReview, err = e.policyGate.IsPolicyReviewSession(ctx, workerID)' backend/internal/review/review.go || fail 'repo-only reviews bypass the durable policy action gate'
 	grep -Fq 'Repository   string `json:"repository"`' backend/internal/cli/dcp.go || fail 'hidden submit response drops immutable repository identity'
+	grep -Fq 'isExactDCPPolicyStartupQuarantineSession(task, session)' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'governed startup quarantine bypasses the exact policy session classifier'
+	grep -Fq 'task.Target == "wb-price-extension" && task.Profile == "repo-only"' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'repo-only startup quarantine tuple is absent'
 	grep -Fq 'RequiredCheck: "baseline"' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only named check is absent'
 	grep -Fq 'const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-price-extension.git"' backend/internal/adapters/agent/codex/codex.go || fail 'repo-only worker remote is not exact'
 	grep -Fq 'showArbiter = arbiterSessions.length > 0' frontend/src/renderer/components/SessionsBoard.tsx || fail 'empty arbiter subsection is still rendered'
@@ -413,6 +415,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/future_arbiter_(engine|launcher|protocol|schema_recovery|result_recovery)(_test)?\.go|backend/internal/domain/dcp_future_arbiter\.go|backend/internal/storage/sqlite/(future_arbiter_result_recovery_migration_test\.go|migrations/00(69_dcp_future_card_arbiter_v1|70_dcp_future_arbiter_schema_recovery|71_dcp_future_arbiter_result_validation_recovery|72_dcp_future_repair_target_validation_recovery|73_dcp_future_repair_ci_snapshot_recovery|74_dcp_future_human_gate_result_recovery)\.sql|queries/dcp_future_arbiter\.sql|gen/dcp_future_arbiter\.sql\.go|store/dcp_future_arbiter_store(_test)?\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0075_dcp_exact_repo_only_target_v1\.sql|real_target_live_copy_migration_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/cli/dcp_test\.go|backend/internal/dcpterminalmerge/provider_identity_test\.go|backend/internal/storage/sqlite/(migrations/0076_dcp_real_target_submit_recovery_v1\.sql|real_target_submit_recovery_migration_test\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(real_target_startup_quarantine_live_copy_test\.go|store/dcp_policy_startup_quarantine_test\.go)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check
