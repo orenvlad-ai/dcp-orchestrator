@@ -732,6 +732,7 @@
 	"status.ci_failed": "CI fehlgeschlagen",
 	"status.draft": "Entwurfs-PR",
 	"status.exited": "Beendet",
+	"status.human_gate": "Ihre Entscheidung ist erforderlich",
 	"status.idle": "Inaktiv",
 	"status.mergeable": "Bereit",
 	"status.merged": "Gemerged",

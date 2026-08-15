@@ -732,6 +732,7 @@
 	"status.ci_failed": "CI 실패",
 	"status.draft": "초안 PR",
 	"status.exited": "종료됨",
+	"status.human_gate": "결정이 필요합니다",
 	"status.idle": "유휴",
 	"status.mergeable": "준비 완료",
 	"status.merged": "병합됨",

@@ -1083,6 +1083,15 @@ describe("Sidebar", () => {
 							dcpPolicyState: "incident",
 							dcpPolicyActionActive: false,
 						},
+						{
+							...session,
+							id: "proj-1-human-gate",
+							title: "human gate task",
+							status: "review_failed",
+							dcpPolicyState: "incident",
+							dcpPolicyActionActive: true,
+							dcpArbiterStatus: "human_gate",
+						},
 					],
 				},
 			],
@@ -1101,6 +1110,9 @@ describe("Sidebar", () => {
 		expect(sessionDot("admission task")).toHaveClass("bg-status-ready");
 		expect(sessionDot("merged task")).toHaveClass("bg-status-merged");
 		expect(sessionDot("incident task")).toHaveClass("bg-status-exited");
+		expect(sessionDot("human gate task")).toHaveClass("bg-status-needs-you");
+		expect(sessionDot("human gate task")).not.toHaveClass("animate-status-pulse");
+		expect(sessionDot("human gate task")).toHaveAttribute("data-session-status-active", "false");
 	});
 
 	it("renders steady fallback dots when no model action is active", async () => {

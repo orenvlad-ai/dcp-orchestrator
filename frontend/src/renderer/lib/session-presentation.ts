@@ -83,6 +83,7 @@ export type SessionVisualStatus = {
 	policyPhase?: DCPPolicyPhase;
 	zone: AttentionZone;
 	displayStatus: SessionStatus;
+	statusLabelKey?: MessageKey;
 	statusClassName?: string;
 	tone: "working" | "review" | "ready" | "attention" | "merged" | "failed" | "idle";
 	dotClassName: string;
@@ -104,7 +105,7 @@ function visualStatus(
 	tone: SessionVisualStatus["tone"],
 	dotClassName: string,
 	options: Pick<SessionVisualStatus, "zone" | "displayStatus"> &
-		Partial<Pick<SessionVisualStatus, "policyPhase" | "statusClassName" | "active">>,
+		Partial<Pick<SessionVisualStatus, "policyPhase" | "statusLabelKey" | "statusClassName" | "active">>,
 ): SessionVisualStatus {
 	const active = options.active === true;
 	return {
@@ -136,6 +137,16 @@ function policyVisualStatus(
 			statusClassName: policyPhaseStatusClassNames[policyPhase],
 			active,
 		});
+
+	if (state === "incident" && session.dcpArbiterStatus === "human_gate") {
+		return visualStatus("attention", "bg-status-needs-you", {
+			policyPhase: "needs_you",
+			zone: "action",
+			displayStatus: "review_failed",
+			statusLabelKey: "status.human_gate",
+			statusClassName: "text-status-needs-you",
+		});
+	}
 
 	switch (state) {
 		case "reserved":
@@ -287,7 +298,11 @@ export function getSessionStatusViewForSession(
 ): SessionStatusView {
 	const projection = getSessionVisualStatus(session);
 	const view = getSessionStatusView(projection.displayStatus, t);
-	return projection.statusClassName ? { ...view, className: projection.statusClassName } : view;
+	return {
+		...view,
+		label: projection.statusLabelKey ? t(projection.statusLabelKey) : view.label,
+		className: projection.statusClassName ?? view.className,
+	};
 }
 
 export type AttentionZone = "merge" | "action" | "pending" | "working" | "done";
