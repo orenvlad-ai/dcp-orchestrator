@@ -221,7 +221,8 @@ func ParseFutureArbiterDecision(data []byte, incident domain.DCPFutureArbiterInc
 			return FutureArbiterDecision{}, nil, errors.New("future arbiter repair authority is invalid")
 		}
 	case domain.DCPFutureVerdictHumanGate:
-		if decision.RepairTaskID != "" || decision.RepairObjective != "" || len(decision.AffectedPaths) != 0 || !boundedPlainText(decision.HumanQuestion, 512) {
+		if decision.RepairTaskID != "" || decision.RepairObjective != "" ||
+			!stringSubset(decision.AffectedPaths, allowedPaths) || !boundedPlainText(decision.HumanQuestion, 512) {
 			return FutureArbiterDecision{}, nil, errors.New("future arbiter HumanGate is invalid")
 		}
 	case domain.DCPFutureVerdictOrderHold:

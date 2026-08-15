@@ -213,6 +213,34 @@ type DcpCard12RebaseHeadFinalizationProviderBaseRecovery struct {
 	RearmedAt                  time.Time
 }
 
+type DcpFutureCardArbiterHumanGateResultRecoveryV1 struct {
+	RecoveryID            string
+	IncidentID            string
+	IdentityDigest        string
+	InputDigest           string
+	ModelActionID         string
+	PriorStatus           string
+	PriorErrorCode        string
+	PriorFinishedAt       time.Time
+	PriorModelCallCount   int64
+	PriorDecisionDigest   string
+	RuntimeHandleID       string
+	PhysicalRuntimeHandle string
+	InputArtifactDigest   string
+	InputArtifactSize     int64
+	SchemaArtifactDigest  string
+	SchemaArtifactSize    int64
+	ResultArtifactDigest  string
+	ResultArtifactSize    int64
+	CodexSessionID        string
+	InferenceTokens       int64
+	ContractCommit        string
+	Status                string
+	ErrorCode             string
+	CreatedAt             time.Time
+	FinishedAt            sql.NullTime
+}
+
 type DcpFutureCardArbiterResultValidationRecoveryV1 struct {
 	RecoveryID            string
 	IncidentID            string

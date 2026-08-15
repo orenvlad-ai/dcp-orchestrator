@@ -76,6 +76,27 @@ func futureArbiterResultRecoveryFromGen(row gen.DcpFutureCardArbiterResultValida
 	return result
 }
 
+//nolint:dupl // Separate generated row types preserve additive immutable audit tables.
+func futureArbiterHumanGateRecoveryFromGen(row gen.DcpFutureCardArbiterHumanGateResultRecoveryV1) domain.DCPFutureArbiterResultRecovery {
+	result := domain.DCPFutureArbiterResultRecovery{
+		RecoveryID: row.RecoveryID, IncidentID: row.IncidentID, IdentityDigest: row.IdentityDigest,
+		InputDigest: row.InputDigest, ModelActionID: row.ModelActionID, PriorStatus: row.PriorStatus,
+		PriorErrorCode: row.PriorErrorCode, PriorFinishedAt: row.PriorFinishedAt,
+		PriorModelCallCount: row.PriorModelCallCount, PriorDecisionDigest: row.PriorDecisionDigest,
+		RuntimeHandleID: row.RuntimeHandleID, PhysicalRuntimeHandle: row.PhysicalRuntimeHandle,
+		InputArtifactDigest: row.InputArtifactDigest, InputArtifactSize: row.InputArtifactSize,
+		SchemaArtifactDigest: row.SchemaArtifactDigest, SchemaArtifactSize: row.SchemaArtifactSize,
+		ResultArtifactDigest: row.ResultArtifactDigest, ResultArtifactSize: row.ResultArtifactSize,
+		CodexSessionID: row.CodexSessionID, InferenceTokens: row.InferenceTokens,
+		ContractCommit: row.ContractCommit, Status: row.Status, ErrorCode: row.ErrorCode, CreatedAt: row.CreatedAt,
+	}
+	if row.FinishedAt.Valid {
+		value := row.FinishedAt.Time
+		result.FinishedAt = &value
+	}
+	return result
+}
+
 // GetDCPFutureArbiterIncidentByID reads one exact ordinary-card incident generation.
 func (s *Store) GetDCPFutureArbiterIncidentByID(ctx context.Context, id string) (domain.DCPFutureArbiterIncident, bool, error) {
 	row, err := s.qr.GetDCPFutureArbiterIncidentByID(ctx, id)
@@ -135,13 +156,20 @@ func (s *Store) GetDCPFutureArbiterSchemaRecoveryByPredecessor(ctx context.Conte
 // validation audit, if this database contains its frozen predecessor.
 func (s *Store) GetDCPFutureArbiterResultRecovery(ctx context.Context, incidentID string) (domain.DCPFutureArbiterResultRecovery, bool, error) {
 	row, err := s.qr.GetDCPFutureArbiterResultValidationRecovery(ctx, incidentID)
+	if err == nil {
+		return futureArbiterResultRecoveryFromGen(row), true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return domain.DCPFutureArbiterResultRecovery{}, false, err
+	}
+	humanGate, err := s.qr.GetDCPFutureArbiterHumanGateResultRecovery(ctx, incidentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.DCPFutureArbiterResultRecovery{}, false, nil
 	}
 	if err != nil {
 		return domain.DCPFutureArbiterResultRecovery{}, false, err
 	}
-	return futureArbiterResultRecoveryFromGen(row), true, nil
+	return futureArbiterHumanGateRecoveryFromGen(humanGate), true, nil
 }
 
 // OpenDCPFutureArbiterIncident atomically persists one incident and queued action.
@@ -435,11 +463,63 @@ func (s *Store) RecoverDCPFutureArbiterExactDecision(ctx context.Context, incide
 	return recovered, err
 }
 
+// RecoverDCPFutureArbiterExactHumanGate accepts one unchanged result without a
+// second model call and without authorizing code mutation. The policy task and
+// admission remain in their existing incident state while the exact arbiter
+// generation becomes the durable terminal owner question.
+func (s *Store) RecoverDCPFutureArbiterExactHumanGate(ctx context.Context, incident domain.DCPFutureArbiterIncident, decisionJSON, decisionDigest, orderJSON, affectedPathsJSON, question string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	recovered := false
+	err := s.inTx(ctx, "recover exact DCP future-card HumanGate decision", func(q *gen.Queries) error {
+		taskRow, err := q.GetDCPReviewLabPolicyTaskByTaskID(ctx, incident.TaskID)
+		if err != nil {
+			return err
+		}
+		task := dcpPolicyTaskFromGen(taskRow)
+		actionRow, err := q.GetDCPModelActionByID(ctx, incident.ModelActionID)
+		if err != nil {
+			return err
+		}
+		if task.State != domain.DCPPolicyIncident || task.AdmissionID != incident.AdmissionID ||
+			task.CurrentHeadSHA != incident.CandidateHeadSHA || task.RepairCount != 0 ||
+			actionRow.TaskID != incident.TaskID || actionRow.SessionID != string(incident.SessionID) ||
+			actionRow.Kind != string(domain.DCPActionArbiter) || actionRow.IncidentID != incident.IncidentID ||
+			actionRow.Status != string(domain.DCPActionFailed) || actionRow.ErrorCode != "submit_failed" || actionRow.Slot != 0 {
+			return ErrDCPPolicyStale
+		}
+		rows, err := q.RecoverDCPFutureArbiterExactHumanGate(ctx, gen.RecoverDCPFutureArbiterExactHumanGateParams{
+			DecisionJson: decisionJSON, DecisionDigest: decisionDigest, OrderJson: orderJSON,
+			AffectedPathsJson: affectedPathsJSON, HumanQuestion: question, DecisionAt: now,
+			IncidentID: incident.IncidentID, IdentityDigest: incident.IdentityDigest,
+			InputDigest: incident.InputDigest, ModelActionID: incident.ModelActionID,
+		})
+		if err != nil || rows != 1 {
+			return errors.Join(err, ErrDCPPolicyStale)
+		}
+		rows, err = q.MarkDCPFutureArbiterHumanGateResultRecoveryApplied(ctx, gen.MarkDCPFutureArbiterHumanGateResultRecoveryAppliedParams{
+			FinishedAt: sql.NullTime{Time: now, Valid: true}, IncidentID: incident.IncidentID,
+		})
+		if err != nil || rows != 1 {
+			return errors.Join(err, ErrDCPPolicyStale)
+		}
+		recovered = true
+		return nil
+	})
+	return recovered, err
+}
+
 // FailDCPFutureArbiterResultRecovery makes a drifted one-time recovery inert.
 func (s *Store) FailDCPFutureArbiterResultRecovery(ctx context.Context, incidentID, errorCode string, now time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	rows, err := s.qw.FailDCPFutureArbiterResultValidationRecovery(ctx, gen.FailDCPFutureArbiterResultValidationRecoveryParams{
+		ErrorCode: errorCode, FinishedAt: sql.NullTime{Time: now, Valid: true}, IncidentID: incidentID,
+	})
+	if err != nil || rows == 1 {
+		return rows == 1, err
+	}
+	rows, err = s.qw.FailDCPFutureArbiterHumanGateResultRecovery(ctx, gen.FailDCPFutureArbiterHumanGateResultRecoveryParams{
 		ErrorCode: errorCode, FinishedAt: sql.NullTime{Time: now, Valid: true}, IncidentID: incidentID,
 	})
 	return rows == 1, err
