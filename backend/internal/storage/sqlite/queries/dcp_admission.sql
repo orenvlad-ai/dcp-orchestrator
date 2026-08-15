@@ -134,7 +134,41 @@ WHERE dcp_review_lab_admission.id = sqlc.arg(id)
   AND dcp_review_lab_admission.status = 'waiting'
   AND dcp_review_lab_admission.lease_id = ''
   AND dcp_review_lab_admission.sequence = (SELECT MIN(sequence) FROM dcp_review_lab_admission WHERE status = 'waiting')
-  AND NOT EXISTS (SELECT 1 FROM dcp_review_lab_admission WHERE status IN ('claimed', 'refreshing', 'incident'));
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dcp_review_lab_admission AS blocker
+      WHERE blocker.status IN ('claimed', 'refreshing')
+         OR (
+              blocker.status = 'incident'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM dcp_review_lab_policy_task AS policy_task
+                  JOIN dcp_future_card_arbiter_v1 AS arbiter
+                    ON arbiter.admission_id = blocker.id
+                   AND arbiter.task_id = policy_task.task_id
+                   AND arbiter.session_id = blocker.session_id
+                   AND arbiter.admission_sequence = blocker.sequence
+                   AND arbiter.review_run_id = blocker.review_run_id
+                   AND arbiter.candidate_head_sha = blocker.target_sha
+                   AND arbiter.incident_kind = blocker.error_code
+                  WHERE policy_task.admission_id = blocker.id
+                    AND policy_task.session_id = blocker.session_id
+                    AND policy_task.state = 'incident'
+                    AND policy_task.review_run_id = blocker.review_run_id
+                    AND policy_task.current_head_sha = blocker.target_sha
+                    AND policy_task.incident_packet = blocker.incident_packet
+                    AND policy_task.error_code = blocker.error_code
+                    AND arbiter.generation = (
+                        SELECT MAX(latest.generation)
+                        FROM dcp_future_card_arbiter_v1 AS latest
+                        WHERE latest.admission_id = blocker.id
+                    )
+                    AND arbiter.status = 'human_gate'
+                    AND arbiter.verdict = 'human_gate'
+                    AND arbiter.human_question <> ''
+              )
+         )
+  );
 
 -- name: CompleteDCPReviewLabAdmission :execrows
 UPDATE dcp_review_lab_admission
