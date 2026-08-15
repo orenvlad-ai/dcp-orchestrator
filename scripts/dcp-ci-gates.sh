@@ -10,8 +10,8 @@ i8_parity_commit='23fe9bba77873075f32b813fb0a3c936598882fb'
 i8_patch_sha256='047c9f74902ede19b6e3a3ba753fc7b2702a322a9be709fb0e975cc5628314d2'
 i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
-control_plane_commit='4f251b7f6877d974ee80169391e89a79d1367658'
-operating_contract_revision='2026-08-15.12'
+control_plane_commit='9db6ea4856cb834f45aa5f59417a5955a01bc623'
+operating_contract_revision='2026-08-15.13'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -58,6 +58,7 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/CURRENT_OPERATING_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact dev-control-plane operating contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_LAB_HAPPY_PATH_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact happy-path v1 contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact real-target v1 contract'
+	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_PROVIDER_IDENTITY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact runtime provider identity v1 contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
@@ -220,6 +221,8 @@ source_gates() {
 	grep -Fq "target = 'wb-price-extension'" "$repo_only_target_migration" || fail 'repo-only target is not physical'
 	grep -Fq "repository = 'orenvlad-ai/wb-price-extension'" "$repo_only_target_migration" || fail 'repo-only repository is not physical'
 	grep -Fq 'ProviderRepositoryID: 1335072844' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only provider database identity is absent'
+	grep -Fq '"gh", "api", "--method", "GET", "repos/"+repository' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup does not use stable REST repository metadata'
+	! grep -Fq '"gh", "repo", "view"' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup still uses unsupported repo-view projection'
 	grep -Fq 'RequiredCheck: "baseline"' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only named check is absent'
 	grep -Fq 'const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-price-extension.git"' backend/internal/adapters/agent/codex/codex.go || fail 'repo-only worker remote is not exact'
 	grep -Fq 'showArbiter = arbiterSessions.length > 0' frontend/src/renderer/components/SessionsBoard.tsx || fail 'empty arbiter subsection is still rendered'
