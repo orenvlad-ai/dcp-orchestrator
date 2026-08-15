@@ -3575,6 +3575,7 @@ components:
         profile:
           enum:
           - synthetic-pr
+          - repo-only
           type: string
         prompt:
           maxLength: 512
@@ -3583,10 +3584,12 @@ components:
         repository:
           enum:
           - orenvlad-ai/dcp-review-lab
+          - orenvlad-ai/wb-price-extension
           type: string
         target:
           enum:
           - dcp-review-lab
+          - wb-price-extension
           type: string
         taskId:
           maxLength: 16

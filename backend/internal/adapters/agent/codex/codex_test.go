@@ -62,11 +62,15 @@ func linkedWorktreeAt(t *testing.T, root string) (workspace, gitDir, commonDir s
 }
 
 func dcpReviewLabWorktree(t *testing.T, sessionID string) (dataDir, workspace string) {
+	return dcpPolicyWorktree(t, "dcp-review-lab", dcpReviewLabOrigin, sessionID)
+}
+
+func dcpPolicyWorktree(t *testing.T, target, origin, sessionID string) (dataDir, workspace string) {
 	t.Helper()
 	root := canonicalTempDir(t)
 	dataDir = filepath.Join(root, "data")
-	repo := filepath.Join(root, "targets", "dcp-review-lab")
-	workspace = filepath.Join(dataDir, "worktrees", "dcp-review-lab", sessionID)
+	repo := filepath.Join(root, "targets", target)
+	workspace = filepath.Join(dataDir, "worktrees", target, sessionID)
 	if err := os.MkdirAll(filepath.Dir(repo), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +80,7 @@ func dcpReviewLabWorktree(t *testing.T, sessionID string) (dataDir, workspace st
 	runTestCommand(t, "git", "init", "--quiet", "--initial-branch=main", repo)
 	runTestCommand(t, "git", "-C", repo, "config", "user.name", "DCP Test")
 	runTestCommand(t, "git", "-C", repo, "config", "user.email", "dcp-test@example.invalid")
-	runTestCommand(t, "git", "-C", repo, "remote", "add", "origin", dcpReviewLabOrigin)
+	runTestCommand(t, "git", "-C", repo, "remote", "add", "origin", origin)
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("DCP review lab\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +88,37 @@ func dcpReviewLabWorktree(t *testing.T, sessionID string) (dataDir, workspace st
 	runTestCommand(t, "git", "-C", repo, "commit", "--quiet", "-m", "seed")
 	runTestCommand(t, "git", "-C", repo, "worktree", "add", "--quiet", "-b", "ao/"+sessionID+"/root", workspace)
 	return dataDir, workspace
+}
+
+func TestGetLaunchCommandEnablesNetworkOnlyForExactRepoOnlyTarget(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	const sessionID = "wb-price-extension-1"
+	dataDir, workspace := dcpPolicyWorktree(t, "wb-price-extension", dcpRepoOnlyOrigin, sessionID)
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace, DCPReviewLabPolicyAuthorized: true,
+	})
+	if err != nil || !containsSubsequence(cmd, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
+		t.Fatalf("exact repo-only command=%#v err=%v", cmd, err)
+	}
+	withoutAuthority, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace,
+	})
+	if err != nil || contains(withoutAuthority, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("unbound repo-only command=%#v err=%v", withoutAuthority, err)
+	}
+	repo := filepath.Join(filepath.Dir(dataDir), "targets", "wb-price-extension")
+	runTestCommand(t, "git", "-C", repo, "remote", "set-url", "--push", "origin", dcpReviewLabOrigin)
+	if foreign, foreignErr := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace, DCPReviewLabPolicyAuthorized: true,
+	}); foreignErr == nil {
+		t.Fatalf("foreign repo-only push remote produced command %#v", foreign)
+	}
 }
 
 func runTestCommand(t *testing.T, name string, args ...string) {

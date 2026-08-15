@@ -365,10 +365,10 @@ func (e *Engine) deriveFutureArbiterIncident(ctx context.Context, admission doma
 		source.AdmissionID != admission.ID || source.SessionID != string(admission.SessionID) || source.TargetSHA != admission.TargetSHA {
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, errors.New("DCP future arbiter source packet is not exact")
 	}
-	if _, err := e.git(ctx, candidate.project.Path, "fetch", "--prune", "origin", TargetBranch); err != nil {
+	if _, err := e.git(ctx, candidate.project.Path, "fetch", "--prune", "origin", candidate.spec.DefaultBranch); err != nil {
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, err
 	}
-	currentMain, err := e.git(ctx, candidate.project.Path, "rev-parse", "refs/remotes/origin/"+TargetBranch)
+	currentMain, err := e.git(ctx, candidate.project.Path, "rev-parse", "refs/remotes/origin/"+candidate.spec.DefaultBranch)
 	if err != nil || !validSHA(currentMain) {
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, errors.New("DCP future arbiter current main is unavailable")
 	}
@@ -376,7 +376,7 @@ func (e *Engine) deriveFutureArbiterIncident(ctx context.Context, admission doma
 	if err != nil {
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, err
 	}
-	cohort, err := e.futureArbiterCohort(ctx, candidate.project.Path, affected, derivedAt)
+	cohort, err := e.futureArbiterCohort(ctx, candidate.project.Path, candidate.policyTask, affected, derivedAt)
 	if err != nil {
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, err
 	}
@@ -394,10 +394,10 @@ func (e *Engine) deriveFutureArbiterIncident(ctx context.Context, admission doma
 		return domain.DCPFutureArbiterIncident{}, domain.DCPModelAction{}, errors.New("DCP future arbiter conflict is mechanically clean")
 	}
 	evidence := futureArbiterEvidence{
-		Repository: RepositoryFullName, TargetBranch: TargetBranch, IncidentKind: admission.ErrorCode,
+		Repository: candidate.spec.Repository, TargetBranch: candidate.spec.DefaultBranch, IncidentKind: admission.ErrorCode,
 		CurrentMain: strings.ToLower(currentMain), ProviderHead: strings.ToLower(observation.PR.HeadSHA), ProviderBase: strings.ToLower(observation.PR.BaseSHA),
 		Mergeable: observation.PR.ProviderMergeable, MergeState: observation.PR.ProviderMergeStateStatus, NormalizedState: observation.Mergeability.State,
-		NamedCheck: RequiredCheckName, ReviewRunID: candidate.run.ID, ReviewVerdict: string(candidate.run.Verdict), ReviewBodyDigest: digestString(candidate.run.Body),
+		NamedCheck: candidate.spec.RequiredCheck, ReviewRunID: candidate.run.ID, ReviewVerdict: string(candidate.run.Verdict), ReviewBodyDigest: digestString(candidate.run.Body),
 		MergeTreeClean: mergeErr == nil, ConflictPaths: conflicts, MergeTreeDigest: digestString(mergeTree), FIFOOwner: admission.ID,
 	}
 	evidenceDigest, evidenceJSON, err := canonicalDigest(evidence)
@@ -406,7 +406,7 @@ func (e *Engine) deriveFutureArbiterIncident(ctx context.Context, admission doma
 	}
 	sourceDigest := digestString(admission.IncidentPacket)
 	pathsJSON, _ := json.Marshal(affected)
-	identityParts := []string{futureArbiterInputSchema, strconv.FormatInt(generation, 10), RepositoryFullName, admission.ID,
+	identityParts := []string{futureArbiterInputSchema, strconv.FormatInt(generation, 10), candidate.spec.Repository, admission.ID,
 		strconv.FormatInt(admission.Sequence, 10), admission.LeaseID, candidate.policyTask.TaskID, string(admission.SessionID),
 		admission.TargetSHA, admission.ReviewBaseSHA, currentMain, admission.ReviewRunID, sourceDigest, cohortDigest, evidenceDigest, digestString(diff)}
 	identityDigest := digestString(strings.Join(identityParts, "\x00"))
@@ -469,7 +469,7 @@ func (e *Engine) futureArbiterPaths(ctx context.Context, repo, base, head string
 	return paths, nil
 }
 
-func (e *Engine) futureArbiterCohort(ctx context.Context, repo string, anchorPaths []string, cutoff time.Time) ([]futureArbiterCohortMember, error) {
+func (e *Engine) futureArbiterCohort(ctx context.Context, repo string, anchor domain.DCPReviewLabPolicyTask, anchorPaths []string, cutoff time.Time) ([]futureArbiterCohortMember, error) {
 	store, err := e.futureArbiterStore()
 	if err != nil {
 		return nil, err
@@ -488,6 +488,9 @@ func (e *Engine) futureArbiterCohort(ctx context.Context, repo string, anchorPat
 	}
 	cohort := []futureArbiterCohortMember{}
 	for _, task := range tasks {
+		if task.Target != anchor.Target || task.Profile != anchor.Profile || task.Repository != anchor.Repository {
+			continue
+		}
 		// A generation freezes the cohort visible when it was derived. Later
 		// submissions are held by the same admission authority but cannot mutate
 		// or invalidate this context-free input during model execution/restart.

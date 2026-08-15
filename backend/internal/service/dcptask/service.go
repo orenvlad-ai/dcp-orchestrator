@@ -105,9 +105,12 @@ func New(deps Deps) *Service {
 }
 
 const (
-	PolicyTarget         = "dcp-review-lab"
-	PolicyProfile        = "synthetic-pr"
-	PolicyRepositoryName = "orenvlad-ai/dcp-review-lab"
+	PolicyTarget           = "dcp-review-lab"
+	PolicyProfile          = "synthetic-pr"
+	PolicyRepositoryName   = "orenvlad-ai/dcp-review-lab"
+	RepoOnlyTarget         = "wb-price-extension"
+	RepoOnlyProfile        = "repo-only"
+	RepoOnlyRepositoryName = "orenvlad-ai/wb-price-extension"
 )
 
 var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)
@@ -200,11 +203,12 @@ func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (Polic
 	if s == nil || s.policyStore == nil || s.policyRepository == nil || s.policyRuntime == nil || s.policyWorktreeRoot == "." || !filepath.IsAbs(s.policyWorktreeRoot) {
 		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_UNAVAILABLE", "DCP review-lab policy is unavailable")
 	}
-	if err := validatePolicySubmit(in); err != nil {
+	spec, err := validatePolicySubmit(in)
+	if err != nil {
 		return PolicySubmitResult{}, err
 	}
 	payloadBytes, err := json.Marshal(policyPayload{
-		SchemaVersion: domain.DCPReviewLabPolicyVersion, TaskID: in.TaskID, Target: in.Target,
+		SchemaVersion: spec.PolicyVersion, TaskID: in.TaskID, Target: in.Target,
 		Profile: in.Profile, Repository: in.Repository, Prompt: in.Prompt,
 	})
 	if err != nil {
@@ -214,8 +218,8 @@ func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (Polic
 	now := s.now().UTC()
 	task := domain.DCPReviewLabPolicyTask{
 		TaskID: in.TaskID, PayloadJSON: string(payloadBytes), PayloadDigest: hex.EncodeToString(sum[:]),
-		Target: PolicyTarget, Profile: PolicyProfile, Repository: PolicyRepositoryName,
-		PolicyVersion: domain.DCPReviewLabPolicyVersion, Prompt: in.Prompt,
+		Target: spec.Target, Profile: spec.Profile, Repository: spec.Repository,
+		PolicyVersion: spec.PolicyVersion, Prompt: in.Prompt,
 		State: domain.DCPPolicyReserved, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	var reserved sqlitestore.DCPPolicyReserveResult
@@ -230,11 +234,11 @@ func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (Polic
 		}
 		reserved = sqlitestore.DCPPolicyReserveResult{Task: existing}
 	} else {
-		if err := s.validatePolicyTarget(ctx); err != nil {
-			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public synthetic repository identity failed validation", nil)
+		if err := s.validatePolicyTarget(ctx, spec); err != nil {
+			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public policy repository identity failed validation", nil)
 		}
 		seed := domain.SessionRecord{
-			ProjectID: PolicyTarget, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+			ProjectID: domain.ProjectID(spec.Target), Kind: domain.KindWorker, Harness: domain.HarnessCodex,
 			DisplayName: "DCP:" + in.TaskID, Activity: domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 			CreatedAt: now, UpdatedAt: now,
 		}
@@ -248,8 +252,8 @@ func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (Polic
 	}
 	task = reserved.Task
 	if task.State == domain.DCPPolicyReserved {
-		if err := s.validatePolicyTarget(ctx); err != nil {
-			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public synthetic repository identity failed validation", nil)
+		if err := s.validatePolicyTarget(ctx, spec); err != nil {
+			return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_TARGET_INVALID", "The exact public policy repository identity failed validation", nil)
 		}
 		cfg := policySpawnConfig(task)
 		if _, _, _, err := s.policyRuntime.ProvisionDCPReviewLabPolicySession(ctx, task.SessionID, cfg); err != nil {
@@ -280,30 +284,30 @@ func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (Polic
 	return PolicySubmitResult{Task: task, Duplicate: !reserved.Created}, nil
 }
 
-func (s *Service) validatePolicyTarget(ctx context.Context) error {
-	project, ok, err := s.policyStore.GetProject(ctx, PolicyTarget)
+func (s *Service) validatePolicyTarget(ctx context.Context, spec domain.DCPPolicyTargetSpec) error {
+	project, ok, err := s.policyStore.GetProject(ctx, spec.Target)
 	if err != nil || !ok || !project.ArchivedAt.IsZero() {
-		return errors.Join(err, errors.New("exact dcp-review-lab project is unavailable"))
+		return errors.Join(err, fmt.Errorf("exact %s project is unavailable", spec.Target))
 	}
 	identity, err := s.policyRepository.Validate(ctx, project)
-	if err != nil || identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName {
-		return errors.Join(err, errors.New("exact public synthetic repository identity failed validation"))
+	if err != nil || identity.ProjectID != spec.Target || identity.Repository != spec.Repository {
+		return errors.Join(err, errors.New("exact public policy repository identity failed validation"))
 	}
 	return nil
 }
 
-func (s *Service) validatePolicyContinuationTarget(ctx context.Context) error {
-	project, ok, err := s.policyStore.GetProject(ctx, PolicyTarget)
+func (s *Service) validatePolicyContinuationTarget(ctx context.Context, spec domain.DCPPolicyTargetSpec) error {
+	project, ok, err := s.policyStore.GetProject(ctx, spec.Target)
 	if err != nil || !ok || !project.ArchivedAt.IsZero() {
-		return errors.Join(err, errors.New("exact dcp-review-lab project is unavailable"))
+		return errors.Join(err, fmt.Errorf("exact %s project is unavailable", spec.Target))
 	}
 	validator, ok := s.policyRepository.(ContinuationRepositoryValidator)
 	if !ok {
-		return s.validatePolicyTarget(ctx)
+		return s.validatePolicyTarget(ctx, spec)
 	}
 	identity, err := validator.ValidateContinuation(ctx, project)
-	if err != nil || identity.ProjectID != PolicyTarget || identity.Repository != PolicyRepositoryName {
-		return errors.Join(err, errors.New("exact public synthetic continuation identity failed validation"))
+	if err != nil || identity.ProjectID != spec.Target || identity.Repository != spec.Repository {
+		return errors.Join(err, errors.New("exact public policy continuation identity failed validation"))
 	}
 	return nil
 }
@@ -316,23 +320,31 @@ func samePolicyPayload(existing, requested domain.DCPReviewLabPolicyTask) bool {
 
 func policySpawnConfig(task domain.DCPReviewLabPolicyTask) ports.SpawnConfig {
 	return ports.SpawnConfig{
-		ProjectID: PolicyTarget, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		ProjectID: domain.ProjectID(task.Target), Kind: domain.KindWorker, Harness: domain.HarnessCodex,
 		Branch: task.SourceBranch, DisplayName: "DCP:" + task.TaskID,
-		Prompt: "DCP synthetic task " + task.TaskID + ": " + task.Prompt,
+		Prompt: policyPrompt(task),
 	}
 }
 
-func validatePolicySubmit(in PolicySubmitInput) error {
-	if !policyTaskIDPattern.MatchString(in.TaskID) {
-		return apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "taskId must be 1-16 lowercase letters, digits, or internal hyphens", nil)
+func policyPrompt(task domain.DCPReviewLabPolicyTask) string {
+	if task.Profile == RepoOnlyProfile {
+		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
 	}
-	if in.Target != PolicyTarget || in.Profile != PolicyProfile || in.Repository != PolicyRepositoryName {
-		return apierr.Invalid("DCP_POLICY_IDENTITY_INVALID", "target, profile, and repository must match the exact synthetic policy", nil)
+	return "DCP synthetic task " + task.TaskID + ": " + task.Prompt
+}
+
+func validatePolicySubmit(in PolicySubmitInput) (domain.DCPPolicyTargetSpec, error) {
+	if !policyTaskIDPattern.MatchString(in.TaskID) {
+		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "taskId must be 1-16 lowercase letters, digits, or internal hyphens", nil)
+	}
+	spec, ok := domain.DCPPolicyTarget(in.Target, in.Profile)
+	if !ok || in.Repository != spec.Repository {
+		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_IDENTITY_INVALID", "target, profile, and repository must match one exact policy allowlist entry", nil)
 	}
 	if strings.TrimSpace(in.Prompt) == "" || len(in.Prompt) > 512 || !utf8.ValidString(in.Prompt) || strings.ContainsAny(in.Prompt, "\x00\r\n") {
-		return apierr.Invalid("DCP_POLICY_PROMPT_INVALID", "prompt must be one line and at most 512 UTF-8 bytes", nil)
+		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_PROMPT_INVALID", "prompt must be one line and at most 512 UTF-8 bytes", nil)
 	}
-	return nil
+	return spec, nil
 }
 
 // SubmitInput is the semantic command accepted from the internal loopback lab

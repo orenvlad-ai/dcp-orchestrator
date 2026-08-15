@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +207,7 @@ type fakeSCM struct {
 	mergeErr     error
 	mergeCalls   int
 	expectedHead string
+	expectedRepo string
 	mergeSHA     string
 }
 
@@ -500,7 +502,9 @@ func TestDrainThreeCleanOldBasePolicyPRsRefreshesProviderMainAndPreservesAllChan
 	}
 	scm := &tripleQueueSCM{store: store, currentBase: oldBase, mergeSHAs: mergeSHAs, files: map[string]string{}}
 	engine := New(store, scm, dataDir)
-	engine.providerRepository = func(context.Context) (string, error) { return RepositoryFullName + "|false|main", nil }
+	engine.providerRepository = func(context.Context) (string, error) {
+		return RepositoryFullName + "|false|main|1329007118|237411244", nil
+	}
 	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
 		cmd := strings.Join(args, " ")
 		switch cmd {
@@ -586,7 +590,11 @@ func (f *fakeSCM) FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCM
 }
 func (f *fakeSCM) MergePullRequest(_ context.Context, request ports.SCMMergeRequest) (ports.SCMMergeResult, error) {
 	f.mergeCalls++
-	if request.ExpectedHeadSHA != f.expectedHead || request.Method != ports.SCMMergeSquash || request.PR.Repo.Repo != RepositoryFullName {
+	expectedRepo := f.expectedRepo
+	if expectedRepo == "" {
+		expectedRepo = RepositoryFullName
+	}
+	if request.ExpectedHeadSHA != f.expectedHead || request.Method != ports.SCMMergeSquash || request.PR.Repo.Repo != expectedRepo {
 		return ports.SCMMergeResult{}, errors.New("unexpected merge request")
 	}
 	if f.mergeErr != nil {
@@ -704,10 +712,20 @@ func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 }
 
 func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
+	spec, _ := domain.DCPPolicyTarget("dcp-review-lab", "synthetic-pr")
+	return policyTargetFixture(t, spec, 13)
+}
+
+func policyTargetFixture(t *testing.T, spec domain.DCPPolicyTargetSpec, card int64) (*Engine, *fakeStore, *fakeSCM) {
 	t.Helper()
 	engine, store, scm := fixture(t)
-	id := domain.SessionID("dcp-review-lab-13")
-	workspace := filepath.Join(engine.dataDir, "worktrees", ProjectID, string(id))
+	id := domain.SessionID(spec.SessionPrefix + "-" + strconv.FormatInt(card, 10))
+	store.project.ID = spec.Target
+	store.project.Path = filepath.Join(filepath.Dir(engine.dataDir), "targets", spec.Target)
+	store.project.RepoOriginURL = spec.OriginURL
+	store.project.Config.DefaultBranch, store.project.Config.SessionPrefix = spec.DefaultBranch, spec.SessionPrefix
+	store.project.Config.AgentRules = spec.AgentRules
+	workspace := filepath.Join(engine.dataDir, "worktrees", spec.Target, string(id))
 	privateGitDir := filepath.Join(store.project.Path, ".git", "worktrees", string(id))
 	for _, path := range []string{workspace, privateGitDir} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -716,19 +734,38 @@ func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	}
 	branch := "ao/" + string(id) + "/root"
 	store.session.ID, store.session.DisplayName = id, "DCP:future-1"
+	store.session.ProjectID = domain.ProjectID(spec.Target)
 	store.session.Metadata.WorkspacePath, store.session.Metadata.Branch = workspace, branch
-	store.session.Metadata.Prompt = "DCP synthetic task future-1: Add one future policy fixture."
-	store.pr.SessionID, store.pr.SourceBranch = id, branch
-	store.run.SessionID = id
+	promptPrefix := "DCP synthetic task "
+	if spec.Profile == "repo-only" {
+		promptPrefix = "DCP repo-only task "
+	}
+	store.session.Metadata.Prompt = promptPrefix + "future-1: Add one future policy fixture."
+	prURL := "https://github.com/" + spec.Repository + "/pull/4"
+	store.pr.SessionID, store.pr.SourceBranch, store.pr.Repo = id, branch, spec.Repository
+	store.pr.URL, store.pr.HTMLURL, store.pr.TargetBranch = prURL, prURL, spec.DefaultBranch
+	store.run.SessionID, store.run.PRURL = id, prURL
 	store.policyTask = &domain.DCPReviewLabPolicyTask{
-		TaskID: "future-1", Target: ProjectID, Profile: "synthetic-pr", Repository: RepositoryFullName,
-		PolicyVersion: domain.DCPReviewLabPolicyVersion, SessionID: id, CardNumber: 13,
+		TaskID: "future-1", Target: spec.Target, Profile: spec.Profile, Repository: spec.Repository,
+		PolicyVersion: spec.PolicyVersion, SessionID: id, CardNumber: card,
 		WorktreePath: workspace, SourceBranch: branch, Prompt: "Add one future policy fixture.",
 		State: domain.DCPPolicyAdmissionWait, Revision: 8, CurrentHeadSHA: testHead, ReviewRunID: store.run.ID,
 	}
-	scm.observation.PR.SourceBranch = branch
-	scm.observation.CI.Checks[0].URL = "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/123/job/456"
-	engine.providerRepository = func(context.Context) (string, error) { return RepositoryFullName + "|false|main", nil }
+	scm.observation.Repo, scm.observation.PR.HeadRepo = spec.Repository, spec.Repository
+	scm.expectedRepo = spec.Repository
+	scm.observation.PR.URL, scm.observation.PR.HTMLURL = prURL, prURL
+	scm.observation.PR.SourceBranch, scm.observation.PR.TargetBranch = branch, spec.DefaultBranch
+	scm.observation.CI.Checks[0].Name = spec.RequiredCheck
+	scm.observation.CI.Checks[0].URL = "https://github.com/" + spec.Repository + "/actions/runs/123/job/456"
+	engine.providerRepository = func(context.Context) (string, error) {
+		return policyProviderIdentity(spec), nil
+	}
+	engine.providerRepositoryFor = func(_ context.Context, repository string) (string, error) {
+		if repository != spec.Repository {
+			return "", errors.New("foreign provider lookup")
+		}
+		return policyProviderIdentity(spec), nil
+	}
 	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
 		cmd := strings.Join(args, " ")
 		if cmd == "status --porcelain" {
@@ -738,9 +775,9 @@ func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 			return "origin", nil
 		}
 		if cmd == "remote get-url origin" {
-			return RepositoryURL, nil
+			return spec.OriginURL, nil
 		}
-		if cmd == "fetch --no-tags origin main" {
+		if cmd == "fetch --no-tags origin "+spec.DefaultBranch {
 			return "", nil
 		}
 		if path == store.project.Path {
@@ -748,8 +785,8 @@ func futurePolicyFixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 			case "rev-parse --show-toplevel":
 				return path, nil
 			case "branch --show-current":
-				return TargetBranch, nil
-			case "rev-parse origin/main", "rev-parse HEAD":
+				return spec.DefaultBranch, nil
+			case "rev-parse origin/" + spec.DefaultBranch, "rev-parse HEAD":
 				return strings.ToLower(store.pr.BaseSHA), nil
 			case "merge-tree --write-tree " + strings.ToLower(store.pr.BaseSHA) + " " + testHead:
 				return testMerge, nil
@@ -796,6 +833,30 @@ func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T)
 	}
 	if scm.mergeCalls != 1 {
 		t.Fatalf("future terminal merge duplicated: %d", scm.mergeCalls)
+	}
+}
+
+func TestRepoOnlyPolicyUsesExactProviderCheckAndTrustedMerge(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-price-extension", "repo-only")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 1 || store.policyTask.State != domain.DCPPolicyMerged || store.policyTask.MergeCommitSHA != testMerge ||
+		store.admission == nil || store.admission.Status != domain.DCPAdmissionSucceeded {
+		t.Fatalf("repo-only terminal projection: merges=%d task=%+v admission=%+v", scm.mergeCalls, store.policyTask, store.admission)
+	}
+
+	foreignEngine, foreignStore, foreignSCM := policyTargetFixture(t, spec, 1)
+	foreignEngine.providerRepositoryFor = func(context.Context, string) (string, error) {
+		reviewSpec, _ := domain.DCPPolicyTarget("dcp-review-lab", "synthetic-pr")
+		return policyProviderIdentity(reviewSpec), nil
+	}
+	if err := foreignEngine.Try(context.Background(), foreignStore.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if foreignSCM.mergeCalls != 0 || foreignStore.policyTask.State != domain.DCPPolicyIncident {
+		t.Fatalf("foreign provider identity was not failed closed: merges=%d task=%+v", foreignSCM.mergeCalls, foreignStore.policyTask)
 	}
 }
 

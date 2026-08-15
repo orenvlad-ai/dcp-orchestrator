@@ -71,8 +71,17 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 		TaskID: "future-1", Target: PolicyTarget, Profile: PolicyProfile,
 		Repository: PolicyRepositoryName, Prompt: "add one bounded synthetic fixture",
 	}
-	if err := validatePolicySubmit(valid); err != nil {
+	if _, err := validatePolicySubmit(valid); err != nil {
 		t.Fatalf("valid policy input: %v", err)
+	}
+	repoOnly := PolicySubmitInput{TaskID: "brief-1", Target: RepoOnlyTarget, Profile: RepoOnlyProfile, Repository: RepoOnlyRepositoryName, Prompt: "refine the high-level architecture brief"}
+	if spec, err := validatePolicySubmit(repoOnly); err != nil || spec.PolicyVersion != domain.DCPRepoOnlyPolicyVersion || spec.RequiredCheck != "baseline" {
+		t.Fatalf("valid repo-only input: spec=%+v err=%v", spec, err)
+	}
+	crossed := repoOnly
+	crossed.Profile, crossed.Repository = PolicyProfile, PolicyRepositoryName
+	if _, err := validatePolicySubmit(crossed); err == nil {
+		t.Fatal("cross-target profile/repository identity was accepted")
 	}
 	for name, mutate := range map[string]func(*PolicySubmitInput){
 		"foreign target":     func(in *PolicySubmitInput) { in.Target = "dcp-lab" },
@@ -84,15 +93,32 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			input := valid
 			mutate(&input)
-			if err := validatePolicySubmit(input); err == nil {
+			if _, err := validatePolicySubmit(input); err == nil {
 				t.Fatalf("accepted out-of-policy input: %+v", input)
 			}
 		})
 	}
 }
 
+func TestPolicyPromptUsesTheExactAllowlistedProfile(t *testing.T) {
+	repoOnly := domain.DCPReviewLabPolicyTask{TaskID: "brief-1", Profile: RepoOnlyProfile, Prompt: "refine the architecture brief"}
+	if got, want := policyPrompt(repoOnly), "DCP repo-only task brief-1: refine the architecture brief"; got != want {
+		t.Fatalf("repo-only prompt = %q, want %q", got, want)
+	}
+	initial, err := (&Service{}).workerActionPrompt(context.Background(), repoOnly, domain.DCPModelAction{Kind: domain.DCPActionInitialWorker})
+	if err != nil || initial != policyPrompt(repoOnly) {
+		t.Fatalf("repo-only initial action prompt = %q, err=%v", initial, err)
+	}
+
+	synthetic := domain.DCPReviewLabPolicyTask{TaskID: "fixture-1", Profile: PolicyProfile, Prompt: "add one fixture"}
+	if got, want := policyPrompt(synthetic), "DCP synthetic task fixture-1: add one fixture"; got != want {
+		t.Fatalf("synthetic prompt = %q, want %q", got, want)
+	}
+}
+
 func TestValidateExactPolicyPRWaitsForEnrichmentAndRejectsContradiction(t *testing.T) {
-	task := domain.DCPReviewLabPolicyTask{SourceBranch: "ao/dcp-review-lab-20/root"}
+	task := domain.DCPReviewLabPolicyTask{Target: PolicyTarget, Profile: PolicyProfile, Repository: PolicyRepositoryName,
+		PolicyVersion: domain.DCPReviewLabPolicyVersion, SourceBranch: "ao/dcp-review-lab-20/root"}
 	url := "https://github.com/orenvlad-ai/dcp-review-lab/pull/17"
 	head := "6211c80a4b9e8b6ab30a38a64c4bca3ec38ef621"
 	partial := domain.PullRequest{URL: url, Number: 17, HeadSHA: head}
@@ -125,7 +151,7 @@ func TestValidateExactPolicyPRWaitsForEnrichmentAndRejectsContradiction(t *testi
 func TestValidateExactPolicyNamedCIIgnoresHistoricalHeadChecks(t *testing.T) {
 	head := "931a69637be0b14d9ca145909d0f6060ad81c2fc"
 	oldHead := "8b3f601ae7b82b68bfd3f3810069c7a91774ca72"
-	pr := domain.PullRequest{CI: domain.CIPassing}
+	pr := domain.PullRequest{CI: domain.CIPassing, Repo: PolicyRepositoryName}
 	checks := []domain.PullRequestCheck{
 		{Name: "dcp-review-lab", CommitHash: oldHead, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/31847795164/job/94917645974"},
 		{Name: "dcp-review-lab", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/orenvlad-ai/dcp-review-lab/actions/runs/31854288545/job/94935989369"},

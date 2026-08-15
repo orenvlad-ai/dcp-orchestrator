@@ -34,9 +34,16 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 		}
 		switch action.Kind {
 		case domain.DCPActionInitialWorker, domain.DCPActionRepairWorker:
-			validate := s.validatePolicyTarget
+			spec, exact := domain.DCPPolicyTargetForTask(task)
+			if !exact {
+				if failErr := s.failClaimedAction(ctx, task, action, "worker_target_invalid"); failErr != nil {
+					return failErr
+				}
+				continue
+			}
+			validate := func(ctx context.Context) error { return s.validatePolicyTarget(ctx, spec) }
 			if action.Kind == domain.DCPActionRepairWorker {
-				validate = s.validatePolicyContinuationTarget
+				validate = func(ctx context.Context) error { return s.validatePolicyContinuationTarget(ctx, spec) }
 			}
 			if err := validate(ctx); err != nil {
 				if failErr := s.failClaimedAction(ctx, task, action, "worker_target_invalid"); failErr != nil {
@@ -142,7 +149,7 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 
 func (s *Service) workerActionPrompt(ctx context.Context, task domain.DCPReviewLabPolicyTask, action domain.DCPModelAction) (string, error) {
 	if action.Kind == domain.DCPActionInitialWorker {
-		return "DCP synthetic task " + task.TaskID + ": " + task.Prompt, nil
+		return policyPrompt(task), nil
 	}
 	if action.Kind == domain.DCPActionRepairWorker && action.IncidentID != "" {
 		if s.policyArbiter == nil || task.RepairCount != 1 || task.State != domain.DCPPolicyRepairRunning || action.ExactHeadSHA != task.CurrentHeadSHA {
@@ -238,7 +245,11 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 	if err != nil || !policy {
 		return policy, false, err
 	}
-	if err := s.validatePolicyContinuationTarget(ctx); err != nil {
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	if !exact {
+		return true, false, errors.New("policy target identity drifted")
+	}
+	if err := s.validatePolicyContinuationTarget(ctx, spec); err != nil {
 		if task.State == domain.DCPPolicyReviewRunning {
 			if action, active, actionErr := s.policyStore.GetActiveDCPModelActionBySession(ctx, id); actionErr == nil && active && action.Kind == domain.DCPActionReviewer && action.Status == domain.DCPActionClaimed {
 				_ = s.failClaimedAction(ctx, task, action, "provider_identity_drift")
@@ -445,7 +456,11 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 			return errors.Join(err, fmt.Errorf("DCP policy task %s native identity drifted", task.TaskID))
 		}
 		if task.State == domain.DCPPolicyReserved {
-			if err := s.validatePolicyTarget(ctx); err != nil {
+			spec, exact := domain.DCPPolicyTargetForTask(task)
+			if !exact {
+				return fmt.Errorf("DCP policy task %s target identity drifted", task.TaskID)
+			}
+			if err := s.validatePolicyTarget(ctx, spec); err != nil {
 				return err
 			}
 			if _, _, _, err := s.policyRuntime.ProvisionDCPReviewLabPolicySession(ctx, task.SessionID, policySpawnConfig(task)); err != nil {
@@ -579,15 +594,19 @@ func (s *Service) exactPolicyPR(ctx context.Context, task domain.DCPReviewLabPol
 }
 
 func validateExactPolicyPR(task domain.DCPReviewLabPolicyTask, pr domain.PullRequest, prURL, head string) error {
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	if !exact {
+		return errors.New("policy target identity is not exact")
+	}
 	if prURL == "" || head == "" || pr.URL == "" || pr.HTMLURL == "" || pr.Number == 0 ||
 		pr.Provider == "" || pr.Host == "" || pr.Repo == "" || pr.SourceBranch == "" ||
 		pr.TargetBranch == "" || pr.Author == "" || pr.ProviderState == "" || pr.HeadSHA == "" {
 		return errPolicyPRFactsPending
 	}
 	if pr.URL != prURL || pr.HTMLURL != pr.URL || pr.Provider != "github" || pr.Host != "github.com" ||
-		pr.Repo != PolicyRepositoryName || pr.SourceBranch != task.SourceBranch || pr.TargetBranch != "main" ||
+		pr.Repo != spec.Repository || pr.SourceBranch != task.SourceBranch || pr.TargetBranch != spec.DefaultBranch ||
 		pr.Author != "orenvlad-ai" || pr.Draft || pr.Merged || pr.Closed || pr.ProviderState != "OPEN" ||
-		!strings.EqualFold(pr.HeadSHA, head) || !validPolicyPRURL(pr.URL, pr.Number) || !validPolicySHA(head) {
+		!strings.EqualFold(pr.HeadSHA, head) || !validPolicyPRURL(spec, pr.URL, pr.Number) || !validPolicySHA(head) {
 		return errors.New("policy PR provider identity is not exact")
 	}
 	return nil
@@ -602,6 +621,10 @@ func (s *Service) exactPolicyNamedCI(ctx context.Context, pr domain.PullRequest,
 }
 
 func validateExactPolicyNamedCI(pr domain.PullRequest, checks []domain.PullRequestCheck, head string) (ready, terminal bool, err error) {
+	spec, exact := policySpecForPR(pr)
+	if !exact {
+		return false, true, errors.New("named CI repository identity is not exact")
+	}
 	if len(checks) == 0 || pr.CI == domain.CIUnknown || pr.CI == domain.CIPending {
 		return false, false, nil
 	}
@@ -617,9 +640,9 @@ func validateExactPolicyNamedCI(pr domain.PullRequest, checks []domain.PullReque
 		if check.Status != domain.PRCheckPassed || !strings.EqualFold(check.Conclusion, "success") {
 			return false, true, errors.New("named CI is not successful")
 		}
-		if check.Name == "dcp-review-lab" {
+		if check.Name == spec.RequiredCheck {
 			required++
-			if !validPolicyCheckURL(check.URL) {
+			if !validPolicyCheckURL(spec, check.URL) {
 				return false, true, errors.New("named CI provider identity drifted")
 			}
 		}
@@ -654,9 +677,9 @@ func (s *Service) failPolicyTask(ctx context.Context, task domain.DCPReviewLabPo
 }
 
 func exactPolicyNativeIdentity(task domain.DCPReviewLabPolicyTask, session domain.SessionRecord) bool {
-	base := task.PolicyVersion == domain.DCPReviewLabPolicyVersion && task.Target == PolicyTarget && task.Profile == PolicyProfile &&
-		task.Repository == PolicyRepositoryName && task.CardNumber > 12 && task.SessionID == session.ID &&
-		session.ProjectID == PolicyTarget && session.Kind == domain.KindWorker && session.Harness == domain.HarnessCodex &&
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	base := exact && task.CardNumber >= spec.MinimumCardNumber && task.SessionID == session.ID &&
+		session.ProjectID == domain.ProjectID(spec.Target) && session.Kind == domain.KindWorker && session.Harness == domain.HarnessCodex &&
 		session.DisplayName == "DCP:"+task.TaskID
 	if !base {
 		return false
@@ -671,11 +694,11 @@ func exactPolicyNativeIdentity(task domain.DCPReviewLabPolicyTask, session domai
 	if task.State == domain.DCPPolicyReserved {
 		seed := session.Metadata.Branch == "" && session.Metadata.WorkspacePath == "" && session.Metadata.Prompt == "" && session.Metadata.RuntimeLaunchID == ""
 		provisioned := session.Metadata.Branch == task.SourceBranch && session.Metadata.WorkspacePath == task.WorktreePath &&
-			session.Metadata.Prompt == "DCP synthetic task "+task.TaskID+": "+task.Prompt && session.Metadata.RuntimeLaunchID == ""
+			session.Metadata.Prompt == policyPrompt(task) && session.Metadata.RuntimeLaunchID == ""
 		return seed || provisioned
 	}
 	return session.Metadata.Branch == task.SourceBranch &&
-		session.Metadata.WorkspacePath == task.WorktreePath && session.Metadata.Prompt == "DCP synthetic task "+task.TaskID+": "+task.Prompt &&
+		session.Metadata.WorkspacePath == task.WorktreePath && session.Metadata.Prompt == policyPrompt(task) &&
 		true
 }
 
@@ -691,14 +714,24 @@ func validPolicySHA(value string) bool {
 	return true
 }
 
-func validPolicyPRURL(raw string, number int) bool {
-	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
-		u.Path == "/"+PolicyRepositoryName+"/pull/"+strconv.Itoa(number)
+func policySpecForPR(pr domain.PullRequest) (domain.DCPPolicyTargetSpec, bool) {
+	for _, identity := range [][2]string{{PolicyTarget, PolicyProfile}, {RepoOnlyTarget, RepoOnlyProfile}} {
+		spec, _ := domain.DCPPolicyTarget(identity[0], identity[1])
+		if pr.Repo == spec.Repository {
+			return spec, true
+		}
+	}
+	return domain.DCPPolicyTargetSpec{}, false
 }
 
-func validPolicyCheckURL(raw string) bool {
+func validPolicyPRURL(spec domain.DCPPolicyTargetSpec, raw string, number int) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
-		strings.HasPrefix(u.Path, "/"+PolicyRepositoryName+"/actions/runs/")
+		u.Path == "/"+spec.Repository+"/pull/"+strconv.Itoa(number)
+}
+
+func validPolicyCheckURL(spec domain.DCPPolicyTargetSpec, raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
+		strings.HasPrefix(u.Path, "/"+spec.Repository+"/actions/runs/")
 }

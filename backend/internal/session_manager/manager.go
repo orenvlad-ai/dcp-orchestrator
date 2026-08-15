@@ -612,8 +612,8 @@ func (m *Manager) ProvisionDCPReviewLabPolicySession(ctx context.Context, id dom
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: %w", id, err)
 	}
-	if cfg.ProjectID != domain.ProjectID("dcp-review-lab") || cfg.Kind != domain.KindWorker || cfg.Harness != domain.HarnessCodex ||
-		cfg.DisplayName != "DCP:"+task.TaskID || cfg.Prompt != "DCP synthetic task "+task.TaskID+": "+task.Prompt ||
+	if cfg.ProjectID != domain.ProjectID(task.Target) || cfg.Kind != domain.KindWorker || cfg.Harness != domain.HarnessCodex ||
+		cfg.DisplayName != "DCP:"+task.TaskID || cfg.Prompt != dcpPolicyPrompt(task) ||
 		cfg.Branch != task.SourceBranch || len(cfg.Attachments) != 0 || cfg.IssueID != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: reserved command identity drift", id)
 	}
@@ -621,7 +621,7 @@ func (m *Manager) ProvisionDCPReviewLabPolicySession(ctx context.Context, id dom
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, err
 	}
-	if !exactDCPReviewLabPolicyProject(project) {
+	if !exactDCPPolicyProject(project, task) {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: exact project profile unavailable", id)
 	}
 	rec, ok, err := m.store.GetSession(ctx, id)
@@ -699,16 +699,16 @@ func (m *Manager) LaunchDCPReviewLabPolicyAction(ctx context.Context, id domain.
 	if err != nil || !ok {
 		return RestoreResult{}, errors.Join(err, ErrNotFound)
 	}
-	if rec.ProjectID != "dcp-review-lab" || rec.Kind != domain.KindWorker || rec.Harness != domain.HarnessCodex || rec.IsTerminated ||
+	if rec.ProjectID != domain.ProjectID(task.Target) || rec.Kind != domain.KindWorker || rec.Harness != domain.HarnessCodex || rec.IsTerminated ||
 		rec.Activity.State != domain.ActivityIdle || rec.Metadata.RuntimeLaunchID != "" || rec.Metadata.WorkspacePath != task.WorktreePath ||
-		rec.Metadata.Branch != task.SourceBranch || rec.Metadata.Prompt != "DCP synthetic task "+task.TaskID+": "+task.Prompt {
+		rec.Metadata.Branch != task.SourceBranch || rec.Metadata.Prompt != dcpPolicyPrompt(task) {
 		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: %w", id, ErrNotRestorable)
 	}
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	if !exactDCPReviewLabPolicyProject(project) {
+	if !exactDCPPolicyProject(project, task) {
 		return RestoreResult{}, fmt.Errorf("launch DCP policy action %s: exact project profile unavailable", id)
 	}
 	agent, ok := m.agents.Agent(rec.Harness)
@@ -818,24 +818,33 @@ func (m *Manager) requireDCPReviewLabPolicySession(ctx context.Context, id domai
 	if err != nil || !found {
 		return domain.DCPReviewLabPolicyTask{}, errors.Join(err, ErrNotRestorable)
 	}
-	if task.PolicyVersion != domain.DCPReviewLabPolicyVersion || task.Target != "dcp-review-lab" || task.Profile != "synthetic-pr" ||
-		task.Repository != "orenvlad-ai/dcp-review-lab" || task.CardNumber <= 12 || task.SessionID != id ||
-		task.WorktreePath != filepath.Join(m.dataDir, "worktrees", "dcp-review-lab", string(id)) || task.SourceBranch != "ao/"+string(id)+"/root" {
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	if !exact || task.CardNumber < spec.MinimumCardNumber || task.SessionID != id ||
+		task.WorktreePath != filepath.Join(m.dataDir, "worktrees", spec.Target, string(id)) || task.SourceBranch != "ao/"+string(id)+"/root" ||
+		string(id) != spec.SessionPrefix+"-"+strconv.FormatInt(task.CardNumber, 10) {
 		return domain.DCPReviewLabPolicyTask{}, ErrNotRestorable
 	}
 	return task, nil
 }
 
-func exactDCPReviewLabPolicyProject(project domain.ProjectRecord) bool {
-	return project.ID == "dcp-review-lab" && project.Kind.WithDefault() == domain.ProjectKindSingleRepo &&
-		project.RepoOriginURL == "https://github.com/orenvlad-ai/dcp-review-lab.git" &&
-		project.Config.DefaultBranch == "main" && project.Config.SessionPrefix == "dcp-review-lab" &&
-		project.Config.AgentRules == domain.DCPReviewLabPolicyAgentRules && project.Config.AgentRulesFile == "" && project.Config.OrchestratorRules == "" &&
+func exactDCPPolicyProject(project domain.ProjectRecord, task domain.DCPReviewLabPolicyTask) bool {
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	return exact && string(project.ID) == spec.Target && project.Kind.WithDefault() == domain.ProjectKindSingleRepo &&
+		project.RepoOriginURL == spec.OriginURL &&
+		project.Config.DefaultBranch == spec.DefaultBranch && project.Config.SessionPrefix == spec.SessionPrefix &&
+		project.Config.AgentRules == spec.AgentRules && project.Config.AgentRulesFile == "" && project.Config.OrchestratorRules == "" &&
 		project.Config.AgentConfig.IsZero() &&
 		project.Config.Worker == (domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}}) &&
 		project.Config.Orchestrator == (domain.RoleOverride{}) && project.Config.TrackerIntake == (domain.TrackerIntakeConfig{}) &&
 		project.Config.ContainerReap == (domain.ContainerReapConfig{}) && len(project.Config.Reviewers) == 1 &&
 		project.Config.Reviewers[0].Harness == domain.ReviewerCodex && len(project.Config.Env) == 0 && len(project.Config.Symlinks) == 0 && len(project.Config.PostCreate) == 0
+}
+
+func dcpPolicyPrompt(task domain.DCPReviewLabPolicyTask) string {
+	if task.Profile == "repo-only" {
+		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
+	}
+	return "DCP synthetic task " + task.TaskID + ": " + task.Prompt
 }
 
 // loadProject loads the project record so spawn can resolve its per-project

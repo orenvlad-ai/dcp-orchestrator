@@ -94,11 +94,11 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorkt
 	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
 	root := filepath.Join(filepath.Dir(repo), "worktrees")
 	validator := ReviewRepositoryValidator{TargetPath: repo, AllowedWorktreeRoot: root, RunProvider: func(context.Context, string) (string, error) {
-		return PolicyRepositoryName + "|false|main", nil
+		return PolicyRepositoryName + "|false|main|1329007118|237411244", nil
 	}}
 	project := domain.ProjectRecord{
 		ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
-		RepoOriginURL: reviewLabOrigin, RegisteredAt: time.Unix(100, 0).UTC(),
+		RepoOriginURL: reviewLabOrigin, Config: reviewLabProjectConfig(), RegisteredAt: time.Unix(100, 0).UTC(),
 	}
 	identity, err := validator.Validate(context.Background(), project)
 	if err != nil {
@@ -118,7 +118,9 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactSyntheticOriginAndManagedWorkt
 		t.Fatal("validator accepted foreign push authority")
 	}
 	runGitTest(t, repo, "remote", "set-url", "--push", "origin", reviewLabOrigin)
-	validator.RunProvider = func(context.Context, string) (string, error) { return PolicyRepositoryName + "|true|main", nil }
+	validator.RunProvider = func(context.Context, string) (string, error) {
+		return PolicyRepositoryName + "|true|main|1329007118|237411244", nil
+	}
 	if _, err := validator.Validate(context.Background(), project); err == nil {
 		t.Fatal("validator accepted private provider repository")
 	}
@@ -142,9 +144,11 @@ func TestReviewRepositoryValidatorAllowsOnlyAncestralContinuationBehindMain(t *t
 	}
 	validator := ReviewRepositoryValidator{
 		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
-		RunProvider: func(context.Context, string) (string, error) { return PolicyRepositoryName + "|false|main", nil },
+		RunProvider: func(context.Context, string) (string, error) {
+			return PolicyRepositoryName + "|false|main|1329007118|237411244", nil
+		},
 	}
-	project := domain.ProjectRecord{ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo, RepoOriginURL: reviewLabOrigin}
+	project := domain.ProjectRecord{ID: PolicyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo, RepoOriginURL: reviewLabOrigin, Config: reviewLabProjectConfig()}
 	if _, err := validator.Validate(context.Background(), project); err == nil {
 		t.Fatal("new-submit validator accepted a local main behind origin/main")
 	}
@@ -168,4 +172,37 @@ func TestReviewRepositoryValidatorAllowsOnlyAncestralContinuationBehindMain(t *t
 	if _, err := validator.ValidateContinuation(context.Background(), project); err == nil {
 		t.Fatal("continuation validator accepted a divergent local main")
 	}
+}
+
+func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *testing.T) {
+	repo := createDCPTestRepository(t)
+	runGitTest(t, repo, "remote", "add", "origin", "https://github.com/orenvlad-ai/wb-price-extension.git")
+	head := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
+	validator := ReviewRepositoryValidator{
+		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
+		RunProvider: func(_ context.Context, repository string) (string, error) {
+			if repository != RepoOnlyRepositoryName {
+				t.Fatalf("provider lookup repository = %q", repository)
+			}
+			return RepoOnlyRepositoryName + "|false|main|1335072844|237411244", nil
+		},
+	}
+	project := domain.ProjectRecord{ID: RepoOnlyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
+		RepoOriginURL: "https://github.com/orenvlad-ai/wb-price-extension.git",
+		Config:        domain.ProjectConfig{DefaultBranch: "main", SessionPrefix: RepoOnlyTarget, AgentRules: domain.DCPRepoOnlyPolicyAgentRules}}
+	identity, err := validator.Validate(context.Background(), project)
+	if err != nil || identity.ProjectID != RepoOnlyTarget || identity.Repository != RepoOnlyRepositoryName || identity.HeadSHA != head {
+		t.Fatalf("repo-only identity=%+v err=%v", identity, err)
+	}
+	validator.RunProvider = func(context.Context, string) (string, error) {
+		return RepoOnlyRepositoryName + "|false|main|1329007118|237411244", nil
+	}
+	if _, err := validator.Validate(context.Background(), project); err == nil {
+		t.Fatal("repo-only validator accepted the synthetic repository database id")
+	}
+}
+
+func reviewLabProjectConfig() domain.ProjectConfig {
+	return domain.ProjectConfig{DefaultBranch: "main", SessionPrefix: PolicyTarget, AgentRules: domain.DCPReviewLabPolicyAgentRules}
 }

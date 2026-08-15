@@ -512,6 +512,50 @@ describe("SessionsBoard", () => {
 		expect(failureDot).not.toHaveClass("animate-status-pulse");
 	});
 
+	it.each([
+		{ name: "0/0", review: 0, arbiter: 0 },
+		{ name: "n/0", review: 1, arbiter: 0 },
+		{ name: "0/n", review: 0, arbiter: 1 },
+		{ name: "n/n", review: 1, arbiter: 1 },
+	])("hides only empty internal review/arbiter subsections for $name", ({ review, arbiter }) => {
+		const sessions: WorkspaceSession[] = [];
+		if (review > 0) {
+			sessions.push(
+				boardSession({ id: "section-review", title: "section review", status: "review_pending", dcpPolicyState: "review_queued" }),
+			);
+		}
+		if (arbiter > 0) {
+			sessions.push(
+				boardSession({
+					id: "section-arbiter",
+					title: "section arbiter",
+					status: "review_failed",
+					dcpPolicyState: "incident",
+					dcpArbiterStatus: "requested",
+					dcpArbiterActionStatus: "queued",
+				}),
+			);
+		}
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions(sessions)],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const lane = screen.getByRole("region", { name: "In review / Arbiter sessions" });
+		expect(within(lane).getByLabelText(`${review} in review ${review === 1 ? "session" : "sessions"}`)).toBeInTheDocument();
+		expect(within(lane).getByLabelText(`${arbiter} arbiter ${arbiter === 1 ? "session" : "sessions"}`)).toBeInTheDocument();
+		expect(within(lane).queryByRole("region", { name: "In review sessions" }) !== null).toBe(review > 0);
+		expect(within(lane).queryByRole("region", { name: "Arbiter sessions" }) !== null).toBe(arbiter > 0);
+
+		if (review > 0 && arbiter > 0) {
+			const arbiterRegion = within(lane).getByRole("region", { name: "Arbiter sessions" });
+			const reviewRegion = within(lane).getByRole("region", { name: "In review sessions" });
+			expect(arbiterRegion.compareDocumentPosition(reviewRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		}
+	});
+
 	it("does not show a stale secondary open PR after the durable policy merges", () => {
 		scmSummaryMock.mockReturnValue({ data: [scmSummary({ state: "open" })] });
 		workspaceQueryMock.mockReturnValue({

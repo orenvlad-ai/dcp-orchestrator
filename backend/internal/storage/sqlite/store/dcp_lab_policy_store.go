@@ -57,8 +57,9 @@ func (s *Store) ReserveDCPReviewLabPolicyTask(ctx context.Context, task domain.D
 		if err != nil {
 			return fmt.Errorf("allocate native card: %w", err)
 		}
-		if num <= 12 {
-			return fmt.Errorf("future policy requires preserved cards 1-12, next card is %d", num)
+		spec, exact := domain.DCPPolicyTargetForTask(task)
+		if !exact || string(seed.ProjectID) != spec.Target || num < spec.MinimumCardNumber {
+			return fmt.Errorf("future policy card is outside the exact target range: target=%s next=%d", seed.ProjectID, num)
 		}
 		seed.ID = domain.SessionID(fmt.Sprintf("%s-%d", seed.ProjectID, num))
 		if err := q.InsertSession(ctx, recordToInsert(seed, num)); err != nil {

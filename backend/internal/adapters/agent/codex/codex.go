@@ -444,6 +444,7 @@ func appendWorkspaceGitMetadataFlags(ctx context.Context, cmd *[]string, permiss
 }
 
 const dcpReviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
+const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-price-extension.git"
 
 // appendDCPReviewLabNetworkFlag opens Codex's workspace-write network only for
 // the one PR-capable synthetic DCP contour. Every identity and path component
@@ -452,17 +453,12 @@ const dcpReviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
 // or fetch/push remote fails before a model process starts. All ordinary DCP
 // workers and every reviewer retain the stock network-disabled sandbox.
 func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEnabled, policyAuthorized bool, dataDir, sessionID string, kind domain.SessionKind, permissions ports.PermissionMode, workspacePath string) error {
-	if !strings.HasPrefix(sessionID, "dcp-review-lab-") {
+	target, origin, eligible := dcpNetworkPolicyIdentity(sessionID, policyAuthorized)
+	if target == "" {
 		return nil
 	}
-	if !isPositiveSessionSuffix(sessionID, "dcp-review-lab-") {
+	if target == "invalid" || !eligible {
 		return fmt.Errorf("codex DCP review-lab network: invalid session profile")
-	}
-	// Cards 1-5 are immutable pre-profile evidence and card 6 is the preserved
-	// network-denied qualification attempt. Never retroactively grant any of
-	// them network on restore/resume.
-	if !dcpReviewLabNetworkSession(sessionID, policyAuthorized) {
-		return nil
 	}
 	if !profileEnabled || kind != domain.KindWorker || permissions != ports.PermissionModeAcceptEdits {
 		return fmt.Errorf("codex DCP review-lab network: invalid session profile")
@@ -475,7 +471,7 @@ func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEn
 	if err != nil {
 		return fmt.Errorf("codex DCP review-lab network: workspace: %w", err)
 	}
-	expectedWorkspace := filepath.Join(data, "worktrees", "dcp-review-lab", sessionID)
+	expectedWorkspace := filepath.Join(data, "worktrees", target, sessionID)
 	if workspace != expectedWorkspace {
 		return fmt.Errorf("codex DCP review-lab network: workspace %q does not match %q", workspace, expectedWorkspace)
 	}
@@ -483,7 +479,7 @@ func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEn
 	if err != nil {
 		return fmt.Errorf("codex DCP review-lab network: Git metadata: %w", err)
 	}
-	expectedCommon, err := canonicalExistingDir(filepath.Join(filepath.Dir(data), "targets", "dcp-review-lab", ".git"))
+	expectedCommon, err := canonicalExistingDir(filepath.Join(filepath.Dir(data), "targets", target, ".git"))
 	if err != nil {
 		return fmt.Errorf("codex DCP review-lab network: target Git dir: %w", err)
 	}
@@ -495,8 +491,8 @@ func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEn
 		args []string
 		want string
 	}{
-		{name: "fetch remote", args: []string{"remote", "get-url", "--all", "origin"}, want: dcpReviewLabOrigin},
-		{name: "push remote", args: []string{"remote", "get-url", "--push", "--all", "origin"}, want: dcpReviewLabOrigin},
+		{name: "fetch remote", args: []string{"remote", "get-url", "--all", "origin"}, want: origin},
+		{name: "push remote", args: []string{"remote", "get-url", "--push", "--all", "origin"}, want: origin},
 		{name: "branch", args: []string{"branch", "--show-current"}, want: "ao/" + sessionID + "/root"},
 	}
 	for _, check := range checks {
@@ -510,6 +506,33 @@ func appendDCPReviewLabNetworkFlag(ctx context.Context, cmd *[]string, profileEn
 	}
 	*cmd = append(*cmd, "-c", "sandbox_workspace_write.network_access=true")
 	return nil
+}
+
+func dcpNetworkPolicyIdentity(sessionID string, policyAuthorized bool) (target, origin string, eligible bool) {
+	if strings.HasPrefix(sessionID, "dcp-review-lab-") {
+		if !isPositiveSessionSuffix(sessionID, "dcp-review-lab-") {
+			return "invalid", "", false
+		}
+		var number int
+		_, _ = fmt.Sscanf(strings.TrimPrefix(sessionID, "dcp-review-lab-"), "%d", &number)
+		if number <= 12 && !dcpReviewLabNetworkSession(sessionID, policyAuthorized) {
+			return "", "", false
+		}
+		if number > 12 && !policyAuthorized {
+			return "", "", false
+		}
+		return "dcp-review-lab", dcpReviewLabOrigin, dcpReviewLabNetworkSession(sessionID, policyAuthorized)
+	}
+	if strings.HasPrefix(sessionID, "wb-price-extension-") {
+		if !isPositiveSessionSuffix(sessionID, "wb-price-extension-") {
+			return "invalid", "", false
+		}
+		if !policyAuthorized {
+			return "", "", false
+		}
+		return "wb-price-extension", dcpRepoOnlyOrigin, true
+	}
+	return "", "", false
 }
 
 func isPositiveSessionSuffix(value, prefix string) bool {
