@@ -79,6 +79,11 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 	if spec, err := validatePolicySubmit(repoOnly); err != nil || spec.PolicyVersion != domain.DCPRepoOnlyPolicyVersion || spec.RequiredCheck != "baseline" {
 		t.Fatalf("valid repo-only input: spec=%+v err=%v", spec, err)
 	}
+	legacy := repoOnly
+	legacy.Target, legacy.Repository = "wb-price-extension", "orenvlad-ai/wb-price-extension"
+	if _, err := validatePolicySubmit(legacy); err == nil {
+		t.Fatal("legacy repo-only target accepted a future submit")
+	}
 	crossed := repoOnly
 	crossed.Profile, crossed.Repository = PolicyProfile, PolicyRepositoryName
 	if _, err := validatePolicySubmit(crossed); err == nil {
@@ -116,6 +121,31 @@ func TestValidatePolicySubmitPreservesExactRealTargetPromptByteLimit(t *testing.
 	exact.Prompt = strings.Repeat("x", 513)
 	if _, err := validatePolicySubmit(exact); err == nil {
 		t.Fatal("513-byte prompt crossed the immutable policy limit")
+	}
+}
+
+func TestLegacyRepoOnlyTargetIsRestoreOnlyAndNeverSubmitAuthority(t *testing.T) {
+	if _, ok := domain.DCPPolicyTarget("wb-price-extension", RepoOnlyProfile); ok {
+		t.Fatal("legacy target remains an active policy allowlist entry")
+	}
+	legacy := domain.DCPReviewLabPolicyTask{
+		TaskID: "price-arch-v1", PayloadDigest: "efe6a81cfff28be89cc327bdc9e2380ca585fcc6b03064c0290b6aaf4c7b59fe",
+		Target: "wb-price-extension", Profile: RepoOnlyProfile, Repository: "orenvlad-ai/wb-price-extension",
+		PolicyVersion: domain.DCPRepoOnlyPolicyVersion, SessionID: "wb-price-extension-1", CardNumber: 1,
+		WorktreePath: "/Users/ovlmacbook/Library/Application Support/DCP Orchestrator/data/worktrees/wb-price-extension/wb-price-extension-1",
+		SourceBranch: "ao/wb-price-extension-1/root", State: domain.DCPPolicyMerged, Revision: 7,
+		PRURL: "https://github.com/orenvlad-ai/wb-price-extension/pull/1", PRNumber: 1,
+		CurrentHeadSHA: "afc748eba5ff05c0dc24d3002c690ec9f44984fb",
+		ReviewRunID:    "b0acfb9e-600c-4816-bb2f-02a67817ea05",
+		AdmissionID:    "dcp-admission-b0acfb9e-600c-4816-bb2f-02a67817ea05",
+		MergeCommitSHA: "62853496837f64522bb08ba56169f60f3b0f9a2c",
+	}
+	if spec, ok := domain.DCPPolicyTargetForTask(legacy); !ok || spec.Target != "wb-price-extension" {
+		t.Fatalf("exact terminal legacy task cannot restore: spec=%+v ok=%v", spec, ok)
+	}
+	legacy.State, legacy.MergeCommitSHA = domain.DCPPolicyCIWaiting, ""
+	if _, ok := domain.DCPPolicyTargetForTask(legacy); ok {
+		t.Fatal("nonterminal legacy task crossed the restore-only gate")
 	}
 }
 

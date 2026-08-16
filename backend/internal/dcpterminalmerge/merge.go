@@ -1327,7 +1327,7 @@ func policyProviderIdentity(spec domain.DCPPolicyTargetSpec) string {
 }
 
 func policySpecForRepository(repository string) (domain.DCPPolicyTargetSpec, bool) {
-	for _, identity := range [][2]string{{"dcp-review-lab", "synthetic-pr"}, {"wb-price-extension", "repo-only"}} {
+	for _, identity := range [][2]string{{"dcp-review-lab", "synthetic-pr"}, {"wb-browser-extension", "repo-only"}} {
 		spec, _ := domain.DCPPolicyTarget(identity[0], identity[1])
 		if repository == spec.Repository {
 			return spec, true

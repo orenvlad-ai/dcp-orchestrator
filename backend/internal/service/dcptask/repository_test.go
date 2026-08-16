@@ -177,7 +177,7 @@ func TestReviewRepositoryValidatorAllowsOnlyAncestralContinuationBehindMain(t *t
 
 func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *testing.T) {
 	repo := createDCPTestRepository(t)
-	runGitTest(t, repo, "remote", "add", "origin", "https://github.com/orenvlad-ai/wb-price-extension.git")
+	runGitTest(t, repo, "remote", "add", "origin", "https://github.com/orenvlad-ai/wb-browser-extension.git")
 	head := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
 	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
 	validator := ReviewRepositoryValidator{
@@ -190,7 +190,7 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *te
 		},
 	}
 	project := domain.ProjectRecord{ID: RepoOnlyTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
-		RepoOriginURL: "https://github.com/orenvlad-ai/wb-price-extension.git",
+		RepoOriginURL: "https://github.com/orenvlad-ai/wb-browser-extension.git",
 		Config:        domain.ProjectConfig{DefaultBranch: "main", SessionPrefix: RepoOnlyTarget, AgentRules: domain.DCPRepoOnlyPolicyAgentRules}}
 	identity, err := validator.Validate(context.Background(), project)
 	if err != nil || identity.ProjectID != RepoOnlyTarget || identity.Repository != RepoOnlyRepositoryName || identity.HeadSHA != head {
@@ -230,8 +230,8 @@ test "$#" -eq 4
 test "$1" = api
 test "$2" = --method
 test "$3" = GET
-test "$4" = repos/orenvlad-ai/wb-price-extension
-printf '%s\n' '{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":{"id":237411244}}'
+test "$4" = repos/orenvlad-ai/wb-browser-extension
+printf '%s\n' '{"full_name":"orenvlad-ai/wb-browser-extension","private":false,"default_branch":"main","id":1335072844,"owner":{"id":237411244}}'
 `
 	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -251,10 +251,10 @@ func TestReadPublicReviewRepositoryRejectsMalformedOrIncompleteJSON(t *testing.T
 	}{
 		{name: "malformed", json: `{`},
 		{name: "missing repository", json: `{"private":false,"default_branch":"main","id":1335072844,"owner":{"id":237411244}}`},
-		{name: "null repository id", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":null,"owner":{"id":237411244}}`},
-		{name: "null owner", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":null}`},
-		{name: "missing owner id", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":1335072844,"owner":{}}`},
-		{name: "wrong id type", json: `{"full_name":"orenvlad-ai/wb-price-extension","private":false,"default_branch":"main","id":"1335072844","owner":{"id":237411244}}`},
+		{name: "null repository id", json: `{"full_name":"orenvlad-ai/wb-browser-extension","private":false,"default_branch":"main","id":null,"owner":{"id":237411244}}`},
+		{name: "null owner", json: `{"full_name":"orenvlad-ai/wb-browser-extension","private":false,"default_branch":"main","id":1335072844,"owner":null}`},
+		{name: "missing owner id", json: `{"full_name":"orenvlad-ai/wb-browser-extension","private":false,"default_branch":"main","id":1335072844,"owner":{}}`},
+		{name: "wrong id type", json: `{"full_name":"orenvlad-ai/wb-browser-extension","private":false,"default_branch":"main","id":"1335072844","owner":{"id":237411244}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

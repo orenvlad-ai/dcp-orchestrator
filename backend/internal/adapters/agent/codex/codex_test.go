@@ -92,8 +92,8 @@ func dcpPolicyWorktree(t *testing.T, target, origin, sessionID string) (dataDir,
 
 func TestGetLaunchCommandEnablesNetworkOnlyForExactRepoOnlyTarget(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
-	const sessionID = "wb-price-extension-1"
-	dataDir, workspace := dcpPolicyWorktree(t, "wb-price-extension", dcpRepoOnlyOrigin, sessionID)
+	const sessionID = "wb-browser-extension-1"
+	dataDir, workspace := dcpPolicyWorktree(t, "wb-browser-extension", dcpRepoOnlyOrigin, sessionID)
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
 		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
@@ -110,7 +110,7 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactRepoOnlyTarget(t *testing.T) 
 	if err != nil || contains(withoutAuthority, "sandbox_workspace_write.network_access=true") {
 		t.Fatalf("unbound repo-only command=%#v err=%v", withoutAuthority, err)
 	}
-	repo := filepath.Join(filepath.Dir(dataDir), "targets", "wb-price-extension")
+	repo := filepath.Join(filepath.Dir(dataDir), "targets", "wb-browser-extension")
 	runTestCommand(t, "git", "-C", repo, "remote", "set-url", "--push", "origin", dcpReviewLabOrigin)
 	if foreign, foreignErr := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
 		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
@@ -118,6 +118,18 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactRepoOnlyTarget(t *testing.T) 
 		WorkspacePath: workspace, DCPReviewLabPolicyAuthorized: true,
 	}); foreignErr == nil {
 		t.Fatalf("foreign repo-only push remote produced command %#v", foreign)
+	}
+}
+
+func TestGetLaunchCommandRejectsLegacyRepoOnlyTargetEvenWithPolicyFlag(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	if cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: t.TempDir(),
+		SessionID: "wb-price-extension-1", Kind: domain.KindWorker,
+		Permissions: ports.PermissionModeAcceptEdits, WorkspacePath: t.TempDir(),
+		DCPReviewLabPolicyAuthorized: true,
+	}); err == nil || contains(cmd, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("legacy target crossed worker network gate: command=%#v err=%v", cmd, err)
 	}
 }
 

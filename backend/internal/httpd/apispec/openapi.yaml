@@ -3585,11 +3585,13 @@ components:
           enum:
           - orenvlad-ai/dcp-review-lab
           - orenvlad-ai/wb-price-extension
+          - orenvlad-ai/wb-browser-extension
           type: string
         target:
           enum:
           - dcp-review-lab
           - wb-price-extension
+          - wb-browser-extension
           type: string
         taskId:
           maxLength: 16

@@ -108,9 +108,9 @@ const (
 	PolicyTarget           = "dcp-review-lab"
 	PolicyProfile          = "synthetic-pr"
 	PolicyRepositoryName   = "orenvlad-ai/dcp-review-lab"
-	RepoOnlyTarget         = "wb-price-extension"
+	RepoOnlyTarget         = "wb-browser-extension"
 	RepoOnlyProfile        = "repo-only"
-	RepoOnlyRepositoryName = "orenvlad-ai/wb-price-extension"
+	RepoOnlyRepositoryName = "orenvlad-ai/wb-browser-extension"
 )
 
 var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)

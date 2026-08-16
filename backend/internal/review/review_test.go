@@ -510,9 +510,9 @@ func TestDCPReviewLabPolicyAuthorizesOneFreshExactHead(t *testing.T) {
 
 func TestRepoOnlyPolicyReviewUsesGlobalActionGateAndRejectsManualTrigger(t *testing.T) {
 	worker := idleWorker()
-	worker.ID, worker.ProjectID, worker.Harness = "wb-price-extension-1", "wb-price-extension", domain.HarnessCodex
+	worker.ID, worker.ProjectID, worker.Harness = "wb-browser-extension-1", "wb-browser-extension", domain.HarnessCodex
 	store := &fakeStore{}
-	launcher := &fakeLauncher{handle: "review-wb-price-extension-1"}
+	launcher := &fakeLauncher{handle: "review-wb-browser-extension-1"}
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha-policy"), fakeProjects{}, launcher)
 	gate := &fakePolicyReviewGate{authorized: true}
 	eng.SetPolicyGate(gate)

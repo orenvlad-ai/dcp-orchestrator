@@ -837,7 +837,7 @@ func TestFuturePolicyCleanMainAdvanceMergesAndProjectsTerminalOnce(t *testing.T)
 }
 
 func TestRepoOnlyPolicyUsesExactProviderCheckAndTrustedMerge(t *testing.T) {
-	spec, _ := domain.DCPPolicyTarget("wb-price-extension", "repo-only")
+	spec, _ := domain.DCPPolicyTarget("wb-browser-extension", "repo-only")
 	engine, store, scm := policyTargetFixture(t, spec, 1)
 	if err := engine.Try(context.Background(), store.session.ID); err != nil {
 		t.Fatal(err)
