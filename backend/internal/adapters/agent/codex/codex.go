@@ -444,7 +444,7 @@ func appendWorkspaceGitMetadataFlags(ctx context.Context, cmd *[]string, permiss
 }
 
 const dcpReviewLabOrigin = "https://github.com/orenvlad-ai/dcp-review-lab.git"
-const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-price-extension.git"
+const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-browser-extension.git"
 
 // appendDCPReviewLabNetworkFlag opens Codex's workspace-write network only for
 // the one PR-capable synthetic DCP contour. Every identity and path component
@@ -523,14 +523,17 @@ func dcpNetworkPolicyIdentity(sessionID string, policyAuthorized bool) (target, 
 		}
 		return "dcp-review-lab", dcpReviewLabOrigin, dcpReviewLabNetworkSession(sessionID, policyAuthorized)
 	}
-	if strings.HasPrefix(sessionID, "wb-price-extension-") {
-		if !isPositiveSessionSuffix(sessionID, "wb-price-extension-") {
+	if strings.HasPrefix(sessionID, "wb-browser-extension-") {
+		if !isPositiveSessionSuffix(sessionID, "wb-browser-extension-") {
 			return "invalid", "", false
 		}
 		if !policyAuthorized {
 			return "", "", false
 		}
-		return "wb-price-extension", dcpRepoOnlyOrigin, true
+		return "wb-browser-extension", dcpRepoOnlyOrigin, true
+	}
+	if strings.HasPrefix(sessionID, "wb-price-extension-") {
+		return "invalid", "", false
 	}
 	return "", "", false
 }

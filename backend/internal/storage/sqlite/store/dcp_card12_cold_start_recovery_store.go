@@ -84,8 +84,10 @@ func isExactDCPPolicyStartupQuarantineSession(task gen.DcpReviewLabPolicyTask, s
 		task.Repository == "orenvlad-ai/dcp-review-lab" && task.PolicyVersion == "dcp.review-lab.happy-path/v1":
 		prefix = "dcp-review-lab"
 		minimumCard = 12
-	case task.Target == "wb-price-extension" && task.Profile == "repo-only" &&
-		task.Repository == "orenvlad-ai/wb-price-extension" && task.PolicyVersion == "dcp.repo-only.happy-path/v1":
+	case task.Target == "wb-browser-extension" && task.Profile == "repo-only" &&
+		task.Repository == "orenvlad-ai/wb-browser-extension" && task.PolicyVersion == "dcp.repo-only.happy-path/v1":
+		prefix = "wb-browser-extension"
+	case domain.IsExactDCPRepoOnlyLegacyTerminalTask(dcpPolicyTaskFromGen(task)):
 		prefix = "wb-price-extension"
 	default:
 		return false

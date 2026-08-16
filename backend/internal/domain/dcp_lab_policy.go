@@ -13,7 +13,9 @@ const DCPRepoOnlyPolicyVersion = "dcp.repo-only.happy-path/v1"
 
 const DCPReviewLabPolicyAgentRules = "DCP synthetic PR profile v4. Work only in this exact public synthetic repository, current native worktree and current AO branch. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
-const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-price-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
+const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-browser-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
+
+const dcpLegacyRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-price-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
 // DCPPolicyTargetSpec is one immutable, compile-time allowlist entry. No
 // repository, path, branch, provider identity, check, or policy value is
@@ -42,12 +44,20 @@ var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 		AgentRules: DCPReviewLabPolicyAgentRules, MinimumCardNumber: 13,
 	},
 	{
-		Target: "wb-price-extension", Profile: "repo-only", Repository: "orenvlad-ai/wb-price-extension",
-		OriginURL: "https://github.com/orenvlad-ai/wb-price-extension.git", ProviderRepositoryID: 1335072844,
+		Target: "wb-browser-extension", Profile: "repo-only", Repository: "orenvlad-ai/wb-browser-extension",
+		OriginURL: "https://github.com/orenvlad-ai/wb-browser-extension.git", ProviderRepositoryID: 1335072844,
 		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
-		SessionPrefix: "wb-price-extension", PolicyVersion: DCPRepoOnlyPolicyVersion,
+		SessionPrefix: "wb-browser-extension", PolicyVersion: DCPRepoOnlyPolicyVersion,
 		AgentRules: DCPRepoOnlyPolicyAgentRules, MinimumCardNumber: 1,
 	},
+}
+
+var dcpLegacyRepoOnlyTerminalSpec = DCPPolicyTargetSpec{
+	Target: "wb-price-extension", Profile: "repo-only", Repository: "orenvlad-ai/wb-price-extension",
+	OriginURL: "https://github.com/orenvlad-ai/wb-price-extension.git", ProviderRepositoryID: 1335072844,
+	ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
+	SessionPrefix: "wb-price-extension", PolicyVersion: DCPRepoOnlyPolicyVersion,
+	AgentRules: dcpLegacyRepoOnlyPolicyAgentRules, MinimumCardNumber: 1,
 }
 
 func DCPPolicyTarget(target, profile string) (DCPPolicyTargetSpec, bool) {
@@ -61,7 +71,34 @@ func DCPPolicyTarget(target, profile string) (DCPPolicyTargetSpec, bool) {
 
 func DCPPolicyTargetForTask(task DCPReviewLabPolicyTask) (DCPPolicyTargetSpec, bool) {
 	spec, ok := DCPPolicyTarget(task.Target, task.Profile)
-	return spec, ok && task.Repository == spec.Repository && task.PolicyVersion == spec.PolicyVersion
+	if ok && task.Repository == spec.Repository && task.PolicyVersion == spec.PolicyVersion {
+		return spec, true
+	}
+	if IsExactDCPRepoOnlyLegacyTerminalTask(task) {
+		return dcpLegacyRepoOnlyTerminalSpec, true
+	}
+	return DCPPolicyTargetSpec{}, false
+}
+
+// IsExactDCPRepoOnlyLegacyTerminalTask recognizes only the immutable completed
+// first real-target row after the provider repository rename. It is deliberately
+// absent from DCPPolicyTarget, so it can be restored and rendered but can never
+// authorize a future submit.
+func IsExactDCPRepoOnlyLegacyTerminalTask(task DCPReviewLabPolicyTask) bool {
+	return task.TaskID == "price-arch-v1" &&
+		task.PayloadDigest == "efe6a81cfff28be89cc327bdc9e2380ca585fcc6b03064c0290b6aaf4c7b59fe" &&
+		task.Target == "wb-price-extension" && task.Profile == "repo-only" &&
+		task.Repository == "orenvlad-ai/wb-price-extension" && task.PolicyVersion == DCPRepoOnlyPolicyVersion &&
+		task.SessionID == "wb-price-extension-1" && task.CardNumber == 1 &&
+		task.WorktreePath == "/Users/ovlmacbook/Library/Application Support/DCP Orchestrator/data/worktrees/wb-price-extension/wb-price-extension-1" &&
+		task.SourceBranch == "ao/wb-price-extension-1/root" && task.State == DCPPolicyMerged &&
+		task.Revision == 7 && task.RepairCount == 0 &&
+		task.PRURL == "https://github.com/orenvlad-ai/wb-price-extension/pull/1" && task.PRNumber == 1 &&
+		task.CurrentHeadSHA == "afc748eba5ff05c0dc24d3002c690ec9f44984fb" && task.PreviousHeadSHA == "" &&
+		task.ReviewRunID == "b0acfb9e-600c-4816-bb2f-02a67817ea05" &&
+		task.AdmissionID == "dcp-admission-b0acfb9e-600c-4816-bb2f-02a67817ea05" &&
+		task.MergeCommitSHA == "62853496837f64522bb08ba56169f60f3b0f9a2c" &&
+		task.ErrorCode == "" && task.IncidentPacket == ""
 }
 
 // DCPReviewLabPolicyTask binds one immutable external task id and canonical

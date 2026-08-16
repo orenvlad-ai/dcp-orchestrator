@@ -466,6 +466,20 @@ type DcpRealTargetSubmitRecoveryV1 struct {
 	RecoveredAt            time.Time
 }
 
+type DcpRepoOnlyTargetForwardV1 struct {
+	MappingID            string
+	ContractCommit       string
+	PriorSource          string
+	OldTarget            string
+	OldRepository        string
+	NewTarget            string
+	NewRepository        string
+	Profile              string
+	ProviderRepositoryID int64
+	ProviderOwnerID      int64
+	MigratedAt           time.Time
+}
+
 type DcpReviewLabAdmission struct {
 	Sequence                int64
 	ID                      string

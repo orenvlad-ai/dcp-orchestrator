@@ -92,6 +92,7 @@ var shippedMigrations = map[int64]string{
 	74: "0074_dcp_future_human_gate_result_recovery.sql",
 	75: "0075_dcp_exact_repo_only_target_v1.sql",
 	76: "0076_dcp_real_target_submit_recovery_v1.sql",
+	77: "0077_dcp_repo_only_target_forward_v1.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

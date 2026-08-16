@@ -1198,9 +1198,9 @@ export interface components {
             profile: "synthetic-pr" | "repo-only";
             prompt: string;
             /** @enum {string} */
-            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension";
+            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension" | "orenvlad-ai/wb-browser-extension";
             /** @enum {string} */
-            target: "dcp-review-lab" | "wb-price-extension";
+            target: "dcp-review-lab" | "wb-price-extension" | "wb-browser-extension";
             taskId: string;
         };
         DCPApprovedScope: {
