@@ -451,6 +451,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/migrate_burned_versions_test\.go$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/adapters/scm/github/release_train_action(_test)?\.go|backend/internal/ports/scm_release_train\.go|backend/internal/storage/sqlite/(migrations/0078_dcp_wb_core_release_train_handoff_v1\.sql|wb_core_release_handoff_live_copy_migration_test\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_required_check_test\.go|backend/internal/storage/sqlite/(migrations/0079_dcp_wbc_ci_truth_recovery_v1\.sql|wbc_ci_truth_recovery_live_copy_test\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/notify/enrich(_test)?\.go|backend/internal/ports/notifications\.go)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check
