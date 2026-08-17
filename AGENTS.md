@@ -20,6 +20,13 @@ repository:
 8. [runtime provider identity v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_PROVIDER_IDENTITY_V1_CONTRACT.md)
 9. [exact first-submit recovery v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_SUBMIT_RECOVERY_V1_CONTRACT.md)
 10. [repo-only repository rename v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md)
+11. [`wb-core` Release Train handoff v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/036b1101284f626c931f7edb1750ddd228634832/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md)
+
+Item 11 and the merged root/current authorities at exact
+`036b1101284f626c931f7edb1750ddd228634832`, operating revision
+`2026-08-17.1`, supersede only the prior exclusion of `wb-core`. They authorize
+one fail-closed exact repo-only target and WBC Release Train handoff; every
+other predecessor boundary remains unchanged.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
@@ -60,10 +67,14 @@ deterministic install and stopped preflight complete.
 - The normal DCP adapter target remains the disposable, remote-free `dcp-lab`
   repository beneath the explicit lab root. Only exact tuples
   `dcp-review-lab` / `synthetic-pr` / `orenvlad-ai/dcp-review-lab` and
-  `wb-browser-extension` / `repo-only` / `orenvlad-ai/wb-browser-extension` may
-  receive the typed worker network/PR/review/admission/merge contour. Existing
+  `wb-browser-extension` / `repo-only` / `orenvlad-ai/wb-browser-extension` and
+  `wb-core` / `repo-only` / `orenvlad-ai/wb-core` may receive their exact typed
+  contours. The `wb-core` target remains locked before native/model mutation
+  until its repository-owned compatibility marker is present, is permanently
+  ineligible for DCP direct merge, and may hand off only `release:ready` to the
+  WBC GitHub Actions Release Train. Existing
   PRs and cards 1-12 are immutable audit evidence and must not be changed or
-  reused. Every other repository or remote, `wb-core`, WBC, production, hosted
+  reused. Every other repository or remote, WBC production, hosted
   systems and public distribution remain out of scope. The real target ends at
   trusted `MERGED`; it has no deploy, Release Train, production apply, or
   owner-acceptance implication.
@@ -83,11 +94,14 @@ For every future task with an exact additive happy-path policy row, the
 existing daemon and SQLite own one idempotent stock native card/session/
 worktree/branch, a durable FIFO of model actions with at most three active
 slots globally, one initial worker, one fresh context-free review per exact
-head, at most one same-task findings repair and one shared durable FIFO merge
-lease. Queued work, CI and admission own no model or new loop. Only current
-exact public provider facts for one of the two compile-time target/profile/
-repository identities may reach an ordinary daemon-owned expected-head
-terminal merge. Any other identity, stale head,
+head, at most one same-task findings repair and one shared durable FIFO
+admission/release lease. Queued work, CI and admission own no model or new
+loop. Only current exact public provider facts for one of the three compile-time
+target/profile/repository identities may enter that line. The synthetic and
+browser-extension targets may reach their ordinary daemon-owned expected-head
+terminal merge; `wb-core` may only enter the typed zero-action Release Train
+wait and receive `release:ready`, never a DCP merge call. Any other identity,
+stale head,
 second findings cycle, conflict or ambiguity fails closed without arbiter,
 HumanGate, manual bypass or replacement card. Historical rows below remain
 implemented immutable evidence, not an alternative future policy.

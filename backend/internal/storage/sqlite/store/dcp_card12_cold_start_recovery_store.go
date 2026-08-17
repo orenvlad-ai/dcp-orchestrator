@@ -77,23 +77,13 @@ func (s *Store) EstablishDCPGovernedStartupQuarantine(ctx context.Context, now t
 }
 
 func isExactDCPPolicyStartupQuarantineSession(task gen.DcpReviewLabPolicyTask, session gen.Session) bool {
-	prefix := ""
-	minimumCard := int64(0)
-	switch {
-	case task.Target == "dcp-review-lab" && task.Profile == "synthetic-pr" &&
-		task.Repository == "orenvlad-ai/dcp-review-lab" && task.PolicyVersion == "dcp.review-lab.happy-path/v1":
-		prefix = "dcp-review-lab"
-		minimumCard = 12
-	case task.Target == "wb-browser-extension" && task.Profile == "repo-only" &&
-		task.Repository == "orenvlad-ai/wb-browser-extension" && task.PolicyVersion == "dcp.repo-only.happy-path/v1":
-		prefix = "wb-browser-extension"
-	case domain.IsExactDCPRepoOnlyLegacyTerminalTask(dcpPolicyTaskFromGen(task)):
-		prefix = "wb-price-extension"
-	default:
+	policyTask := dcpPolicyTaskFromGen(task)
+	spec, exact := domain.DCPPolicyTargetForTask(policyTask)
+	if !exact || task.CardNumber < spec.MinimumCardNumber {
 		return false
 	}
-	return task.CardNumber > minimumCard && session.ProjectID == domain.ProjectID(prefix) &&
-		session.Num == task.CardNumber && task.SessionID == prefix+"-"+fmt.Sprint(task.CardNumber) &&
+	return session.ProjectID == domain.ProjectID(spec.SessionPrefix) &&
+		session.Num == task.CardNumber && task.SessionID == spec.SessionPrefix+"-"+fmt.Sprint(task.CardNumber) &&
 		session.ID == domain.SessionID(task.SessionID)
 }
 

@@ -211,6 +211,7 @@ function policyVisualStatus(
 				statusLabelKey: "status.review_running",
 			};
 		case "admission_waiting":
+		case "release_waiting":
 			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready");
 		case "merged":
 			return policy("merged", "merge", "merged", "merged", "bg-status-merged");

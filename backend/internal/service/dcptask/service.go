@@ -111,6 +111,8 @@ const (
 	RepoOnlyTarget         = "wb-browser-extension"
 	RepoOnlyProfile        = "repo-only"
 	RepoOnlyRepositoryName = "orenvlad-ai/wb-browser-extension"
+	WBCTarget              = "wb-core"
+	WBCRepositoryName      = "orenvlad-ai/wb-core"
 )
 
 var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)

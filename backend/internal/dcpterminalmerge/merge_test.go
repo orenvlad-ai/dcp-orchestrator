@@ -123,6 +123,17 @@ func (f *fakeStore) ClaimDCPReviewLabAdmission(_ context.Context, admission doma
 	f.run.TerminalMergeStatus = "running"
 	return true, nil
 }
+func (f *fakeStore) ClaimDCPReleaseTrainAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, leaseID, baseSHA string, now time.Time) (bool, error) {
+	if f.policyTask == nil || f.policyTask.TaskID != task.TaskID || f.policyTask.State != domain.DCPPolicyAdmissionWait {
+		return false, nil
+	}
+	claimed, err := f.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, baseSHA, now)
+	if claimed {
+		f.policyTask.State = domain.DCPPolicyReleaseWaiting
+		f.policyTask.Revision++
+	}
+	return claimed, err
+}
 func (f *fakeStore) CompleteDCPReviewLabAdmission(_ context.Context, admission domain.DCPReviewLabAdmission, sha string, now time.Time) (bool, error) {
 	if f.admission == nil || f.admission.ID != admission.ID || f.admission.Status != domain.DCPAdmissionClaimed || f.run.TerminalMergeStatus != "running" {
 		return false, nil
@@ -202,13 +213,15 @@ func (f *fakeStore) RecordDCPReviewLabPolicyIncident(ctx context.Context, admiss
 }
 
 type fakeSCM struct {
-	observation  ports.SCMObservation
-	review       ports.SCMReviewObservation
-	mergeErr     error
-	mergeCalls   int
-	expectedHead string
-	expectedRepo string
-	mergeSHA     string
+	observation        ports.SCMObservation
+	review             ports.SCMReviewObservation
+	mergeErr           error
+	mergeCalls         int
+	expectedHead       string
+	expectedRepo       string
+	mergeSHA           string
+	releaseReadyCalls  int
+	releaseObservation ports.SCMReleaseObservation
 }
 
 type queueSelectionStore struct {
@@ -602,6 +615,20 @@ func (f *fakeSCM) MergePullRequest(_ context.Context, request ports.SCMMergeRequ
 	}
 	return ports.SCMMergeResult{MergeCommitSHA: f.mergeSHA}, nil
 }
+func (f *fakeSCM) ApplyReleaseReady(_ context.Context, request ports.SCMReleaseReadyRequest) error {
+	f.releaseReadyCalls++
+	if request.PR.Repo.Repo != "orenvlad-ai/wb-core" || request.ExpectedHeadSHA != f.expectedHead ||
+		request.ExpectedBaseBranch != "main" || request.RequiredTaskLabel != "task:standard" || request.RequiredScopeLabel != "scope:repo-only" {
+		return errors.New("unexpected release-ready request")
+	}
+	if !hasExactLabel(f.releaseObservation.Labels, "release:ready") {
+		f.releaseObservation.Labels = append(f.releaseObservation.Labels, "release:ready")
+	}
+	return nil
+}
+func (f *fakeSCM) ObserveRelease(context.Context, ports.SCMPRRef) (ports.SCMReleaseObservation, error) {
+	return f.releaseObservation, nil
+}
 
 func fixture(t *testing.T) (*Engine, *fakeStore, *fakeSCM) {
 	t.Helper()
@@ -766,6 +793,13 @@ func policyTargetFixture(t *testing.T, spec domain.DCPPolicyTargetSpec, card int
 		}
 		return policyProviderIdentity(spec), nil
 	}
+	if spec.UsesWBCReleaseTrain() {
+		scm.releaseObservation = ports.SCMReleaseObservation{
+			Number: 4, URL: prURL, State: "open", HeadRepository: spec.Repository, HeadBranch: branch,
+			HeadSHA: testHead, BaseBranch: spec.DefaultBranch, Author: "orenvlad-ai",
+			Labels: []string{"scope:repo-only", "task:standard"},
+		}
+	}
 	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
 		cmd := strings.Join(args, " ")
 		if cmd == "status --porcelain" {
@@ -857,6 +891,108 @@ func TestRepoOnlyPolicyUsesExactProviderCheckAndTrustedMerge(t *testing.T) {
 	}
 	if foreignSCM.mergeCalls != 0 || foreignStore.policyTask.State != domain.DCPPolicyIncident {
 		t.Fatalf("foreign provider identity was not failed closed: merges=%d task=%+v", foreignSCM.mergeCalls, foreignStore.policyTask)
+	}
+}
+
+func TestWBCPolicyHandsOffOnlyReleaseReadyAndObservesExactTerminalProof(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting ||
+		store.admission == nil || store.admission.Status != domain.DCPAdmissionClaimed {
+		t.Fatalf("WBC handoff: merges=%d ready=%d task=%+v admission=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask, store.admission)
+	}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting {
+		t.Fatalf("WBC passive wait mutated: merges=%d ready=%d task=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask)
+	}
+	scm.releaseObservation.State = "closed"
+	scm.releaseObservation.Merged = true
+	scm.releaseObservation.MergeCommitSHA = testMerge
+	scm.releaseObservation.Labels = []string{"release:done", "scope:repo-only", "task:standard"}
+	scm.releaseObservation.Body = "<!-- wb-core-release-completion-proof contour=repo-only merge=" + testMerge + " pr=4 -->"
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyMerged || store.policyTask.MergeCommitSHA != testMerge ||
+		store.admission.Status != domain.DCPAdmissionSucceeded {
+		t.Fatalf("WBC terminal observation: merges=%d task=%+v admission=%+v", scm.mergeCalls, store.policyTask, store.admission)
+	}
+}
+
+func TestWBCPolicyHeadDriftFailsClosedWithoutDirectMerge(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	scm.releaseObservation.HeadSHA = strings.Repeat("f", 40)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyIncident || store.policyTask.ErrorCode != "release_head_drift" {
+		t.Fatalf("WBC head drift: merges=%d task=%+v", scm.mergeCalls, store.policyTask)
+	}
+}
+
+func TestWBCPolicyReleaseWaitSurvivesRestartWithoutDuplicateHandoff(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(store, scm, engine.dataDir)
+	restarted.git = engine.git
+	restarted.providerRepository = engine.providerRepository
+	restarted.providerRepositoryFor = engine.providerRepositoryFor
+	if err := restarted.ReconcileStartup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting ||
+		store.admission == nil || store.admission.Status != domain.DCPAdmissionClaimed {
+		t.Fatalf("WBC restart replay: merges=%d ready=%d task=%+v admission=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask, store.admission)
+	}
+}
+
+func TestWBCPolicyReleaseIdentityAndTerminalDriftFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		wantCode string
+		mutate   func(*ports.SCMReleaseObservation)
+	}{
+		{name: "crossed repository", wantCode: "release_identity_drift", mutate: func(o *ports.SCMReleaseObservation) {
+			o.HeadRepository = "orenvlad-ai/wb-browser-extension"
+		}},
+		{name: "crossed base", wantCode: "release_identity_drift", mutate: func(o *ports.SCMReleaseObservation) {
+			o.BaseBranch = "release"
+		}},
+		{name: "crossed scope", wantCode: "release_label_drift", mutate: func(o *ports.SCMReleaseObservation) {
+			o.Labels = []string{"release:ready", "scope:live-runtime", "task:standard"}
+		}},
+		{name: "merge without completion proof", wantCode: "release_terminal_proof_invalid", mutate: func(o *ports.SCMReleaseObservation) {
+			o.State, o.Merged, o.MergeCommitSHA = "closed", true, testMerge
+			o.Labels = []string{"release:done", "scope:repo-only", "task:standard"}
+			o.Body = ""
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+			engine, store, scm := policyTargetFixture(t, spec, 1)
+			if err := engine.Try(context.Background(), store.session.ID); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&scm.releaseObservation)
+			if err := engine.Try(context.Background(), store.session.ID); err != nil {
+				t.Fatal(err)
+			}
+			if scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyIncident || store.policyTask.ErrorCode != tc.wantCode {
+				t.Fatalf("WBC drift: merges=%d task=%+v", scm.mergeCalls, store.policyTask)
+			}
+		})
 	}
 }
 

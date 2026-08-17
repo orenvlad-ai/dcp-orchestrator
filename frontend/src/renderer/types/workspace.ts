@@ -191,6 +191,7 @@ export type DCPPolicyState =
 	| "repair_queued"
 	| "repair_running"
 	| "admission_waiting"
+	| "release_waiting"
 	| "merged"
 	| "failed"
 	| "incident";

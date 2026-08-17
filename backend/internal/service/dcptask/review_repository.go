@@ -44,15 +44,7 @@ func (v ReviewRepositoryValidator) ValidateContinuation(ctx context.Context, pro
 }
 
 func (v ReviewRepositoryValidator) validate(ctx context.Context, project domain.ProjectRecord, allowBehind bool) (domain.DCPRepositoryIdentity, error) {
-	var spec domain.DCPPolicyTargetSpec
-	exact := false
-	for _, identity := range [][2]string{{PolicyTarget, PolicyProfile}, {RepoOnlyTarget, RepoOnlyProfile}} {
-		candidate, _ := domain.DCPPolicyTarget(identity[0], identity[1])
-		if string(project.ID) == candidate.Target {
-			spec, exact = candidate, true
-			break
-		}
-	}
+	spec, exact := domain.DCPPolicyTargetForProject(string(project.ID))
 	if !exact {
 		return domain.DCPRepositoryIdentity{}, invalidTarget("policy target is not allowlisted")
 	}
@@ -104,6 +96,17 @@ func (v ReviewRepositoryValidator) validate(ctx context.Context, project domain.
 	if originMain != head {
 		if _, err := run(ctx, target, "merge-base", "--is-ancestor", head, originMain); err != nil {
 			return domain.DCPRepositoryIdentity{}, invalidTarget("dcp-review-lab main is not an ancestor of refreshed origin/main")
+		}
+	}
+	if spec.CompatibilityMarker != "" {
+		for _, markerPath := range spec.CompatibilityFiles {
+			if markerPath == "" {
+				return domain.DCPRepositoryIdentity{}, invalidTarget("policy compatibility marker path is incomplete")
+			}
+			got, markerErr := run(ctx, target, "grep", "-F", "-l", "--", spec.CompatibilityMarker, "--", markerPath)
+			if markerErr != nil || got != markerPath {
+				return domain.DCPRepositoryIdentity{}, invalidTarget("wb-core Release Train compatibility marker is unavailable")
+			}
 		}
 	}
 	worktrees, err := run(ctx, target, "worktree", "list", "--porcelain")

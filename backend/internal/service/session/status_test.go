@@ -258,18 +258,19 @@ func TestOverlayReviewStatusUsesLatestExactOpenHead(t *testing.T) {
 
 func TestOverlayDCPPolicyStatusUsesOnlyStockBoardStates(t *testing.T) {
 	tests := map[domain.DCPReviewLabPolicyState]domain.SessionStatus{
-		domain.DCPPolicyReserved:      domain.StatusIdle,
-		domain.DCPPolicyWorkerQueued:  domain.StatusIdle,
-		domain.DCPPolicyWorkerRunning: domain.StatusWorking,
-		domain.DCPPolicyCIWaiting:     domain.StatusPROpen,
-		domain.DCPPolicyReviewQueued:  domain.StatusReviewPending,
-		domain.DCPPolicyReviewRunning: domain.StatusReviewPending,
-		domain.DCPPolicyRepairQueued:  domain.StatusIdle,
-		domain.DCPPolicyRepairRunning: domain.StatusWorking,
-		domain.DCPPolicyAdmissionWait: domain.StatusMergeable,
-		domain.DCPPolicyMerged:        domain.StatusMerged,
-		domain.DCPPolicyFailed:        domain.StatusReviewFailed,
-		domain.DCPPolicyIncident:      domain.StatusReviewFailed,
+		domain.DCPPolicyReserved:       domain.StatusIdle,
+		domain.DCPPolicyWorkerQueued:   domain.StatusIdle,
+		domain.DCPPolicyWorkerRunning:  domain.StatusWorking,
+		domain.DCPPolicyCIWaiting:      domain.StatusPROpen,
+		domain.DCPPolicyReviewQueued:   domain.StatusReviewPending,
+		domain.DCPPolicyReviewRunning:  domain.StatusReviewPending,
+		domain.DCPPolicyRepairQueued:   domain.StatusIdle,
+		domain.DCPPolicyRepairRunning:  domain.StatusWorking,
+		domain.DCPPolicyAdmissionWait:  domain.StatusMergeable,
+		domain.DCPPolicyReleaseWaiting: domain.StatusMergeable,
+		domain.DCPPolicyMerged:         domain.StatusMerged,
+		domain.DCPPolicyFailed:         domain.StatusReviewFailed,
+		domain.DCPPolicyIncident:       domain.StatusReviewFailed,
 	}
 	for state, want := range tests {
 		if got := overlayDCPPolicyStatus(domain.StatusNoSignal, state); got != want {

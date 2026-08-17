@@ -3472,6 +3472,7 @@ components:
           - repair_queued
           - repair_running
           - admission_waiting
+          - release_waiting
           - merged
           - failed
           - incident
@@ -3586,12 +3587,14 @@ components:
           - orenvlad-ai/dcp-review-lab
           - orenvlad-ai/wb-price-extension
           - orenvlad-ai/wb-browser-extension
+          - orenvlad-ai/wb-core
           type: string
         target:
           enum:
           - dcp-review-lab
           - wb-price-extension
           - wb-browser-extension
+          - wb-core
           type: string
         taskId:
           maxLength: 16

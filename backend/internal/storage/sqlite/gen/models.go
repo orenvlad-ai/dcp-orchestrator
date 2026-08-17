@@ -926,6 +926,21 @@ type DcpTaskEvent struct {
 	IntegrityDigest string
 }
 
+type DcpWbCoreReleaseHandoffV1 struct {
+	AuthorityID          string
+	ContractCommit       string
+	PredecessorSource    string
+	Target               string
+	Repository           string
+	Profile              string
+	ProviderRepositoryID int64
+	ProviderOwnerID      int64
+	RequiredCheck        string
+	ReleaseActor         string
+	CompatibilityMarker  string
+	InstalledAt          time.Time
+}
+
 type Notification struct {
 	ID         string
 	SessionID  domain.SessionID

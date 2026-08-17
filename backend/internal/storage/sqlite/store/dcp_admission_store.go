@@ -170,6 +170,49 @@ func (s *Store) ClaimDCPReviewLabAdmission(ctx context.Context, a domain.DCPRevi
 	return claimed, err
 }
 
+// ClaimDCPReleaseTrainAdmission acquires the same global FIFO owner and moves
+// only an exact wb-core policy task into its durable zero-action release wait.
+func (s *Store) ClaimDCPReleaseTrainAdmission(ctx context.Context, a domain.DCPReviewLabAdmission, task domain.DCPReviewLabPolicyTask, leaseID, baseSHA string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	claimed := false
+	err := s.inTx(ctx, "claim DCP WBC Release Train admission", func(q *gen.Queries) error {
+		currentRow, err := q.GetDCPReviewLabPolicyTaskBySessionID(ctx, string(a.SessionID))
+		if err != nil {
+			return err
+		}
+		current := dcpPolicyTaskFromGen(currentRow)
+		spec, exact := domain.DCPPolicyTargetForTask(current)
+		if !exact || !spec.UsesWBCReleaseTrain() || current.TaskID != task.TaskID || current.Revision != task.Revision ||
+			current.State != domain.DCPPolicyAdmissionWait || current.AdmissionID != a.ID ||
+			current.ReviewRunID != a.ReviewRunID || current.CurrentHeadSHA != a.TargetSHA {
+			return errors.New("exact WBC Release Train admission identity was unavailable")
+		}
+		n, err := q.ClaimDCPReviewLabAdmission(ctx, gen.ClaimDCPReviewLabAdmissionParams{
+			LeaseID: leaseID, AdmittedBaseSha: baseSHA, UpdatedAt: now,
+			ID: a.ID, ReviewRunID: a.ReviewRunID, SessionID: string(a.SessionID), PRURL: a.PRURL, TargetSha: a.TargetSHA,
+		})
+		if err != nil || n != 1 {
+			return err
+		}
+		n, err = q.ClaimDCPReviewLabTerminalMerge(ctx, gen.ClaimDCPReviewLabTerminalMergeParams{
+			RunID: a.ReviewRunID, SessionID: a.SessionID, PRURL: a.PRURL, TargetSha: a.TargetSHA,
+		})
+		if err != nil || n != 1 {
+			return errors.Join(err, errors.New("exact WBC ReviewRun release claim was unavailable"))
+		}
+		next := current
+		next.State, next.UpdatedAt = domain.DCPPolicyReleaseWaiting, now
+		n, err = q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
+		if err != nil || n != 1 {
+			return errors.Join(err, errors.New("exact WBC release-wait projection was unavailable"))
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
+}
+
 // CompleteDCPReviewLabAdmission stores the provider merge SHA on the existing
 // ReviewRun and releases the exact admission lease in one transaction.
 func (s *Store) CompleteDCPReviewLabAdmission(ctx context.Context, a domain.DCPReviewLabAdmission, mergeSHA string, now time.Time) (bool, error) {
@@ -199,7 +242,7 @@ func (s *Store) CompleteDCPReviewLabPolicyAdmission(ctx context.Context, a domai
 			return err
 		}
 		current := dcpPolicyTaskFromGen(row)
-		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != domain.DCPPolicyAdmissionWait ||
+		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != policyTerminalSourceState(current) ||
 			current.AdmissionID != a.ID || current.ReviewRunID != a.ReviewRunID || current.CurrentHeadSHA != a.TargetSHA {
 			return errors.New("exact policy terminal identity was unavailable")
 		}
@@ -334,7 +377,7 @@ func (s *Store) RecordDCPReviewLabPolicyIncident(ctx context.Context, a domain.D
 			return err
 		}
 		current := dcpPolicyTaskFromGen(currentRow)
-		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != domain.DCPPolicyAdmissionWait ||
+		if current.TaskID != task.TaskID || current.Revision != task.Revision || current.State != policyIncidentSourceState(current, a.Status) ||
 			current.AdmissionID != a.ID || current.ReviewRunID != a.ReviewRunID || current.CurrentHeadSHA != a.TargetSHA {
 			return errors.New("exact policy incident identity was unavailable")
 		}
@@ -351,6 +394,20 @@ func (s *Store) RecordDCPReviewLabPolicyIncident(ctx context.Context, a domain.D
 		return nil
 	})
 	return recorded, err
+}
+
+func policyTerminalSourceState(task domain.DCPReviewLabPolicyTask) domain.DCPReviewLabPolicyState {
+	if spec, exact := domain.DCPPolicyTargetForTask(task); exact && spec.UsesWBCReleaseTrain() {
+		return domain.DCPPolicyReleaseWaiting
+	}
+	return domain.DCPPolicyAdmissionWait
+}
+
+func policyIncidentSourceState(task domain.DCPReviewLabPolicyTask, admissionStatus domain.DCPAdmissionStatus) domain.DCPReviewLabPolicyState {
+	if admissionStatus == domain.DCPAdmissionClaimed {
+		return policyTerminalSourceState(task)
+	}
+	return domain.DCPPolicyAdmissionWait
 }
 
 func recordDCPReviewLabIncidentTx(ctx context.Context, q *gen.Queries, a domain.DCPReviewLabAdmission, leaseID, baseSHA, errorCode, packet string, now time.Time) error {

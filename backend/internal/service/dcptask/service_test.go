@@ -79,6 +79,11 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 	if spec, err := validatePolicySubmit(repoOnly); err != nil || spec.PolicyVersion != domain.DCPRepoOnlyPolicyVersion || spec.RequiredCheck != "baseline" {
 		t.Fatalf("valid repo-only input: spec=%+v err=%v", spec, err)
 	}
+	wbc := PolicySubmitInput{TaskID: "wbc-canary-1", Target: WBCTarget, Profile: RepoOnlyProfile, Repository: WBCRepositoryName, Prompt: "add one bounded repo-only canary"}
+	if spec, err := validatePolicySubmit(wbc); err != nil || spec.PolicyVersion != domain.DCPWBCRepoOnlyPolicyVersion ||
+		spec.ProviderRepositoryID != 1201929580 || spec.ProviderOwnerID != 237411244 || !spec.UsesWBCReleaseTrain() || spec.CompatibilityMarker != "wb-core.dcp-release-handoff/v1" {
+		t.Fatalf("valid WBC repo-only input: spec=%+v err=%v", spec, err)
+	}
 	legacy := repoOnly
 	legacy.Target, legacy.Repository = "wb-price-extension", "orenvlad-ai/wb-price-extension"
 	if _, err := validatePolicySubmit(legacy); err == nil {
@@ -308,6 +313,44 @@ func TestSubmitPolicyReplayCompletesOnlyTheReservedNativeIdentity(t *testing.T) 
 	sessions, err := store.ListSessions(ctx, PolicyTarget)
 	if err != nil || len(sessions) != 13 {
 		t.Fatalf("replay allocated replacement card: sessions=%d err=%v", len(sessions), err)
+	}
+}
+
+func TestSubmitPolicyRejectsLockedWBCTargetBeforeDurableOrModelMutation(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	spec, _ := domain.DCPPolicyTarget(WBCTarget, RepoOnlyProfile)
+	project := domain.ProjectRecord{
+		ID: spec.Target, Path: t.TempDir(), Kind: domain.ProjectKindSingleRepo,
+		RepoOriginURL: spec.OriginURL, RegisteredAt: time.Unix(1, 0).UTC(),
+		Config: domain.ProjectConfig{DefaultBranch: spec.DefaultBranch, SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules},
+	}
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	repository := &countingRepositoryValidator{err: errors.New("wb-core Release Train compatibility marker is unavailable")}
+	runtime := &policyRuntimeFixture{}
+	svc := New(Deps{Store: store, PolicyRepository: repository, PolicyWorktreeRoot: filepath.Join(t.TempDir(), "worktrees")})
+	svc.SetPolicyRuntime(runtime, nil)
+	input := PolicySubmitInput{TaskID: "wbc-canary-1", Target: WBCTarget, Profile: RepoOnlyProfile, Repository: WBCRepositoryName, Prompt: "add one bounded repo-only canary"}
+	if _, err := svc.SubmitPolicy(ctx, input); err == nil {
+		t.Fatal("locked WBC target accepted a substantive submit")
+	}
+	if repository.calls != 1 || runtime.provisionCalls != 0 || runtime.launchCalls != 0 {
+		t.Fatalf("locked WBC submit crossed mutation boundary: validator=%d provision=%d launch=%d", repository.calls, runtime.provisionCalls, runtime.launchCalls)
+	}
+	if tasks, listErr := store.ListDCPReviewLabPolicyTasks(ctx); listErr != nil || len(tasks) != 0 {
+		t.Fatalf("locked WBC submit created policy rows: tasks=%+v err=%v", tasks, listErr)
+	}
+	if sessions, listErr := store.ListSessions(ctx, domain.ProjectID(spec.Target)); listErr != nil || len(sessions) != 0 {
+		t.Fatalf("locked WBC submit created native sessions: sessions=%+v err=%v", sessions, listErr)
+	}
+	if actions, listErr := store.ListDCPModelActions(ctx); listErr != nil || len(actions) != 0 {
+		t.Fatalf("locked WBC submit created model actions: actions=%+v err=%v", actions, listErr)
 	}
 }
 

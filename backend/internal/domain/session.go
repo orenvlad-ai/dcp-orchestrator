@@ -88,7 +88,7 @@ type Session struct {
 	Status                 SessionStatus           `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,review_failed,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
 	SCMStatus              SessionStatus           `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
 	TerminalHandleID       string                  `json:"terminalHandleId,omitempty"`
-	DCPPolicyState         DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,merged,failed,incident"`
+	DCPPolicyState         DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,release_waiting,merged,failed,incident"`
 	DCPPolicyActionActive  bool                    `json:"dcpPolicyActionActive,omitempty"`
 	DCPArbiterStatus       DCPFutureArbiterStatus  `json:"dcpArbiterStatus,omitempty" enum:"requested,claimed,running,hold,repair_queued,recovery_reviewed,human_gate,succeeded,failed"`
 	DCPArbiterGeneration   int64                   `json:"dcpArbiterGeneration,omitempty"`

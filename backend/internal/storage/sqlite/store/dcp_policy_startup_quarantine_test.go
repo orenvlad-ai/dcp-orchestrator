@@ -17,6 +17,11 @@ func TestExactDCPPolicyStartupQuarantineSessionAllowlist(t *testing.T) {
 		PolicyVersion: "dcp.repo-only.happy-path/v1", SessionID: "wb-browser-extension-1", CardNumber: 1,
 	}
 	repoOnlySession := gen.Session{ID: "wb-browser-extension-1", ProjectID: "wb-browser-extension", Num: 1}
+	wbc := gen.DcpReviewLabPolicyTask{
+		Target: "wb-core", Profile: "repo-only", Repository: "orenvlad-ai/wb-core",
+		PolicyVersion: "dcp.wb-core.repo-only.release-train/v1", SessionID: "wb-core-1", CardNumber: 1,
+	}
+	wbcSession := gen.Session{ID: "wb-core-1", ProjectID: "wb-core", Num: 1}
 	legacy := gen.DcpReviewLabPolicyTask{
 		TaskID: "price-arch-v1", PayloadDigest: "efe6a81cfff28be89cc327bdc9e2380ca585fcc6b03064c0290b6aaf4c7b59fe",
 		Target: "wb-price-extension", Profile: "repo-only", Repository: "orenvlad-ai/wb-price-extension",
@@ -36,6 +41,9 @@ func TestExactDCPPolicyStartupQuarantineSessionAllowlist(t *testing.T) {
 	}
 	if !isExactDCPPolicyStartupQuarantineSession(repoOnly, repoOnlySession) {
 		t.Fatal("exact repo-only policy session was rejected")
+	}
+	if !isExactDCPPolicyStartupQuarantineSession(wbc, wbcSession) {
+		t.Fatal("exact WBC repo-only policy session was rejected")
 	}
 	if !isExactDCPPolicyStartupQuarantineSession(legacy, legacySession) {
 		t.Fatal("exact terminal legacy policy session was rejected")

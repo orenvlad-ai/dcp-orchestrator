@@ -152,6 +152,7 @@ describe("session presentation", () => {
 		["review inactive", "review_running", false, "in_review", "pending", "review", "bg-status-in-review", false],
 		["CI waiting", "ci_waiting", false, "working", "working", "working", "bg-status-working", false],
 		["admission waiting", "admission_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", false],
+		["Release Train waiting", "release_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", false],
 		["merged", "merged", false, "merged", "merge", "merged", "bg-status-merged", false],
 		["failed", "failed", false, "needs_you", "action", "failed", "bg-status-exited", false],
 		["incident", "incident", false, "needs_you", "action", "failed", "bg-status-exited", false],
@@ -335,6 +336,7 @@ describe("session presentation", () => {
 			sessionWith({ status: "pr_open", dcpPolicyState: "review_queued" }),
 			sessionWith({ status: "review_pending", dcpPolicyState: "review_running", dcpPolicyActionActive: true }),
 			sessionWith({ status: "review_pending", dcpPolicyState: "admission_waiting" }),
+			sessionWith({ status: "mergeable", dcpPolicyState: "release_waiting" }),
 			sessionWith({ status: "pr_open", dcpPolicyState: "merged" }),
 		];
 		const phaseRank = { working: 0, in_review: 1, arbiter: 2, ready_to_merge: 3, merged: 4, needs_you: 5 } as const;
@@ -351,12 +353,13 @@ describe("session presentation", () => {
 			"pending",
 			"merge",
 			"merge",
+			"merge",
 		]);
 		expect(getSessionStatusViewForSession(frames[3])).toMatchObject({
 			label: "PR open",
 			className: "text-status-working",
 		});
-		expect(getSessionStatusViewForSession(frames[7])).toMatchObject({
+		expect(getSessionStatusViewForSession(frames[8])).toMatchObject({
 			label: "Merged",
 			className: "text-status-merged",
 		});

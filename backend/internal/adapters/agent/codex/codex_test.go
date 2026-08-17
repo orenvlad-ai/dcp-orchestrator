@@ -121,6 +121,37 @@ func TestGetLaunchCommandEnablesNetworkOnlyForExactRepoOnlyTarget(t *testing.T) 
 	}
 }
 
+func TestGetLaunchCommandEnablesNetworkOnlyForExactWBCRepoOnlyTarget(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	const sessionID = "wb-core-1"
+	dataDir, workspace := dcpPolicyWorktree(t, "wb-core", dcpWBCRepoOnlyOrigin, sessionID)
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace, DCPReviewLabPolicyAuthorized: true,
+	})
+	if err != nil || !containsSubsequence(cmd, []string{"-c", "sandbox_workspace_write.network_access=true"}) {
+		t.Fatalf("exact WBC repo-only command=%#v err=%v", cmd, err)
+	}
+	withoutAuthority, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace,
+	})
+	if err != nil || contains(withoutAuthority, "sandbox_workspace_write.network_access=true") {
+		t.Fatalf("unbound WBC repo-only command=%#v err=%v", withoutAuthority, err)
+	}
+	repo := filepath.Join(filepath.Dir(dataDir), "targets", "wb-core")
+	runTestCommand(t, "git", "-C", repo, "remote", "set-url", "--push", "origin", dcpRepoOnlyOrigin)
+	if foreign, foreignErr := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		Config: ports.AgentConfig{DCPReviewLabNetwork: true}, DataDir: dataDir,
+		SessionID: sessionID, Kind: domain.KindWorker, Permissions: ports.PermissionModeAcceptEdits,
+		WorkspacePath: workspace, DCPReviewLabPolicyAuthorized: true,
+	}); foreignErr == nil {
+		t.Fatalf("foreign WBC repo-only push remote produced command %#v", foreign)
+	}
+}
+
 func TestGetLaunchCommandRejectsLegacyRepoOnlyTargetEvenWithPolicyFlag(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "codex"}
 	if cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
