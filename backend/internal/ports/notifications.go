@@ -24,6 +24,11 @@ type NotificationIntent struct {
 	PRTargetBranch     string
 	Provider           string
 	Repo               string
+	// ReadyDestination refines ready_to_merge copy without changing the stable
+	// notification kind. Empty is the stock user-merge wording;
+	// "wbc_release_train" means DCP has completed review/FIFO admission and is
+	// waiting for the repository-owned Release Train.
+	ReadyDestination string
 }
 
 // NotificationResolution is the lifecycle-to-notification-producer contract for

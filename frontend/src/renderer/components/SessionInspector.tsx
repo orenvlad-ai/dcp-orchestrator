@@ -33,7 +33,12 @@ import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTer
 import { prBrowserUrl, prCardPresentation, sessionPRDisplaySummaries } from "../lib/pr-display";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { findProjectOrchestrator, sortedPRs } from "../types/workspace";
-import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
+import {
+	getAgentActivityView,
+	getSessionStatusViewForSession,
+	getSessionTimelinePillView,
+	getSessionVisualStatus,
+} from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
@@ -647,14 +652,22 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 	// Current activity is a live reading, not a historical event. Keep it above
 	// the optional reverse-chronological history and do not imply that its last
 	// hook time is when the state transition occurred.
-	const activityView = getAgentActivityView(session.activity);
+	const policyVisual = session.dcpPolicyState ? getSessionVisualStatus(session) : undefined;
+	const activityView = policyVisual
+		? {
+				label: getSessionStatusViewForSession(session).label,
+				tone: policyTimelineTone(policyVisual.tone),
+				breathe: policyVisual.workflowActive,
+			}
+		: getAgentActivityView(session.activity);
 	const current = {
 		tone: "now",
 		node: (
 			<span className="inline-flex flex-wrap items-center gap-1.5">
 				<span className="inline-flex align-middle">
-					<InspectorActivityPill activity={session.activity} />
+					<TimelinePill {...activityView} />
 				</span>
+				{policyVisual?.detail ? <span className="text-passive">{policyVisual.detail}</span> : null}
 				{session.status === "no_signal" ? (
 					<span className="inline-flex align-middle">
 						<TimelinePill {...getSessionTimelinePillView("no_signal")} />
@@ -756,13 +769,30 @@ function conflictPill() {
 	return { label: appI18n.t("inspector.conflict"), tone: "var(--color-danger)", breathe: false };
 }
 
-function InspectorActivityPill({ activity }: { activity?: WorkspaceSession["activity"] }) {
-	return <TimelinePill {...getAgentActivityView(activity)} />;
-}
-
 function InspectorScmPill({ state }: { state: ScmTimelineState }) {
 	if (state === "conflict") return <TimelinePill {...conflictPill()} />;
 	return <TimelinePill {...getSessionTimelinePillView(state)} />;
+}
+
+function policyTimelineTone(tone: ReturnType<typeof getSessionVisualStatus>["tone"]): string {
+	switch (tone) {
+		case "working":
+			return "var(--color-status-working)";
+		case "review":
+			return "var(--color-status-in-review)";
+		case "arbiter":
+			return "var(--color-status-arbiter)";
+		case "ready":
+			return "var(--color-status-ready)";
+		case "merged":
+			return "var(--color-status-merged)";
+		case "attention":
+			return "var(--color-status-needs-you)";
+		case "failed":
+			return "var(--color-status-exited)";
+		case "idle":
+			return "var(--color-status-idle)";
+	}
 }
 
 function TimelinePill({ label, tone }: { label: string; tone: string; breathe: boolean }) {

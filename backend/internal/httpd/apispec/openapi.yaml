@@ -3461,6 +3461,8 @@ components:
           type: string
         dcpPolicyActionActive:
           type: boolean
+        dcpPolicyModelActive:
+          type: boolean
         dcpPolicyState:
           enum:
           - reserved
@@ -3477,6 +3479,8 @@ components:
           - failed
           - incident
           type: string
+        dcpPolicyWorkflowActive:
+          type: boolean
         displayName:
           type: string
         harness:

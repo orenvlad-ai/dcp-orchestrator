@@ -768,7 +768,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	prs = deduplicatePRFacts(prs)
 	status := deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness))
 	var policyState domain.DCPReviewLabPolicyState
-	var policyActionActive bool
+	var policyModelActive, policyWorkflowActive bool
 	var arbiterStatus domain.DCPFutureArbiterStatus
 	var arbiterGeneration int64
 	var arbiterIncidentKind string
@@ -795,7 +795,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 				if actionErr != nil {
 					return domain.Session{}, fmt.Errorf("DCP policy action facts %s: %w", rec.ID, actionErr)
 				}
-				policyActionActive = active && action.Status == domain.DCPActionRunning
+				policyModelActive = active && action.Status == domain.DCPActionRunning
 			}
 			if arbiters, ok := s.store.(dcpFutureArbiterReader); ok {
 				incident, incidentFound, incidentErr := arbiters.GetDCPFutureArbiterIncidentByTask(ctx, task.TaskID)
@@ -825,23 +825,44 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 					arbiterActionStatus = action.Status
 				}
 			}
+			policyWorkflowActive = dcpPolicyWorkflowActive(task.State, arbiterStatus)
 		}
 	}
 	return domain.Session{
-		SessionRecord:          rec,
-		Status:                 status,
-		SCMStatus:              deriveSCMStatus(prs),
-		TerminalHandleID:       rec.Metadata.RuntimeHandleID,
-		DCPPolicyState:         policyState,
-		DCPPolicyActionActive:  policyActionActive,
-		DCPArbiterStatus:       arbiterStatus,
-		DCPArbiterGeneration:   arbiterGeneration,
-		DCPArbiterIncidentKind: arbiterIncidentKind,
-		DCPArbiterCohort:       arbiterCohort,
-		DCPArbiterActionStatus: arbiterActionStatus,
-		DCPHumanGateQuestion:   humanGateQuestion,
-		PRs:                    prs,
+		SessionRecord:           rec,
+		Status:                  status,
+		SCMStatus:               deriveSCMStatus(prs),
+		TerminalHandleID:        rec.Metadata.RuntimeHandleID,
+		DCPPolicyState:          policyState,
+		DCPPolicyModelActive:    policyModelActive,
+		DCPPolicyWorkflowActive: policyWorkflowActive,
+		DCPPolicyActionActive:   policyModelActive,
+		DCPArbiterStatus:        arbiterStatus,
+		DCPArbiterGeneration:    arbiterGeneration,
+		DCPArbiterIncidentKind:  arbiterIncidentKind,
+		DCPArbiterCohort:        arbiterCohort,
+		DCPArbiterActionStatus:  arbiterActionStatus,
+		DCPHumanGateQuestion:    humanGateQuestion,
+		PRs:                     prs,
 	}, nil
+}
+
+func dcpPolicyWorkflowActive(state domain.DCPReviewLabPolicyState, arbiter domain.DCPFutureArbiterStatus) bool {
+	switch state {
+	case domain.DCPPolicyMerged, domain.DCPPolicyFailed:
+		return false
+	case domain.DCPPolicyIncident:
+		switch arbiter {
+		case domain.DCPFutureArbiterRequested, domain.DCPFutureArbiterClaimed, domain.DCPFutureArbiterRunning,
+			domain.DCPFutureArbiterHold, domain.DCPFutureArbiterRepairQueued,
+			domain.DCPFutureArbiterRecoveryReviewed, domain.DCPFutureArbiterSucceeded:
+			return true
+		default:
+			return false
+		}
+	default:
+		return state != ""
+	}
 }
 
 // overlayDCPPolicyStatus projects the durable future-task state through the

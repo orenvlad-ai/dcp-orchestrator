@@ -146,18 +146,18 @@ describe("session presentation", () => {
 
 	it.each([
 		["worker active", "worker_running", true, "working", "working", "working", "bg-status-working", true],
-		["worker queued", "worker_queued", false, "working", "working", "working", "bg-status-working", false],
+		["worker queued", "worker_queued", false, "working", "working", "working", "bg-status-working", true],
 		["review active", "review_running", true, "in_review", "pending", "review", "bg-status-in-review", true],
-		["review queued", "review_queued", false, "in_review", "pending", "review", "bg-status-in-review", false],
-		["review inactive", "review_running", false, "in_review", "pending", "review", "bg-status-in-review", false],
-		["CI waiting", "ci_waiting", false, "working", "working", "working", "bg-status-working", false],
-		["admission waiting", "admission_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", false],
-		["Release Train waiting", "release_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", false],
+		["review queued", "review_queued", false, "in_review", "pending", "review", "bg-status-in-review", true],
+		["review inactive", "review_running", false, "in_review", "pending", "review", "bg-status-in-review", true],
+		["CI waiting", "ci_waiting", false, "working", "working", "working", "bg-status-working", true],
+		["admission waiting", "admission_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", true],
+		["Release Train waiting", "release_waiting", false, "ready_to_merge", "merge", "ready", "bg-status-ready", true],
 		["merged", "merged", false, "merged", "merge", "merged", "bg-status-merged", false],
 		["failed", "failed", false, "needs_you", "action", "failed", "bg-status-exited", false],
 		["incident", "incident", false, "needs_you", "action", "failed", "bg-status-exited", false],
 		["incident arbiter active", "incident", true, "needs_you", "action", "failed", "bg-status-exited", false],
-		["reserved", "reserved", false, "working", "working", "working", "bg-status-working", false],
+		["reserved", "reserved", false, "working", "working", "working", "bg-status-working", true],
 	] as const)(
 		"maps policy %s to one shared projection",
 		(_name, state, actionActive, policyPhase, zone, tone, dotClassName, active) => {
@@ -208,16 +208,16 @@ describe("session presentation", () => {
 			indicatorClassName: "bg-status-exited",
 			active: false,
 		});
-		expect(getSessionStatusViewForSession(failure).label).toBe("Review failed");
+		expect(getSessionStatusViewForSession(failure).label).toBe("Action required");
 	});
 
 	it.each([
-		["waiting", "requested", "queued", false, "Waiting for arbiter", false],
-		["claimed", "claimed", "claimed", true, "Arbiter evaluating", false],
+		["waiting", "requested", "queued", false, "Waiting for arbiter", true],
+		["claimed", "claimed", "claimed", true, "Arbiter evaluating", true],
 		["running", "running", "running", true, "Arbiter evaluating", true],
-		["running without active fence", "running", "running", false, "Arbiter evaluating", false],
-		["passive hold", "hold", "succeeded", false, "Arbiter decision pending", false],
-		["accepted decision", "succeeded", "failed", false, "Arbiter decision pending", false],
+		["running without active fence", "running", "running", false, "Arbiter evaluating", true],
+		["passive hold", "hold", "succeeded", false, "Arbiter decision pending", true],
+		["accepted decision", "succeeded", "failed", false, "Arbiter decision pending", true],
 	] as const)(
 		"projects an automatic arbiter %s into the shared review lane",
 		(_name, arbiterStatus, actionStatus, policyActive, label, active) => {
@@ -322,7 +322,8 @@ describe("session presentation", () => {
 			"needs_you",
 		]);
 		expect(projections.map((projection) => projection.zone)).toEqual(["pending", "pending", "pending", "action"]);
-		expect(projections.map((projection) => projection.active)).toEqual([false, true, false, false]);
+		expect(projections.map((projection) => projection.workflowActive)).toEqual([true, true, true, false]);
+		expect(projections.map((projection) => projection.modelActive)).toEqual([false, true, false, false]);
 		expect(projections.slice(0, 3).every((projection) => projection.tone === "arbiter")).toBe(true);
 		expect(projections[3]).toMatchObject({ tone: "attention", dotClassName: "bg-status-needs-you" });
 	});
@@ -355,12 +356,34 @@ describe("session presentation", () => {
 			"merge",
 			"merge",
 		]);
+		expect(projections.map((projection) => projection.workflowActive)).toEqual([
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			true,
+			false,
+		]);
+		expect(projections.map((projection) => projection.modelActive)).toEqual([
+			false,
+			false,
+			true,
+			false,
+			false,
+			true,
+			false,
+			false,
+			false,
+		]);
 		expect(getSessionStatusViewForSession(frames[3])).toMatchObject({
-			label: "PR open",
+			label: "Waiting for CI",
 			className: "text-status-working",
 		});
 		expect(getSessionStatusViewForSession(frames[8])).toMatchObject({
-			label: "Merged",
+			label: "Merged / released",
 			className: "text-status-merged",
 		});
 	});

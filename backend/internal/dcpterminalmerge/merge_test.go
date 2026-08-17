@@ -924,6 +924,54 @@ func TestWBCPolicyHandsOffOnlyReleaseReadyAndObservesExactTerminalProof(t *testi
 	}
 }
 
+func TestWBCPolicyAdmissionUsesOnlyExactConfiguredBaseline(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	for _, tc := range []struct {
+		name   string
+		mutate func(*fakeSCM)
+		ready  bool
+	}{
+		{
+			name: "current complex Release Train with unrelated skipped jobs",
+			mutate: func(scm *fakeSCM) {
+				scm.observation.CI.Checks = append(scm.observation.CI.Checks,
+					ports.SCMCheckObservation{Name: "Select queued PR", Status: string(domain.PRCheckSkipped), Conclusion: "skipped"},
+					ports.SCMCheckObservation{Name: "Merge repo-only PR", Status: string(domain.PRCheckSkipped), Conclusion: "skipped"},
+				)
+			},
+			ready: true,
+		},
+		{name: "future simplified Release Train", mutate: func(*fakeSCM) {}, ready: true},
+		{name: "pending baseline", mutate: func(scm *fakeSCM) {
+			scm.observation.CI.Checks[0].Status, scm.observation.CI.Checks[0].Conclusion = string(domain.PRCheckInProgress), ""
+		}},
+		{name: "failed baseline", mutate: func(scm *fakeSCM) {
+			scm.observation.CI.Checks[0].Status, scm.observation.CI.Checks[0].Conclusion = string(domain.PRCheckFailed), "failure"
+		}},
+		{name: "skipped baseline", mutate: func(scm *fakeSCM) {
+			scm.observation.CI.Checks[0].Status, scm.observation.CI.Checks[0].Conclusion = string(domain.PRCheckSkipped), "skipped"
+		}},
+		{name: "duplicate baseline", mutate: func(scm *fakeSCM) {
+			scm.observation.CI.Checks = append(scm.observation.CI.Checks, scm.observation.CI.Checks[0])
+		}},
+		{name: "wrong check head", mutate: func(scm *fakeSCM) { scm.observation.CI.HeadSHA = strings.Repeat("f", 40) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, store, scm := policyTargetFixture(t, spec, 1)
+			tc.mutate(scm)
+			if err := engine.Try(context.Background(), store.session.ID); err != nil {
+				t.Fatal(err)
+			}
+			if got := scm.releaseReadyCalls == 1; got != tc.ready {
+				t.Fatalf("releaseReadyCalls=%d task=%+v", scm.releaseReadyCalls, store.policyTask)
+			}
+			if scm.mergeCalls != 0 {
+				t.Fatalf("wb-core direct merge calls=%d", scm.mergeCalls)
+			}
+		})
+	}
+}
+
 func TestWBCPolicyHeadDriftFailsClosedWithoutDirectMerge(t *testing.T) {
 	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
 	engine, store, scm := policyTargetFixture(t, spec, 1)

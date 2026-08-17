@@ -100,6 +100,8 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						scmStatus,
 						dcpPolicyState: session.dcpPolicyState,
 						dcpPolicyActionActive: session.dcpPolicyActionActive ?? false,
+						dcpPolicyModelActive: session.dcpPolicyModelActive ?? session.dcpPolicyActionActive ?? false,
+						dcpPolicyWorkflowActive: session.dcpPolicyWorkflowActive,
 						dcpArbiterStatus: session.dcpArbiterStatus,
 						dcpArbiterGeneration: session.dcpArbiterGeneration,
 						dcpArbiterIncidentKind: session.dcpArbiterIncidentKind,

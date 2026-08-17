@@ -227,6 +227,68 @@ func TestValidateExactPolicyNamedCIIgnoresHistoricalHeadChecks(t *testing.T) {
 	}
 }
 
+func TestValidateExactPolicyNamedCIReproducesAndCorrectsWBCCanaryIncident(t *testing.T) {
+	const head = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
+	pr := domain.PullRequest{CI: domain.CIPassing, Repo: WBCRepositoryName}
+	baseline := domain.PullRequestCheck{
+		Name: "baseline", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "success",
+		URL: "https://github.com/orenvlad-ai/wb-core/actions/runs/32048996893/job/95443534690",
+	}
+	currentTrainChecks := []domain.PullRequestCheck{
+		baseline,
+		{Name: "Select queued PR", CommitHash: head, Status: domain.PRCheckSkipped, Conclusion: "skipped", URL: "https://github.com/orenvlad-ai/wb-core/actions/runs/32049021805/job/95443626637"},
+		{Name: "Merge repo-only PR", CommitHash: head, Status: domain.PRCheckSkipped, Conclusion: "skipped", URL: "https://github.com/orenvlad-ai/wb-core/actions/runs/32049021805/job/95443627412"},
+	}
+	// This is the exact predecessor defect: the old loop rejected the snapshot
+	// before it selected spec.RequiredCheck.
+	for _, check := range currentTrainChecks {
+		if check.CommitHash == head && check.Status != domain.PRCheckPassed {
+			goto reproduced
+		}
+	}
+	t.Fatal("fixture no longer reproduces the old all-visible-check rejection")
+
+reproduced:
+	for name, checks := range map[string][]domain.PullRequestCheck{
+		"current complex Release Train":   currentTrainChecks,
+		"future simplified Release Train": {baseline},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ready, terminal, err := validateExactPolicyNamedCI(pr, checks, head)
+			if err != nil || !ready || terminal {
+				t.Fatalf("ready=%v terminal=%v err=%v", ready, terminal, err)
+			}
+		})
+	}
+}
+
+func TestValidateExactPolicyNamedCIFailsClosedForRequiredBaselineOnly(t *testing.T) {
+	const head = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
+	pr := domain.PullRequest{CI: domain.CIPassing, Repo: WBCRepositoryName}
+	valid := domain.PullRequestCheck{Name: "baseline", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://github.com/orenvlad-ai/wb-core/actions/runs/1/job/2"}
+	for _, tc := range []struct {
+		name     string
+		checks   []domain.PullRequestCheck
+		terminal bool
+	}{
+		{name: "missing", terminal: false},
+		{name: "wrong head", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: strings.Repeat("0", 40), Status: domain.PRCheckPassed, Conclusion: "success"}}, terminal: false},
+		{name: "pending", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: head, Status: domain.PRCheckInProgress}}, terminal: false},
+		{name: "duplicate", checks: []domain.PullRequestCheck{valid, valid}, terminal: true},
+		{name: "failed", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: head, Status: domain.PRCheckFailed, Conclusion: "failure"}}, terminal: true},
+		{name: "skipped", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: head, Status: domain.PRCheckSkipped, Conclusion: "skipped"}}, terminal: true},
+		{name: "malformed", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "neutral"}}, terminal: true},
+		{name: "foreign provider URL", checks: []domain.PullRequestCheck{{Name: "baseline", CommitHash: head, Status: domain.PRCheckPassed, Conclusion: "success", URL: "https://example.com/job/2"}}, terminal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, terminal, err := validateExactPolicyNamedCI(pr, tc.checks, head)
+			if ready || terminal != tc.terminal || (terminal && err == nil) || (!terminal && err != nil) {
+				t.Fatalf("ready=%v terminal=%v err=%v", ready, terminal, err)
+			}
+		})
+	}
+}
+
 func TestExactPolicyNativeIdentityAcceptsOnlyTerminalArchivedShell(t *testing.T) {
 	task := domain.DCPReviewLabPolicyTask{
 		TaskID: "archived-1", Target: PolicyTarget, Profile: PolicyProfile,

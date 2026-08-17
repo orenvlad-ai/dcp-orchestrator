@@ -689,6 +689,63 @@ describe("SessionInspector Activity section", () => {
 		expect(within(activityRow).getByText("Working").querySelector(".rounded-full")).not.toBeInTheDocument();
 	});
 
+	it("uses the same workflow-active policy projection in the details timeline", () => {
+		renderWithQuery(
+			<SessionInspector
+				session={session([pr(987, "open")], {
+					status: "pr_open",
+					dcpPolicyState: "ci_waiting",
+					dcpPolicyModelActive: false,
+					dcpPolicyWorkflowActive: true,
+					activity: { state: "idle", lastActivityAt: "2026-08-17T17:21:31Z" },
+				})}
+			/>,
+		);
+
+		const row = activitySection()
+			.getByText("Waiting for CI")
+			.closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+		expect(within(row).getByText("Waiting for CI/GitHub update")).toBeInTheDocument();
+		const marker = row.querySelector("span[aria-hidden='true'].rounded-full") as HTMLElement;
+		expect(marker).toHaveClass("animate-status-pulse");
+		expect(within(row).queryByText("Working")).not.toBeInTheDocument();
+	});
+
+	it("keeps Human Gate and technical incident details steady", () => {
+		const gate = renderWithQuery(
+			<SessionInspector
+				session={session([], {
+					status: "review_failed",
+					dcpPolicyState: "incident",
+					dcpPolicyModelActive: false,
+					dcpPolicyWorkflowActive: false,
+					dcpArbiterStatus: "human_gate",
+					dcpArbiterActionStatus: "succeeded",
+					dcpHumanGateQuestion: "Choose the safe intent?",
+				})}
+			/>,
+		);
+		let row = activitySection()
+			.getByText("Needs your decision")
+			.closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+		expect(within(row).getByText(/Choose the safe intent/)).toBeInTheDocument();
+		expect(row.querySelector("span[aria-hidden='true'].rounded-full")).not.toHaveClass("animate-status-pulse");
+
+		gate.unmount();
+		renderWithQuery(
+			<SessionInspector
+				session={session([], {
+					status: "review_failed",
+					dcpPolicyState: "incident",
+					dcpPolicyModelActive: false,
+					dcpPolicyWorkflowActive: false,
+				})}
+			/>,
+		);
+		row = activitySection().getByText("Action required").closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+		expect(row.querySelector("span[aria-hidden='true'].rounded-full")).not.toHaveClass("animate-status-pulse");
+	});
+
 	it("aligns summary section headings on one shared inset", () => {
 		renderWithQuery(
 			<SessionInspector

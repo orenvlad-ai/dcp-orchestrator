@@ -143,6 +143,8 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 			aria-label={getSessionAccessibilityStatus(session, t)}
 			className={cn("size-2 shrink-0 rounded-full", visual.indicatorClassName)}
 			data-session-status-active={String(visual.active)}
+			data-session-model-active={String(visual.modelActive)}
+			data-session-workflow-active={String(visual.workflowActive)}
 			data-session-status-tone={visual.tone}
 			data-session-status=""
 			role="img"
