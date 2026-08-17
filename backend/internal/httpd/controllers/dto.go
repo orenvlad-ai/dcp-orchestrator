@@ -36,9 +36,9 @@ type SubmitDCPTaskRequest struct {
 // canonical dev-control-plane adapter after its locked target preflight.
 type SubmitDCPPolicyTaskRequest struct {
 	TaskID     string `json:"taskId" minLength:"1" maxLength:"16"`
-	Target     string `json:"target" enum:"dcp-review-lab,wb-price-extension,wb-browser-extension"`
+	Target     string `json:"target" enum:"dcp-review-lab,wb-price-extension,wb-browser-extension,wb-core"`
 	Profile    string `json:"profile" enum:"synthetic-pr,repo-only"`
-	Repository string `json:"repository" enum:"orenvlad-ai/dcp-review-lab,orenvlad-ai/wb-price-extension,orenvlad-ai/wb-browser-extension"`
+	Repository string `json:"repository" enum:"orenvlad-ai/dcp-review-lab,orenvlad-ai/wb-price-extension,orenvlad-ai/wb-browser-extension,orenvlad-ai/wb-core"`
 	Prompt     string `json:"prompt" minLength:"1" maxLength:"512"`
 }
 

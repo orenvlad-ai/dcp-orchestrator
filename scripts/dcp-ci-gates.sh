@@ -12,6 +12,8 @@ i11_commit='417a844e7b85b6b14ae9a1855009d8bf139ee43d'
 license_sha256='1a2219722b7ef58364065e9073a2cb2831891eb147a785742a31431c9cddad1d'
 control_plane_commit='a1bfdd9328566dc630587220b60b7faa7ba1d745'
 operating_contract_revision='2026-08-16.1'
+wbc_control_plane_commit='036b1101284f626c931f7edb1750ddd228634832'
+wbc_operating_contract_revision='2026-08-17.1'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -61,7 +63,9 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_PROVIDER_IDENTITY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact runtime provider identity v1 contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_SUBMIT_RECOVERY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact submit recovery v1 contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact repo-only repository rename contract'
+	grep -Fq "dev-control-plane/blob/$wbc_control_plane_commit/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core Release Train handoff contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
+	grep -Fq "\`$wbc_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
@@ -186,7 +190,8 @@ source_gates() {
 	repo_only_target_migration='backend/internal/storage/sqlite/migrations/0075_dcp_exact_repo_only_target_v1.sql'
 	real_target_submit_recovery_migration='backend/internal/storage/sqlite/migrations/0076_dcp_real_target_submit_recovery_v1.sql'
 	repo_only_target_forward_migration='backend/internal/storage/sqlite/migrations/0077_dcp_repo_only_target_forward_v1.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	wbc_release_handoff_migration='backend/internal/storage/sqlite/migrations/0078_dcp_wb_core_release_train_handoff_v1.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -234,6 +239,16 @@ source_gates() {
 	grep -Fq "repository = 'orenvlad-ai/wb-browser-extension'" "$repo_only_target_forward_migration" || fail 'current repo-only repository is not physical'
 	grep -Fq "state = 'merged' AND revision = 7" "$repo_only_target_forward_migration" || fail 'legacy repo-only alias is not terminal-only'
 	grep -Fq "merge_commit_sha = '62853496837f64522bb08ba56169f60f3b0f9a2c'" "$repo_only_target_forward_migration" || fail 'legacy repo-only merge evidence is not exact'
+	[[ -s "$wbc_release_handoff_migration" ]] || fail 'wb-core Release Train handoff migration is absent'
+	grep -Fq "repository = 'orenvlad-ai/wb-core'" "$wbc_release_handoff_migration" || fail 'wb-core repository identity is not physical'
+	grep -Fq "provider_repository_id = 1201929580" "$wbc_release_handoff_migration" || fail 'wb-core provider repository id is not physical'
+	grep -Fq "release_actor = 'wbc-github-actions-release-train'" "$wbc_release_handoff_migration" || fail 'WBC Release Train is not the physical terminal actor'
+	grep -Fq "'release_waiting'" "$wbc_release_handoff_migration" || fail 'wb-core zero-action release wait is absent'
+	grep -Fq 'DCPReleaseWBCTrainOnly' backend/internal/domain/dcp_lab_policy.go || fail 'wb-core release authority is not statically typed'
+	grep -Fq 'ApplyReleaseReady' backend/internal/dcpterminalmerge/merge.go || fail 'wb-core release-ready handoff is absent'
+	grep -Fq 'candidate.spec.UsesWBCReleaseTrain()' backend/internal/dcpterminalmerge/merge.go || fail 'wb-core is not diverted before direct merge'
+	grep -Fq 'type SCMReleaseTrain interface' backend/internal/ports/scm_release_train.go || fail 'narrow Release Train port is absent'
+	! sed -n '/type SCMReleaseTrain interface/,/^}/p' backend/internal/ports/scm_release_train.go | grep -Fq 'MergePullRequest' || fail 'Release Train handoff port exposes direct merge authority'
 	grep -Fq 'ProviderRepositoryID: 1335072844' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only provider database identity is absent'
 	grep -Fq '"gh", "api", "--method", "GET", "repos/"+repository' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup does not use stable REST repository metadata'
 	! grep -Fq '"gh", "repo", "view"' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup still uses unsupported repo-view projection'
@@ -242,8 +257,8 @@ source_gates() {
 	grep -Fq 'futurePolicyReview, err = e.policyGate.IsPolicyReviewSession(ctx, workerID)' backend/internal/review/review.go || fail 'repo-only reviews bypass the durable policy action gate'
 	grep -Fq 'Repository   string `json:"repository"`' backend/internal/cli/dcp.go || fail 'hidden submit response drops immutable repository identity'
 	grep -Fq 'isExactDCPPolicyStartupQuarantineSession(task, session)' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'governed startup quarantine bypasses the exact policy session classifier'
-	grep -Fq 'task.Target == "wb-browser-extension" && task.Profile == "repo-only"' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'current repo-only startup quarantine tuple is absent'
-	grep -Fq 'domain.IsExactDCPRepoOnlyLegacyTerminalTask(dcpPolicyTaskFromGen(task))' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'legacy terminal restore classifier is absent'
+	grep -Fq 'domain.DCPPolicyTargetForTask(policyTask)' backend/internal/storage/sqlite/store/dcp_card12_cold_start_recovery_store.go || fail 'typed startup quarantine target classifier is absent'
+	grep -Fq 'IsExactDCPRepoOnlyLegacyTerminalTask(task)' backend/internal/domain/dcp_lab_policy.go || fail 'legacy terminal restore classifier is absent'
 	grep -Fq 'RequiredCheck: "baseline"' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only named check is absent'
 	grep -Fq 'const dcpRepoOnlyOrigin = "https://github.com/orenvlad-ai/wb-browser-extension.git"' backend/internal/adapters/agent/codex/codex.go || fail 'repo-only worker remote is not exact'
 	grep -Fq 'showArbiter = arbiterSessions.length > 0' frontend/src/renderer/components/SessionsBoard.tsx || fail 'empty arbiter subsection is still rendered'
@@ -426,6 +441,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(real_target_startup_quarantine_live_copy_test\.go|store/dcp_policy_startup_quarantine_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/migrations/0077_dcp_repo_only_target_forward_v1\.sql$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/migrate_burned_versions_test\.go$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/adapters/scm/github/release_train_action(_test)?\.go|backend/internal/ports/scm_release_train\.go|backend/internal/storage/sqlite/(migrations/0078_dcp_wb_core_release_train_handoff_v1\.sql|wb_core_release_handoff_live_copy_migration_test\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

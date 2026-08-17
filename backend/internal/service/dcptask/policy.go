@@ -715,13 +715,7 @@ func validPolicySHA(value string) bool {
 }
 
 func policySpecForPR(pr domain.PullRequest) (domain.DCPPolicyTargetSpec, bool) {
-	for _, identity := range [][2]string{{PolicyTarget, PolicyProfile}, {RepoOnlyTarget, RepoOnlyProfile}} {
-		spec, _ := domain.DCPPolicyTarget(identity[0], identity[1])
-		if pr.Repo == spec.Repository {
-			return spec, true
-		}
-	}
-	return domain.DCPPolicyTargetSpec{}, false
+	return domain.DCPPolicyTargetForRepository(pr.Repo)
 }
 
 func validPolicyPRURL(spec domain.DCPPolicyTargetSpec, raw string, number int) bool {

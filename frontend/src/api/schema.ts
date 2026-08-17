@@ -1163,7 +1163,7 @@ export interface components {
             dcpHumanGateQuestion?: string;
             dcpPolicyActionActive?: boolean;
             /** @enum {string} */
-            dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "merged" | "failed" | "incident";
+            dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "release_waiting" | "merged" | "failed" | "incident";
             displayName?: string;
             harness?: string;
             id: string;
@@ -1198,9 +1198,9 @@ export interface components {
             profile: "synthetic-pr" | "repo-only";
             prompt: string;
             /** @enum {string} */
-            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension" | "orenvlad-ai/wb-browser-extension";
+            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension" | "orenvlad-ai/wb-browser-extension" | "orenvlad-ai/wb-core";
             /** @enum {string} */
-            target: "dcp-review-lab" | "wb-price-extension" | "wb-browser-extension";
+            target: "dcp-review-lab" | "wb-price-extension" | "wb-browser-extension" | "wb-core";
             taskId: string;
         };
         DCPApprovedScope: {

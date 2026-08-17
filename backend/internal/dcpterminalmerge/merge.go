@@ -71,6 +71,7 @@ type policyStore interface {
 	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
 	UpdateDCPReviewLabPolicyTaskCAS(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask) (bool, error)
 	EnqueueDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask) (domain.DCPReviewLabAdmission, bool, error)
+	ClaimDCPReleaseTrainAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, time.Time) (bool, error)
 	CompleteDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, time.Time) (bool, error)
 	RecordDCPReviewLabPolicyIncident(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, string, string, time.Time) (bool, error)
 }
@@ -624,12 +625,15 @@ func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabA
 }
 
 func (e *Engine) reconcileClaimed(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
-	candidate, ok, err := e.candidateForAdmission(ctx, admission)
+	candidate, ok, err := e.candidateForClaimedAdmission(ctx, admission)
 	if err != nil {
 		return false, err
 	}
 	if !ok {
 		return false, e.recordIncident(ctx, admission, mergeCandidate{}, ports.SCMObservation{}, "claimed_identity_drift")
+	}
+	if candidate.spec.UsesWBCReleaseTrain() {
+		return e.reconcileWBCRelease(ctx, admission, candidate)
 	}
 	observation, _, err := e.fresh(ctx, candidate.pr)
 	if err != nil {
@@ -737,10 +741,140 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 		if err := e.validateGit(ctx, candidate, observation.PR.HeadSHA, canonicalBase); err != nil {
 			return false, err
 		}
+		if candidate.spec.UsesWBCReleaseTrain() {
+			return e.handoffWBCRelease(ctx, admission, candidate, observation, canonicalBase)
+		}
 		return e.mergeWaiting(ctx, admission, candidate, observation, canonicalBase)
 	default:
 		return false, errors.New("dcp admission: unknown disposition")
 	}
+}
+
+func (e *Engine) handoffWBCRelease(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate, observation ports.SCMObservation, canonicalBase string) (bool, error) {
+	release, ok := e.scm.(ports.SCMReleaseTrain)
+	if !ok {
+		return false, e.recordIncident(ctx, admission, candidate, observation, "release_train_provider_unavailable")
+	}
+	leaseID := "dcp-release-" + admission.ID
+	claimed, err := e.store.(policyStore).ClaimDCPReleaseTrainAdmission(ctx, admission, candidate.policyTask, leaseID, canonicalBase, e.clock())
+	if err != nil || !claimed {
+		return false, err
+	}
+	admission.Status, admission.LeaseID, admission.AdmittedBaseSHA = domain.DCPAdmissionClaimed, leaseID, canonicalBase
+	candidate.policyTask.State = domain.DCPPolicyReleaseWaiting
+	candidate.policyTask.Revision++
+	request := ports.SCMReleaseReadyRequest{
+		PR: ports.SCMPRRef{
+			Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "wb-core", Repo: candidate.spec.Repository},
+			Number: candidate.pr.Number, URL: candidate.pr.URL,
+		},
+		ExpectedHeadSHA: candidate.run.TargetSHA, ExpectedBaseBranch: candidate.spec.DefaultBranch,
+		RequiredTaskLabel: "task:standard", RequiredScopeLabel: "scope:repo-only",
+	}
+	if err := release.ApplyReleaseReady(ctx, request); err != nil {
+		if incidentErr := e.recordIncident(ctx, admission, candidate, observation, "release_handoff_failed"); incidentErr != nil {
+			return false, errors.Join(err, incidentErr)
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func (e *Engine) reconcileWBCRelease(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate) (bool, error) {
+	release, ok := e.scm.(ports.SCMReleaseTrain)
+	if !ok {
+		return false, e.recordIncident(ctx, admission, candidate, ports.SCMObservation{}, "release_train_provider_unavailable")
+	}
+	ref := ports.SCMPRRef{
+		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "wb-core", Repo: candidate.spec.Repository},
+		Number: candidate.pr.Number, URL: candidate.pr.URL,
+	}
+	observed, err := release.ObserveRelease(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+	incidentObservation := ports.SCMObservation{PR: ports.SCMPRObservation{BaseSHA: admission.AdmittedBaseSHA}}
+	exactIdentity := observed.Number == candidate.pr.Number && observed.URL == candidate.pr.URL &&
+		observed.HeadRepository == candidate.spec.Repository && observed.HeadBranch == candidate.pr.SourceBranch &&
+		observed.BaseBranch == candidate.spec.DefaultBranch && observed.Author == "orenvlad-ai"
+	if !exactIdentity {
+		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_identity_drift")
+	}
+	if !strings.EqualFold(observed.HeadSHA, admission.TargetSHA) {
+		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_head_drift")
+	}
+	if !exactWBCReleaseLabels(observed.Labels) {
+		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_label_drift")
+	}
+	if !observed.Merged {
+		if observed.State != "open" || observed.Draft || !exactWBCReleasePhase(observed.Labels, false) {
+			return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_state_drift")
+		}
+		return false, nil
+	}
+	mergeSHA := strings.ToLower(observed.MergeCommitSHA)
+	proof := fmt.Sprintf("<!-- wb-core-release-completion-proof contour=repo-only merge=%s pr=%d -->", mergeSHA, observed.Number)
+	if observed.State != "closed" || !validSHA(mergeSHA) || !exactWBCReleasePhase(observed.Labels, true) ||
+		strings.Count(observed.Body, proof) != 1 {
+		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_terminal_proof_invalid")
+	}
+	updated, err := e.store.(policyStore).CompleteDCPReviewLabPolicyAdmission(ctx, admission, candidate.policyTask, mergeSHA, e.clock())
+	if err != nil {
+		return false, err
+	}
+	if !updated {
+		return false, errors.New("dcp admission: Release Train completion could not be recorded")
+	}
+	return true, nil
+}
+
+func exactWBCReleasePhase(labels []string, terminal bool) bool {
+	allowed, seen := "release:ready", 0
+	if terminal {
+		allowed = "release:done"
+	}
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "release:") {
+			continue
+		}
+		if !terminal && label == "release:running" {
+			seen++
+			continue
+		}
+		if label != allowed {
+			return false
+		}
+		seen++
+	}
+	return seen == 1
+}
+
+func exactWBCReleaseLabels(labels []string) bool {
+	taskLabels, scopeLabels := 0, 0
+	for _, label := range labels {
+		switch {
+		case strings.HasPrefix(label, "task:"):
+			taskLabels++
+			if label != "task:standard" {
+				return false
+			}
+		case strings.HasPrefix(label, "scope:"):
+			scopeLabels++
+			if label != "scope:repo-only" {
+				return false
+			}
+		}
+	}
+	return taskLabels == 1 && scopeLabels == 1
+}
+
+func hasExactLabel(labels []string, want string) bool {
+	for _, label := range labels {
+		if label == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) mergeWaiting(ctx context.Context, admission domain.DCPReviewLabAdmission, candidate mergeCandidate, observation ports.SCMObservation, canonicalBase string) (bool, error) {
@@ -827,6 +961,20 @@ type mergeCandidate struct {
 
 func (e *Engine) candidateForAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
 	return e.candidateForAdmissionInPolicyState(ctx, admission, domain.DCPPolicyAdmissionWait)
+}
+
+func (e *Engine) candidateForClaimedAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
+	state := domain.DCPPolicyAdmissionWait
+	if store, ok := e.store.(policyStore); ok {
+		if task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, admission.SessionID); err != nil {
+			return mergeCandidate{}, false, err
+		} else if found {
+			if spec, exact := domain.DCPPolicyTargetForTask(task); exact && spec.UsesWBCReleaseTrain() {
+				state = domain.DCPPolicyReleaseWaiting
+			}
+		}
+	}
+	return e.candidateForAdmissionInPolicyState(ctx, admission, state)
 }
 
 func (e *Engine) candidateForFutureArbiterAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
@@ -1327,13 +1475,7 @@ func policyProviderIdentity(spec domain.DCPPolicyTargetSpec) string {
 }
 
 func policySpecForRepository(repository string) (domain.DCPPolicyTargetSpec, bool) {
-	for _, identity := range [][2]string{{"dcp-review-lab", "synthetic-pr"}, {"wb-browser-extension", "repo-only"}} {
-		spec, _ := domain.DCPPolicyTarget(identity[0], identity[1])
-		if repository == spec.Repository {
-			return spec, true
-		}
-	}
-	return domain.DCPPolicyTargetSpec{}, false
+	return domain.DCPPolicyTargetForRepository(repository)
 }
 
 func eligibleSessionID(id domain.SessionID) bool {

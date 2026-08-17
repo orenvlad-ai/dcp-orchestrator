@@ -860,7 +860,7 @@ func overlayDCPPolicyStatus(base domain.SessionStatus, state domain.DCPReviewLab
 		return base
 	case domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning:
 		return domain.StatusReviewPending
-	case domain.DCPPolicyAdmissionWait:
+	case domain.DCPPolicyAdmissionWait, domain.DCPPolicyReleaseWaiting:
 		return domain.StatusMergeable
 	case domain.DCPPolicyMerged:
 		return domain.StatusMerged

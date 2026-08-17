@@ -221,6 +221,48 @@ func TestReviewRepositoryValidatorAcceptsOnlyExactRepoOnlyProviderIdentity(t *te
 	}
 }
 
+func TestReviewRepositoryValidatorLocksWBCUntilAllReleaseHandoffMarkersExist(t *testing.T) {
+	repo := createDCPTestRepository(t)
+	spec, ok := domain.DCPPolicyTarget(WBCTarget, RepoOnlyProfile)
+	if !ok || !spec.UsesWBCReleaseTrain() {
+		t.Fatalf("WBC target spec = %+v ok=%v", spec, ok)
+	}
+	runGitTest(t, repo, "remote", "add", "origin", spec.OriginURL)
+	head := strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
+	validator := ReviewRepositoryValidator{
+		TargetPath: repo, AllowedWorktreeRoot: filepath.Join(filepath.Dir(repo), "worktrees"),
+		RunProvider: func(_ context.Context, repository string) (ReviewRepositoryProviderIdentity, error) {
+			if repository != WBCRepositoryName {
+				t.Fatalf("provider lookup repository = %q", repository)
+			}
+			return ReviewRepositoryProviderIdentity{NameWithOwner: WBCRepositoryName, DefaultBranch: "main", RepositoryID: 1201929580, OwnerID: 237411244}, nil
+		},
+	}
+	project := domain.ProjectRecord{ID: WBCTarget, Path: repo, Kind: domain.ProjectKindSingleRepo,
+		RepoOriginURL: spec.OriginURL, Config: domain.ProjectConfig{DefaultBranch: "main", SessionPrefix: WBCTarget, AgentRules: domain.DCPWBCRepoOnlyPolicyAgentRules}}
+	if _, err := validator.Validate(context.Background(), project); err == nil {
+		t.Fatal("WBC validator accepted current main without the compatibility contract")
+	}
+	for _, markerPath := range spec.CompatibilityFiles {
+		path := filepath.Join(repo, markerPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(spec.CompatibilityMarker+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGitTest(t, repo, "add", "docs/architecture/11_github_release_train.md", "apps/github_release_train.py", "apps/github_release_train_spec.py")
+	runGitTest(t, repo, "-c", "user.email=dcp-test@example.invalid", "-c", "user.name=DCP Test", "commit", "-m", "bind release handoff")
+	head = strings.TrimSpace(runGitTest(t, repo, "rev-parse", "HEAD"))
+	runGitTest(t, repo, "update-ref", "refs/remotes/origin/main", head)
+	identity, err := validator.Validate(context.Background(), project)
+	if err != nil || identity.ProjectID != WBCTarget || identity.Repository != WBCRepositoryName || identity.HeadSHA != head {
+		t.Fatalf("qualified WBC identity=%+v err=%v", identity, err)
+	}
+}
+
 func TestReadPublicReviewRepositoryUsesSupportedGHAPI(t *testing.T) {
 	bin := t.TempDir()
 	gh := filepath.Join(bin, "gh")

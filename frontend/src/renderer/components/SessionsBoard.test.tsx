@@ -309,6 +309,12 @@ describe("SessionsBoard", () => {
 						status: "mergeable",
 						dcpPolicyState: "admission_waiting",
 					}),
+					boardSession({
+						id: "s-release",
+						title: "policy Release Train waiting",
+						status: "mergeable",
+						dcpPolicyState: "release_waiting",
+					}),
 					boardSession({ id: "s-merged", title: "policy merged", status: "merged", dcpPolicyState: "merged" }),
 					boardSession({
 						id: "s-incident",
@@ -334,6 +340,7 @@ describe("SessionsBoard", () => {
 		expect(dot("policy review queued")).toHaveClass("bg-status-in-review");
 		expect(dot("policy review queued")).toHaveAttribute("data-session-status-active", "false");
 		expect(dot("policy admission waiting")).toHaveClass("bg-status-ready");
+		expect(dot("policy Release Train waiting")).toHaveClass("bg-status-ready");
 		expect(dot("policy merged")).toHaveClass("bg-status-merged");
 		expect(dot("policy incident")).toHaveClass("bg-status-exited");
 	});
