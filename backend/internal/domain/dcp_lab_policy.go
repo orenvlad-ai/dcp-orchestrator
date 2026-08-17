@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
 
 // DCPReviewLabPolicyVersion is the sole current policy for future synthetic
 // review-lab cards. Historical cards 1-12 never receive one of these rows.
@@ -43,6 +47,72 @@ type DCPPolicyTargetSpec struct {
 	ReleaseAuthority     DCPPolicyReleaseAuthority
 	CompatibilityMarker  string
 	CompatibilityFiles   [3]string
+}
+
+// DCPRequiredCheck is the provider-neutral evidence for one check attached to
+// one exact pull-request head. The policy layer deliberately gives no meaning
+// to check names other than DCPPolicyTargetSpec.RequiredCheck.
+type DCPRequiredCheck struct {
+	Name       string
+	HeadSHA    string
+	Status     string
+	Conclusion string
+	URL        string
+}
+
+// DCPRequiredCheckGate is the stable CI handoff between SCM observation and
+// DCP policy. Missing/wrong-head and still-running evidence waits without a
+// model action; rejected evidence is terminal for the current exact head.
+type DCPRequiredCheckGate string
+
+const (
+	// DCPRequiredCheckMissing is a durable zero-action wait for exact evidence.
+	DCPRequiredCheckMissing DCPRequiredCheckGate = "missing"
+	// DCPRequiredCheckPending is a durable zero-action wait for terminal evidence.
+	DCPRequiredCheckPending DCPRequiredCheckGate = "pending"
+	// DCPRequiredCheckPassed is exact configured-check success.
+	DCPRequiredCheckPassed DCPRequiredCheckGate = "passed"
+	// DCPRequiredCheckRejected is terminal malformed or unsuccessful evidence.
+	DCPRequiredCheckRejected DCPRequiredCheckGate = "rejected"
+)
+
+// EvaluateDCPRequiredCheck evaluates exactly one configured named check on the
+// expected head. Extra checks are observational: their names, status and
+// conclusions cannot change this verdict. Provider URL identity remains an
+// independent caller-owned gate because it is repository-specific.
+func EvaluateDCPRequiredCheck(requiredName, expectedHead string, checks []DCPRequiredCheck) (DCPRequiredCheckGate, DCPRequiredCheck, error) {
+	if requiredName == "" || expectedHead == "" {
+		return DCPRequiredCheckRejected, DCPRequiredCheck{}, errors.New("required check identity is incomplete")
+	}
+	var matched []DCPRequiredCheck
+	for _, check := range checks {
+		if check.Name == requiredName && strings.EqualFold(check.HeadSHA, expectedHead) {
+			matched = append(matched, check)
+		}
+	}
+	if len(matched) == 0 {
+		return DCPRequiredCheckMissing, DCPRequiredCheck{}, nil
+	}
+	if len(matched) != 1 {
+		return DCPRequiredCheckRejected, DCPRequiredCheck{}, errors.New("required check cardinality is not exact")
+	}
+	check := matched[0]
+	switch PRCheckStatus(check.Status) {
+	case PRCheckQueued, PRCheckInProgress:
+		if check.Conclusion != "" {
+			return DCPRequiredCheckRejected, check, errors.New("pending required check has a terminal conclusion")
+		}
+		return DCPRequiredCheckPending, check, nil
+	case PRCheckPassed:
+		if check.Conclusion != "success" {
+			return DCPRequiredCheckRejected, check, errors.New("passed required check lacks successful conclusion")
+		}
+		return DCPRequiredCheckPassed, check, nil
+	case PRCheckFailed, PRCheckSkipped, PRCheckCancelled:
+		return DCPRequiredCheckRejected, check, errors.New("required check did not succeed")
+	default:
+		return DCPRequiredCheckRejected, check, errors.New("required check status is malformed")
+	}
 }
 
 // DCPPolicyReleaseAuthority selects one compile-time terminal actor. It is not

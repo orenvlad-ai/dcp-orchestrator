@@ -337,10 +337,11 @@ describe("SessionsBoard", () => {
 		expect(dot("policy worker active")).toHaveClass("bg-status-working", "animate-status-pulse");
 		expect(dot("policy worker active")).toHaveAttribute("data-session-status-active", "true");
 		expect(dot("policy reviewer active")).toHaveClass("bg-status-in-review", "animate-status-pulse");
-		expect(dot("policy review queued")).toHaveClass("bg-status-in-review");
-		expect(dot("policy review queued")).toHaveAttribute("data-session-status-active", "false");
-		expect(dot("policy admission waiting")).toHaveClass("bg-status-ready");
-		expect(dot("policy Release Train waiting")).toHaveClass("bg-status-ready");
+		expect(dot("policy review queued")).toHaveClass("bg-status-in-review", "animate-status-pulse");
+		expect(dot("policy review queued")).toHaveAttribute("data-session-workflow-active", "true");
+		expect(dot("policy review queued")).toHaveAttribute("data-session-model-active", "false");
+		expect(dot("policy admission waiting")).toHaveClass("bg-status-ready", "animate-status-pulse");
+		expect(dot("policy Release Train waiting")).toHaveClass("bg-status-ready", "animate-status-pulse");
 		expect(dot("policy merged")).toHaveClass("bg-status-merged");
 		expect(dot("policy incident")).toHaveClass("bg-status-exited");
 	});
@@ -399,12 +400,12 @@ describe("SessionsBoard", () => {
 		expect(within(review).queryByText("policy PR open")).not.toBeInTheDocument();
 
 		const cardFor = (title: string) => screen.getByText(title).closest('[data-testid="board-session-card"]') as HTMLElement;
-		expect(within(cardFor("policy reserved")).getByText("Working")).toHaveClass("text-status-working");
-		expect(within(cardFor("policy PR open")).getByText("PR open")).toHaveClass("text-status-working");
-		expect(within(cardFor("policy review")).getByText("Review pending")).toHaveClass("text-status-in-review");
-		expect(within(cardFor("policy ready")).getByText("Ready")).toHaveClass("text-status-ready");
-		expect(within(cardFor("policy terminal")).getByText("Merged")).toHaveClass("text-status-merged");
-		expect(within(cardFor("policy needs you")).getByText("Review failed")).toHaveClass("text-status-exited");
+		expect(within(cardFor("policy reserved")).getByText("Preparing task")).toHaveClass("text-status-working");
+		expect(within(cardFor("policy PR open")).getByText("Waiting for CI")).toHaveClass("text-status-working");
+		expect(within(cardFor("policy review")).getByText("Reviewer queued")).toHaveClass("text-status-in-review");
+		expect(within(cardFor("policy ready")).getByText("Waiting for admission")).toHaveClass("text-status-ready");
+		expect(within(cardFor("policy terminal")).getByText("Merged / released")).toHaveClass("text-status-merged");
+		expect(within(cardFor("policy needs you")).getByText("Action required")).toHaveClass("text-status-exited");
 	});
 
 	it("groups review and arbiter in one lane with ordered sections, paired counts, and exact precedence", () => {
@@ -483,7 +484,9 @@ describe("SessionsBoard", () => {
 			.closest('[data-testid="board-session-card"]') as HTMLElement;
 		const waitingDot = waitingCard.querySelector<HTMLElement>("[data-session-status]");
 		expect(waitingDot).toHaveClass("bg-status-arbiter");
-		expect(waitingDot).not.toHaveClass("animate-status-pulse");
+		expect(waitingDot).toHaveClass("animate-status-pulse");
+		expect(waitingDot).toHaveAttribute("data-session-workflow-active", "true");
+		expect(waitingDot).toHaveAttribute("data-session-model-active", "false");
 		expect(within(waitingCard).getByText("Waiting for arbiter")).toHaveClass("text-status-arbiter");
 
 		const runningCard = within(arbiter)

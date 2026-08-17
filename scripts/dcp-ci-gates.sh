@@ -191,7 +191,8 @@ source_gates() {
 	real_target_submit_recovery_migration='backend/internal/storage/sqlite/migrations/0076_dcp_real_target_submit_recovery_v1.sql'
 	repo_only_target_forward_migration='backend/internal/storage/sqlite/migrations/0077_dcp_repo_only_target_forward_v1.sql'
 	wbc_release_handoff_migration='backend/internal/storage/sqlite/migrations/0078_dcp_wb_core_release_train_handoff_v1.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	wbc_ci_truth_recovery_migration='backend/internal/storage/sqlite/migrations/0079_dcp_wbc_ci_truth_recovery_v1.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -247,6 +248,13 @@ source_gates() {
 	grep -Fq 'DCPReleaseWBCTrainOnly' backend/internal/domain/dcp_lab_policy.go || fail 'wb-core release authority is not statically typed'
 	grep -Fq 'ApplyReleaseReady' backend/internal/dcpterminalmerge/merge.go || fail 'wb-core release-ready handoff is absent'
 	grep -Fq 'candidate.spec.UsesWBCReleaseTrain()' backend/internal/dcpterminalmerge/merge.go || fail 'wb-core is not diverted before direct merge'
+	[[ -s "$wbc_ci_truth_recovery_migration" ]] || fail 'exact WBC CI truth recovery migration is absent'
+	grep -Fq "task_id = 'wbc-canary-v1'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery task is not exact'
+	grep -Fq "worker.sequence = 71" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery does not preserve the sole initial worker'
+	grep -Fq "reviewer_action_id = 'dcp-model-wbc-canary-v1-review-1'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery reviewer identity is not exact'
+	grep -Fq "prior_error_code = 'ci_identity_failed'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery does not preserve the false incident'
+	grep -Fq "pr.head_sha = 'e8cca45f3995b8181fe81ead154f7a933dbacbe8'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery head is not exact'
+	grep -Fq "baseline.name = 'baseline' AND baseline.status = 'passed'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery required-check proof is absent'
 	grep -Fq 'type SCMReleaseTrain interface' backend/internal/ports/scm_release_train.go || fail 'narrow Release Train port is absent'
 	! sed -n '/type SCMReleaseTrain interface/,/^}/p' backend/internal/ports/scm_release_train.go | grep -Fq 'MergePullRequest' || fail 'Release Train handoff port exposes direct merge authority'
 	grep -Fq 'ProviderRepositoryID: 1335072844' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only provider database identity is absent'
@@ -442,6 +450,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/migrations/0077_dcp_repo_only_target_forward_v1\.sql$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/migrate_burned_versions_test\.go$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/adapters/scm/github/release_train_action(_test)?\.go|backend/internal/ports/scm_release_train\.go|backend/internal/storage/sqlite/(migrations/0078_dcp_wb_core_release_train_handoff_v1\.sql|wb_core_release_handoff_live_copy_migration_test\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_required_check_test\.go|backend/internal/storage/sqlite/(migrations/0079_dcp_wbc_ci_truth_recovery_v1\.sql|wbc_ci_truth_recovery_live_copy_test\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

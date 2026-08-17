@@ -90,6 +90,9 @@ export type SessionVisualStatus = {
 	tone: "working" | "review" | "arbiter" | "ready" | "attention" | "merged" | "failed" | "idle";
 	dotClassName: string;
 	indicatorClassName: string;
+	modelActive: boolean;
+	workflowActive: boolean;
+	/** @deprecated Use workflowActive; retained for existing component data attributes. */
 	active: boolean;
 };
 
@@ -112,24 +115,35 @@ function visualStatus(
 		Partial<
 			Pick<
 				SessionVisualStatus,
-				"policyPhase" | "laneSection" | "statusLabelKey" | "statusClassName" | "detail" | "active"
+				| "policyPhase"
+				| "laneSection"
+				| "statusLabelKey"
+				| "statusClassName"
+				| "detail"
+				| "active"
+				| "modelActive"
+				| "workflowActive"
 			>
 		>,
 ): SessionVisualStatus {
-	const active = options.active === true;
+	const workflowActive = options.workflowActive ?? options.active === true;
+	const modelActive = options.modelActive ?? options.active === true;
 	return {
 		...options,
 		tone,
 		dotClassName,
-		indicatorClassName: `${dotClassName}${active ? " animate-status-pulse" : ""}`,
-		active,
+		indicatorClassName: `${dotClassName}${workflowActive ? " animate-status-pulse" : ""}`,
+		modelActive,
+		workflowActive,
+		active: workflowActive,
 	};
 }
 
 function policyVisualStatus(
 	state: DCPPolicyState,
 	session: WorkspaceSession,
-	policyActive: boolean,
+	modelActive: boolean,
+	workflowActive: boolean,
 ): SessionVisualStatus {
 	const policy = (
 		policyPhase: DCPPolicyPhase,
@@ -137,14 +151,18 @@ function policyVisualStatus(
 		displayStatus: SessionStatus,
 		tone: SessionVisualStatus["tone"],
 		dotClassName: string,
-		active = false,
+		statusLabelKey: MessageKey,
+		detail?: string,
 	) =>
 		visualStatus(tone, dotClassName, {
 			policyPhase,
 			zone,
 			displayStatus,
+			statusLabelKey,
 			statusClassName: policyPhaseStatusClassNames[policyPhase],
-			active,
+			detail,
+			modelActive,
+			workflowActive,
 		});
 
 	if (state === "incident" && session.dcpArbiterStatus === "human_gate") {
@@ -155,14 +173,12 @@ function policyVisualStatus(
 			statusLabelKey: "status.human_gate",
 			statusClassName: "text-status-needs-you",
 			detail: dcpArbiterDetail(session),
+			modelActive: false,
+			workflowActive: false,
 		});
 	}
 
 	if (state === "incident" && isAutomaticArbiterContinuation(session.dcpArbiterStatus)) {
-		const running =
-			session.dcpArbiterStatus === "running" &&
-			session.dcpArbiterActionStatus === "running" &&
-			policyActive;
 		const evaluating = session.dcpArbiterStatus === "claimed" || session.dcpArbiterStatus === "running";
 		return visualStatus("arbiter", "bg-status-arbiter", {
 			policyPhase: "arbiter",
@@ -172,18 +188,23 @@ function policyVisualStatus(
 			statusLabelKey: evaluating ? "status.arbiter_evaluating" : arbiterStatusLabelKey(session),
 			statusClassName: "text-status-arbiter",
 			detail: dcpArbiterDetail(session),
-			active: running,
+			modelActive:
+				modelActive && session.dcpArbiterStatus === "running" && session.dcpArbiterActionStatus === "running",
+			workflowActive,
 		});
 	}
 
 	switch (state) {
 		case "reserved":
+			return policy("working", "working", "working", "working", "bg-status-working", "status.policy_preparing", "Preparing the governed task");
 		case "worker_queued":
+			return policy("working", "working", "working", "working", "bg-status-working", "status.worker_queued", "Waiting for a worker model slot");
 		case "repair_queued":
-			return policy("working", "working", "working", "working", "bg-status-working");
+			return policy("working", "working", "working", "working", "bg-status-working", "status.repair_queued", "Bounded repair queued");
 		case "worker_running":
+			return policy("working", "working", "working", "working", "bg-status-working", "status.worker_running", "Worker model action is running");
 		case "repair_running":
-			return policy("working", "working", "working", "working", "bg-status-working", policyActive);
+			return policy("working", "working", "working", "working", "bg-status-working", "status.repair_running", "Bounded repair model action is running");
 		case "ci_waiting":
 			return policy(
 				"working",
@@ -191,35 +212,38 @@ function policyVisualStatus(
 				session.status === "pr_open" || session.status === "draft" ? session.status : "working",
 				"working",
 				"bg-status-working",
+				"status.ci_waiting",
+				"Waiting for CI/GitHub update",
 			);
 		case "review_queued":
 			return {
-				...policy("in_review", "pending", "review_pending", "review", "bg-status-in-review"),
+				...policy("in_review", "pending", "review_pending", "review", "bg-status-in-review", "status.review_queued", "Fresh context-free reviewer queued"),
 				laneSection: "in_review",
 			};
 		case "review_running":
 			return {
-				...policy(
-					"in_review",
-					"pending",
-					"review_pending",
-					"review",
-					"bg-status-in-review",
-					policyActive,
-				),
+				...policy("in_review", "pending", "review_pending", "review", "bg-status-in-review", "status.review_running", "Fresh context-free reviewer is running"),
 				laneSection: "in_review",
-				statusLabelKey: "status.review_running",
 			};
 		case "admission_waiting":
+			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready", "status.admission_waiting", "Waiting for FIFO admission");
 		case "release_waiting":
-			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready");
+			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready", "status.release_waiting", "Waiting for Release Train");
 		case "merged":
-			return policy("merged", "merge", "merged", "merged", "bg-status-merged");
+			return policy("merged", "merge", "merged", "merged", "bg-status-merged", "status.policy_complete");
 		case "failed":
-			return policy("needs_you", "action", "review_failed", "failed", "bg-status-exited");
+			return visualStatus("failed", "bg-status-exited", {
+				policyPhase: "needs_you", zone: "action", displayStatus: "review_failed",
+				statusLabelKey: "status.policy_failed", statusClassName: "text-status-exited",
+				detail: "DCP stopped on an actionable technical error", modelActive: false, workflowActive: false,
+			});
 		case "incident":
 			return {
-				...policy("needs_you", "action", "review_failed", "failed", "bg-status-exited"),
+				...visualStatus("failed", "bg-status-exited", {
+					policyPhase: "needs_you", zone: "action", displayStatus: "review_failed",
+					statusLabelKey: "status.policy_incident", statusClassName: "text-status-exited",
+					modelActive: false, workflowActive: false,
+				}),
 				detail: dcpArbiterDetail(session),
 			};
 	}
@@ -285,11 +309,13 @@ function dcpArbiterDetail(session: WorkspaceSession): string | undefined {
 
 // One typed projection serves board placement, board card status and sidebar
 // dot. Durable policy lifecycle wins over retained shells and stale stock SCM;
-// motion is reserved for a model action whose durable action row is running.
+// workflow motion spans autonomous zero-model waits, while modelActive remains
+// a separate exact accounting fact.
 export function getSessionVisualStatus(session: WorkspaceSession): SessionVisualStatus {
-	const policyActive = session.dcpPolicyActionActive === true;
+	const modelActive = session.dcpPolicyModelActive ?? session.dcpPolicyActionActive === true;
+	const workflowActive = session.dcpPolicyWorkflowActive ?? fallbackPolicyWorkflowActive(session);
 	if (session.dcpPolicyState) {
-		return policyVisualStatus(session.dcpPolicyState, session, policyActive);
+		return policyVisualStatus(session.dcpPolicyState, session, modelActive, workflowActive);
 	}
 
 	if (session.activity?.state === "active") {
@@ -336,6 +362,12 @@ export function getSessionVisualStatus(session: WorkspaceSession): SessionVisual
 				displayStatus: session.status,
 			});
 	}
+}
+
+function fallbackPolicyWorkflowActive(session: WorkspaceSession): boolean {
+	if (!session.dcpPolicyState || session.dcpPolicyState === "merged" || session.dcpPolicyState === "failed") return false;
+	if (session.dcpPolicyState !== "incident") return true;
+	return isAutomaticArbiterContinuation(session.dcpArbiterStatus);
 }
 
 export type SessionStatusView = {

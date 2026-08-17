@@ -310,7 +310,7 @@ func (s *policyReadStore) GetActiveDCPModelActionBySession(_ context.Context, id
 	return s.action, s.actionActive && s.action.SessionID == id, nil
 }
 
-func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *testing.T) {
+func TestSessionReadModelSeparatesPolicyWorkflowAndRunningModelActivity(t *testing.T) {
 	const id = domain.SessionID("dcp-review-lab-13")
 	base := newFakeStore()
 	store := &policyReadStore{
@@ -329,7 +329,8 @@ func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || !session.DCPPolicyActionActive ||
+	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || !session.DCPPolicyModelActive ||
+		!session.DCPPolicyWorkflowActive || !session.DCPPolicyActionActive ||
 		session.DCPArbiterStatus != domain.DCPFutureArbiterHumanGate || session.DCPArbiterGeneration != 2 ||
 		session.DCPArbiterIncidentKind != "merge_conflict_or_ambiguity" || len(session.DCPArbiterCohort) != 2 ||
 		session.DCPArbiterActionStatus != domain.DCPActionSucceeded ||
@@ -342,7 +343,39 @@ func TestSessionReadModelExposesPolicyLifecycleAndOnlyRunningActionAsActive(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || session.DCPPolicyActionActive {
-		t.Fatalf("claimed action must remain visually steady: %+v", session)
+	if session.DCPPolicyState != domain.DCPPolicyReviewRunning || session.DCPPolicyModelActive ||
+		!session.DCPPolicyWorkflowActive || session.DCPPolicyActionActive {
+		t.Fatalf("claimed action must keep workflow active without claiming a running model: %+v", session)
+	}
+}
+
+func TestDCPPolicyWorkflowActivityStopsOnlyForTerminalOrActionableStates(t *testing.T) {
+	for _, state := range []domain.DCPReviewLabPolicyState{
+		domain.DCPPolicyReserved, domain.DCPPolicyWorkerQueued, domain.DCPPolicyWorkerRunning,
+		domain.DCPPolicyCIWaiting, domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning,
+		domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning,
+		domain.DCPPolicyAdmissionWait, domain.DCPPolicyReleaseWaiting,
+	} {
+		if !dcpPolicyWorkflowActive(state, "") {
+			t.Fatalf("autonomous state %s is not workflow-active", state)
+		}
+	}
+	if !dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterRequested) ||
+		!dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterHold) {
+		t.Fatal("automatic arbiter continuation is not workflow-active")
+	}
+	for _, tc := range []struct {
+		state   domain.DCPReviewLabPolicyState
+		arbiter domain.DCPFutureArbiterStatus
+	}{
+		{state: domain.DCPPolicyMerged},
+		{state: domain.DCPPolicyFailed},
+		{state: domain.DCPPolicyIncident},
+		{state: domain.DCPPolicyIncident, arbiter: domain.DCPFutureArbiterHumanGate},
+		{state: domain.DCPPolicyIncident, arbiter: domain.DCPFutureArbiterFailed},
+	} {
+		if dcpPolicyWorkflowActive(tc.state, tc.arbiter) {
+			t.Fatalf("actionable/terminal state %s/%s remained workflow-active", tc.state, tc.arbiter)
+		}
 	}
 }

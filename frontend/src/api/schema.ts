@@ -1162,8 +1162,10 @@ export interface components {
             dcpArbiterStatus?: "requested" | "claimed" | "running" | "hold" | "repair_queued" | "recovery_reviewed" | "human_gate" | "succeeded" | "failed";
             dcpHumanGateQuestion?: string;
             dcpPolicyActionActive?: boolean;
+            dcpPolicyModelActive?: boolean;
             /** @enum {string} */
             dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "release_waiting" | "merged" | "failed" | "incident";
+            dcpPolicyWorkflowActive?: boolean;
             displayName?: string;
             harness?: string;
             id: string;

@@ -1017,7 +1017,7 @@ describe("Sidebar", () => {
 		}
 	});
 
-	it("renders policy lifecycle dots and pulses only running model actions", async () => {
+	it("renders workflow motion separately from running model activity", async () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -1123,15 +1123,16 @@ describe("Sidebar", () => {
 		expect(sessionDot("worker active task")).toHaveClass("bg-status-working", "animate-status-pulse");
 		expect(sessionDot("worker active task")).toHaveAttribute("data-session-status-active", "true");
 		expect(sessionDot("review active task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
-		expect(sessionDot("review queued task")).toHaveClass("bg-status-in-review");
-		expect(sessionDot("review queued task")).not.toHaveClass("animate-status-pulse");
-		expect(sessionDot("PR open task")).toHaveClass("bg-status-working");
-		expect(sessionDot("reserved task")).toHaveClass("bg-status-working");
-		expect(sessionDot("admission task")).toHaveClass("bg-status-ready");
+		expect(sessionDot("review queued task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
+		expect(sessionDot("review queued task")).toHaveAttribute("data-session-model-active", "false");
+		expect(sessionDot("review queued task")).toHaveAttribute("data-session-workflow-active", "true");
+		expect(sessionDot("PR open task")).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(sessionDot("reserved task")).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(sessionDot("admission task")).toHaveClass("bg-status-ready", "animate-status-pulse");
 		expect(sessionDot("merged task")).toHaveClass("bg-status-merged");
 		expect(sessionDot("incident task")).toHaveClass("bg-status-exited");
 		expect(sessionDot("arbiter waiting task")).toHaveClass("bg-status-arbiter");
-		expect(sessionDot("arbiter waiting task")).not.toHaveClass("animate-status-pulse");
+		expect(sessionDot("arbiter waiting task")).toHaveClass("animate-status-pulse");
 		expect(sessionDot("arbiter waiting task")).toHaveAttribute("aria-label", expect.stringContaining("Waiting for arbiter"));
 		expect(sessionDot("arbiter active task")).toHaveClass("bg-status-arbiter", "animate-status-pulse");
 		expect(sessionDot("arbiter active task")).toHaveAttribute("aria-label", expect.stringContaining("Arbiter evaluating"));

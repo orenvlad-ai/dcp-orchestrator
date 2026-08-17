@@ -139,6 +139,10 @@ export type WorkspaceSession = {
 	dcpPolicyState?: DCPPolicyState;
 	/** True only while the current bounded policy action is durably running. */
 	dcpPolicyActionActive?: boolean;
+	/** True only while a durable DCP model action is actually running. */
+	dcpPolicyModelActive?: boolean;
+	/** True while the autonomous DCP lifecycle remains open, including zero-model waits. */
+	dcpPolicyWorkflowActive?: boolean;
 	/** One durable ordinary-card arbiter generation, shown inside this same native card. */
 	dcpArbiterStatus?: DCPArbiterStatus;
 	dcpArbiterGeneration?: number;

@@ -941,6 +941,29 @@ type DcpWbCoreReleaseHandoffV1 struct {
 	InstalledAt          time.Time
 }
 
+type DcpWbcCITruthRecoveryV1 struct {
+	RecoveryID              string
+	ContractCommit          string
+	TaskID                  string
+	SessionID               string
+	WorkerActionID          string
+	ReviewerActionID        string
+	PRURL                   string
+	PRNumber                int64
+	HeadSha                 string
+	BaseSha                 string
+	BaselineURL             string
+	SkippedObservationCount int64
+	NotificationID          string
+	PriorTaskState          string
+	PriorTaskRevision       int64
+	PriorErrorCode          string
+	PriorIncidentPacket     string
+	Authority               string
+	Status                  string
+	CreatedAt               time.Time
+}
+
 type Notification struct {
 	ID         string
 	SessionID  domain.SessionID

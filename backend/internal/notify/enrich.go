@@ -35,6 +35,9 @@ func titleForIntent(intent Intent) string {
 	case domain.NotificationNeedsInput:
 		return fmt.Sprintf("%s needs your input", sessionLabel(intent))
 	case domain.NotificationReadyToMerge:
+		if intent.ReadyDestination == "wbc_release_train" {
+			return fmt.Sprintf("%s is ready for Release Train", prLabel(intent))
+		}
 		if title := strings.TrimSpace(intent.PRTitle); title != "" {
 			if label := prLabel(intent); label != "PR" {
 				return fmt.Sprintf("%s · %s", title, label)
@@ -56,6 +59,12 @@ func bodyForIntent(intent Intent) string {
 	case domain.NotificationNeedsInput:
 		return "Your agent is waiting on you to continue."
 	case domain.NotificationReadyToMerge:
+		if intent.ReadyDestination == "wbc_release_train" {
+			if session := sessionLabel(intent); session != "session" {
+				return fmt.Sprintf("PR from session %s completed DCP review and FIFO admission and is waiting for the WBC Release Train.", session)
+			}
+			return "DCP review and FIFO admission completed; waiting for the WBC Release Train."
+		}
 		if session := sessionLabel(intent); session != "session" {
 			return fmt.Sprintf("PR from session %s is ready to merge. CI passed with no blocking review feedback.", session)
 		}

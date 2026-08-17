@@ -21,12 +21,22 @@ repository:
 9. [exact first-submit recovery v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_SUBMIT_RECOVERY_V1_CONTRACT.md)
 10. [repo-only repository rename v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md)
 11. [`wb-core` Release Train handoff v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/036b1101284f626c931f7edb1750ddd228634832/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md)
+12. [`wb-core` CI truth and lifecycle UX v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/1ca282408bec53a1d696cb58d247e33285209ee9/docs/DCP_WB_CORE_CI_TRUTH_LIFECYCLE_UX_V1_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
 `2026-08-17.1`, supersede only the prior exclusion of `wb-core`. They authorize
 one fail-closed exact repo-only target and WBC Release Train handoff; every
 other predecessor boundary remains unchanged.
+
+Item 12 and the merged root/current authorities at exact
+`1ca282408bec53a1d696cb58d247e33285209ee9`, operating revision
+`2026-08-17.8`, supersede only two later boundaries: the DCP CI verdict is the
+configured required check on the exact head rather than every observational
+Release Train job, and workflow activity remains visibly live across
+zero-model autonomous waits. It also authorizes the exact model-free
+`wbc-canary-v1` recovery after a separately reviewed source/pin/install chain.
+It does not widen model, merge, Release Train, target or runtime authority.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,

@@ -1141,22 +1141,18 @@ func admissionFacts(candidate mergeCandidate, observation ports.SCMObservation, 
 	if providerIdentityDrift(candidate, observation) || review.Partial || !knownNonBlockingReviewDecision(review.Decision) || hasBlockingReview(review) {
 		return false
 	}
-	if len(observation.CI.Checks) == 0 || observation.CI.Summary != string(domain.CIPassing) || !strings.EqualFold(observation.CI.HeadSHA, candidate.run.TargetSHA) {
+	if !strings.EqualFold(observation.CI.HeadSHA, candidate.run.TargetSHA) {
 		return false
 	}
-	required := 0
+	evidence := make([]domain.DCPRequiredCheck, 0, len(observation.CI.Checks))
 	for _, check := range observation.CI.Checks {
-		if check.Status != string(domain.PRCheckPassed) {
-			return false
-		}
-		if check.Name == candidate.spec.RequiredCheck {
-			if check.Status != string(domain.PRCheckPassed) || check.Conclusion != "success" || (candidate.policy && !validCheckURL(candidate.spec, check.URL)) {
-				return false
-			}
-			required++
-		}
+		evidence = append(evidence, domain.DCPRequiredCheck{
+			Name: check.Name, HeadSHA: observation.CI.HeadSHA, Status: check.Status,
+			Conclusion: check.Conclusion, URL: check.URL,
+		})
 	}
-	return required == 1
+	gate, required, err := domain.EvaluateDCPRequiredCheck(candidate.spec.RequiredCheck, candidate.run.TargetSHA, evidence)
+	return err == nil && gate == domain.DCPRequiredCheckPassed && (!candidate.policy || validCheckURL(candidate.spec, required.URL))
 }
 
 func providerIdentityDrift(candidate mergeCandidate, observation ports.SCMObservation) bool {

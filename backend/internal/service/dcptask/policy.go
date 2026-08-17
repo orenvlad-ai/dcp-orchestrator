@@ -625,37 +625,30 @@ func validateExactPolicyNamedCI(pr domain.PullRequest, checks []domain.PullReque
 	if !exact {
 		return false, true, errors.New("named CI repository identity is not exact")
 	}
-	if len(checks) == 0 || pr.CI == domain.CIUnknown || pr.CI == domain.CIPending {
-		return false, false, nil
-	}
-	required, exactHeadChecks := 0, 0
+	evidence := make([]domain.DCPRequiredCheck, 0, len(checks))
 	for _, check := range checks {
-		if !strings.EqualFold(check.CommitHash, head) {
-			// Stock SCM history is durable across a PR head update. A check for
-			// an earlier exact head is immutable evidence, not contradictory
-			// evidence about the current head.
-			continue
-		}
-		exactHeadChecks++
-		if check.Status != domain.PRCheckPassed || !strings.EqualFold(check.Conclusion, "success") {
-			return false, true, errors.New("named CI is not successful")
-		}
-		if check.Name == spec.RequiredCheck {
-			required++
-			if !validPolicyCheckURL(spec, check.URL) {
-				return false, true, errors.New("named CI provider identity drifted")
-			}
-		}
+		evidence = append(evidence, domain.DCPRequiredCheck{
+			Name: check.Name, HeadSHA: check.CommitHash, Status: string(check.Status),
+			Conclusion: check.Conclusion, URL: check.URL,
+		})
 	}
-	if exactHeadChecks == 0 {
-		// The enriched PR row can arrive before its current-head check row.
-		// Preserve the existing model-free wait until that stock fact lands.
+	gate, required, gateErr := domain.EvaluateDCPRequiredCheck(spec.RequiredCheck, head, evidence)
+	switch gate {
+	case domain.DCPRequiredCheckMissing, domain.DCPRequiredCheckPending:
+		// The enriched PR row can arrive before its current-head required check,
+		// and stock history remains durable across head changes. Both conditions
+		// are passive waits and consume no model slot.
 		return false, false, nil
+	case domain.DCPRequiredCheckRejected:
+		return false, true, gateErr
+	case domain.DCPRequiredCheckPassed:
+		if gateErr != nil || !validPolicyCheckURL(spec, required.URL) {
+			return false, true, errors.New("named CI provider identity drifted")
+		}
+		return true, false, nil
+	default:
+		return false, true, errors.New("named CI gate returned an unknown verdict")
 	}
-	if pr.CI != domain.CIPassing || required != 1 {
-		return false, true, errors.New("exactly one successful named CI check is required")
-	}
-	return true, false, nil
 }
 
 func (s *Service) failPolicyTask(ctx context.Context, task domain.DCPReviewLabPolicyTask, code, packet string) error {

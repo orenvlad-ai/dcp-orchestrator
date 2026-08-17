@@ -315,12 +315,12 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
 		return err
 	}
-	intent, err := m.notificationIntentForCurrentSCM(ctx, id, o)
+	intent, readyNotificationApplies, err := m.notificationIntentForCurrentSCM(ctx, id, o)
 	if err != nil {
 		return err
 	}
 	m.emitNotification(ctx, intent)
-	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, m.clock())...)
+	m.resolveNotifications(ctx, readyToMergeResolutions(id, o, readyNotificationApplies, m.clock())...)
 	if _, ok, err := m.store.GetSession(ctx, id); err != nil {
 		return err
 	} else if ok {
@@ -388,8 +388,8 @@ func dcpSCMObservationIsTerminalReady(o ports.SCMObservation) bool {
 // observation made stale. The PR either got merged/closed, or stopped being
 // mergeable — either way the "this is ready for you to merge" ping no longer
 // describes anything the user can act on.
-func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now time.Time) []ports.NotificationResolution {
-	if scmObservationIsReadyToMerge(o) {
+func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, readyNotificationApplies bool, now time.Time) []ports.NotificationResolution {
+	if readyNotificationApplies {
 		return nil
 	}
 	return []ports.NotificationResolution{{
@@ -400,19 +400,47 @@ func readyToMergeResolutions(id domain.SessionID, o ports.SCMObservation, now ti
 	}}
 }
 
-func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation) (*ports.NotificationIntent, error) {
+type dcpNotificationPolicyStore interface {
+	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+}
+
+func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain.SessionID, o ports.SCMObservation) (*ports.NotificationIntent, bool, error) {
 	// Serialize the session snapshot with activity transitions so ready-to-merge
 	// notifications do not race against a simultaneous waiting_input update.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
-	return m.notificationIntentForSCM(rec, o), nil
+	intent := m.notificationIntentForSCM(rec, o)
+	readyApplies := scmObservationIsReadyToMerge(o)
+	policies, policyAware := m.store.(dcpNotificationPolicyStore)
+	if !policyAware {
+		return intent, readyApplies, nil
+	}
+	task, found, err := policies.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return intent, readyApplies, nil
+	}
+	if intent != nil && intent.Type != domain.NotificationReadyToMerge {
+		return intent, false, nil
+	}
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	readyApplies = exact && spec.UsesWBCReleaseTrain() && task.State == domain.DCPPolicyReleaseWaiting &&
+		task.PRURL != "" && task.CurrentHeadSHA != "" && sameSCMIdentity(task.PRURL, task.CurrentHeadSHA, o) &&
+		scmObservationIsReadyToMerge(o)
+	if intent == nil || !readyApplies {
+		return nil, readyApplies, nil
+	}
+	intent.ReadyDestination = "wbc_release_train"
+	return intent, true, nil
 }
 
 func (m *Manager) notificationIntentForSCM(rec domain.SessionRecord, o ports.SCMObservation) *ports.NotificationIntent {

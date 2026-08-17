@@ -51,3 +51,18 @@ func TestEnrichReadyToMergeFallsBackWithoutPRTitle(t *testing.T) {
 		t.Fatalf("title = %q, want %q", rec.Title, want)
 	}
 }
+
+func TestEnrichReadyToMergeUsesReleaseTrainTruthForWBCPolicy(t *testing.T) {
+	rec, err := enrich(Intent{
+		Type: domain.NotificationReadyToMerge, SessionID: "wb-core-1", ProjectID: "wb-core",
+		PRURL: "https://github.com/orenvlad-ai/wb-core/pull/987", PRNumber: 987,
+		SessionDisplayName: "DCP:wbc-canary-v1", ReadyDestination: "wbc_release_train", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Title != "PR #987 is ready for Release Train" ||
+		rec.Body != "PR from session DCP:wbc-canary-v1 completed DCP review and FIFO admission and is waiting for the WBC Release Train." {
+		t.Fatalf("release-train notification=%+v", rec)
+	}
+}

@@ -94,6 +94,7 @@ var shippedMigrations = map[int64]string{
 	76: "0076_dcp_real_target_submit_recovery_v1.sql",
 	77: "0077_dcp_repo_only_target_forward_v1.sql",
 	78: "0078_dcp_wb_core_release_train_handoff_v1.sql",
+	79: "0079_dcp_wbc_ci_truth_recovery_v1.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

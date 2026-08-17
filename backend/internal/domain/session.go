@@ -85,17 +85,24 @@ type SessionRecord struct {
 // plus derived display facts. Neither Status nor SCMStatus is persisted.
 type Session struct {
 	SessionRecord
-	Status                 SessionStatus           `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,review_failed,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
-	SCMStatus              SessionStatus           `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
-	TerminalHandleID       string                  `json:"terminalHandleId,omitempty"`
-	DCPPolicyState         DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,release_waiting,merged,failed,incident"`
-	DCPPolicyActionActive  bool                    `json:"dcpPolicyActionActive,omitempty"`
-	DCPArbiterStatus       DCPFutureArbiterStatus  `json:"dcpArbiterStatus,omitempty" enum:"requested,claimed,running,hold,repair_queued,recovery_reviewed,human_gate,succeeded,failed"`
-	DCPArbiterGeneration   int64                   `json:"dcpArbiterGeneration,omitempty"`
-	DCPArbiterIncidentKind string                  `json:"dcpArbiterIncidentKind,omitempty"`
-	DCPArbiterCohort       []string                `json:"dcpArbiterCohort,omitempty"`
-	DCPArbiterActionStatus DCPModelActionStatus    `json:"dcpArbiterActionStatus,omitempty" enum:"queued,claimed,running,succeeded,failed"`
-	DCPHumanGateQuestion   string                  `json:"dcpHumanGateQuestion,omitempty"`
+	Status           SessionStatus           `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,review_failed,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	SCMStatus        SessionStatus           `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	TerminalHandleID string                  `json:"terminalHandleId,omitempty"`
+	DCPPolicyState   DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,release_waiting,merged,failed,incident"`
+	// DCPPolicyModelActive is true only while a durable model action is
+	// running. DCPPolicyWorkflowActive remains true across zero-action waits so
+	// the UI can show lifecycle motion without claiming a model slot.
+	DCPPolicyModelActive    bool `json:"dcpPolicyModelActive,omitempty"`
+	DCPPolicyWorkflowActive bool `json:"dcpPolicyWorkflowActive,omitempty"`
+	// DCPPolicyActionActive is retained as a wire-compatible alias for older
+	// renderer bundles. New projections must use the two typed facts above.
+	DCPPolicyActionActive  bool                   `json:"dcpPolicyActionActive,omitempty"`
+	DCPArbiterStatus       DCPFutureArbiterStatus `json:"dcpArbiterStatus,omitempty" enum:"requested,claimed,running,hold,repair_queued,recovery_reviewed,human_gate,succeeded,failed"`
+	DCPArbiterGeneration   int64                  `json:"dcpArbiterGeneration,omitempty"`
+	DCPArbiterIncidentKind string                 `json:"dcpArbiterIncidentKind,omitempty"`
+	DCPArbiterCohort       []string               `json:"dcpArbiterCohort,omitempty"`
+	DCPArbiterActionStatus DCPModelActionStatus   `json:"dcpArbiterActionStatus,omitempty" enum:"queued,claimed,running,succeeded,failed"`
+	DCPHumanGateQuestion   string                 `json:"dcpHumanGateQuestion,omitempty"`
 	// PRs are the session's attributed pull requests (one session can own many).
 	// They feed status derivation and are surfaced on the API read model. Not
 	// serialized here: the HTTP boundary maps them to the curated wire shape.

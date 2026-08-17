@@ -17,6 +17,7 @@ type fakeStore struct {
 	sessions   map[domain.SessionID]domain.SessionRecord
 	prs        map[domain.SessionID][]domain.PullRequest
 	signatures map[string]string
+	policyTask *domain.DCPReviewLabPolicyTask
 
 	listPRsErr        error
 	signatureWriteErr error
@@ -68,6 +69,13 @@ func (f *fakeStore) UpdatePRLastNudgeSignature(_ context.Context, prURL, payload
 	f.signatures[prURL] = payload
 	f.signatureWrites++
 	return nil
+}
+
+func (f *fakeStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	if f.policyTask == nil || f.policyTask.SessionID != id {
+		return domain.DCPReviewLabPolicyTask{}, false, nil
+	}
+	return *f.policyTask, true, nil
 }
 
 type fakeMessenger struct {
@@ -2166,6 +2174,71 @@ func TestSCMObservation_ReadyToMergeSuppressedWhileWaitingInput(t *testing.T) {
 	}
 	if len(sink.intents) != 0 {
 		t.Fatalf("waiting-input session emitted ready notification: %+v", sink.intents)
+	}
+}
+
+func TestSCMObservation_DCPPolicyReadyNotificationWaitsForReleaseTrainHandoff(t *testing.T) {
+	const (
+		sessionID = domain.SessionID("wb-core-1")
+		prURL     = "https://github.com/orenvlad-ai/wb-core/pull/987"
+		head      = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
+	)
+	ready := ports.SCMObservation{
+		Fetched:      true,
+		PR:           ports.SCMPRObservation{URL: prURL, HTMLURL: prURL, Number: 987, HeadSHA: head, Title: "DCP canary"},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+	for _, tc := range []struct {
+		name        string
+		state       domain.DCPReviewLabPolicyState
+		wantIntent  int
+		wantResolve int
+		wantReady   string
+	}{
+		{name: "before DCP review and admission", state: domain.DCPPolicyCIWaiting, wantResolve: 1},
+		{name: "review queued", state: domain.DCPPolicyReviewQueued, wantResolve: 1},
+		{name: "waiting for Release Train", state: domain.DCPPolicyReleaseWaiting, wantIntent: 1, wantReady: "wbc_release_train"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions[sessionID] = working(sessionID)
+			st.policyTask = &domain.DCPReviewLabPolicyTask{
+				TaskID: "wbc-canary-v1", Target: "wb-core", Profile: "repo-only", Repository: "orenvlad-ai/wb-core",
+				PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: sessionID, State: tc.state,
+				PRURL: prURL, CurrentHeadSHA: head,
+			}
+			sink := &fakeNotificationSink{}
+			m := New(st, nil, WithNotificationSink(sink))
+			if err := m.ApplySCMObservation(ctx, sessionID, ready); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.intents) != tc.wantIntent || len(sink.resolutions) != tc.wantResolve {
+				t.Fatalf("intents=%+v resolutions=%+v", sink.intents, sink.resolutions)
+			}
+			if tc.wantIntent == 1 && sink.intents[0].ReadyDestination != tc.wantReady {
+				t.Fatalf("ready destination=%q", sink.intents[0].ReadyDestination)
+			}
+		})
+	}
+}
+
+func TestSCMObservation_DCPPolicyTerminalNotificationIsNotSuppressed(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["wb-core-1"] = working("wb-core-1")
+	st.policyTask = &domain.DCPReviewLabPolicyTask{
+		TaskID: "wbc-canary-v1", Target: "wb-core", Profile: "repo-only", Repository: "orenvlad-ai/wb-core",
+		PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: "wb-core-1", State: domain.DCPPolicyMerged,
+	}
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	obs := ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/orenvlad-ai/wb-core/pull/987", Number: 987, Merged: true}}
+	if err := m.ApplySCMObservation(ctx, "wb-core-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationPRMerged {
+		t.Fatalf("terminal policy notification=%+v", sink.intents)
 	}
 }
 
