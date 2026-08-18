@@ -174,6 +174,17 @@ and every foreign/direct-target combination remains ineligible. This changes
 no marker parsing, generation creation, project registration, model, merge or
 deploy authority.
 
+The installed marker-envelope correction then persisted the fresh exact-head
+required check, but the review engine's historical preserved-shell predicate
+still rejected the terminated policy session because its predecessor head had
+an approved review. An exact policy-owned preserved session may bypass only
+that generic predecessor predicate: the existing policy gate must separately
+authorize the current PR and exact head before any workspace preparation,
+review row, model slot or launch. Ordinary preserved sessions retain the
+single-use missing-workspace rule, and an uncontracted policy head remains
+inert. This adds no reviewer retry, replacement task/session or broader
+terminated-session authority.
+
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display
 one synthetic DCP task in exact state `SUBMITTED`. Submission is idempotent,

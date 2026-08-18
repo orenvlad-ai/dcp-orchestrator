@@ -396,7 +396,12 @@ func (e *Engine) triggerLocked(ctx stdctx.Context, workerID domain.SessionID, ov
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	if mode == triggerPreserved && !PreservedReviewContinuationEligible(hasReview, runs) {
+	// Ordinary preserved shells retain the one historical missing-workspace
+	// continuation. A policy-owned shell is instead authorized per exact PR/head
+	// below, so an approved predecessor head cannot suppress a separately gated
+	// fresh readmission review. The policy gate remains fail-closed before any
+	// workspace preparation or reviewer launch.
+	if mode == triggerPreserved && !futurePolicyReview && !PreservedReviewContinuationEligible(hasReview, runs) {
 		return TriggerResult{}, nil
 	}
 
