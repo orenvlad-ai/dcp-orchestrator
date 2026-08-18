@@ -249,7 +249,10 @@ func Run() error {
 		terminalMerger.SetRebaseHeadFinalizationExecutor(dcpterminalmerge.NewRebaseHeadFinalizationExecutor(runtimeAdapter))
 		terminalMerger.SetModelFreeReviewTrigger(func(triggerCtx context.Context, id domain.SessionID) error {
 			_, triggerErr := reviewSvc.AutoTrigger(triggerCtx, id)
-			return triggerErr
+			if triggerErr != nil {
+				return triggerErr
+			}
+			return dcpTaskSvc.DrainModelActions(triggerCtx)
 		})
 		terminalMerger.SetRefreshWaker(func(wakeCtx context.Context, id domain.SessionID, prompt string) error {
 			_, wakeErr := sessMgr.ResumeDCPReviewLabIdleAgent(wakeCtx, id, prompt)
@@ -287,6 +290,9 @@ func Run() error {
 			return dcpTaskSvc.HandlePolicyReviewProcessFailure(failureCtx, id, runID)
 		})
 		lcStack.LCM.SetTerminalMergeEligibilityHandler(triggerTerminalMerge)
+		lcStack.LCM.SetWBCTerminalReconciliationHandler(func(reconcileCtx context.Context, id domain.SessionID) error {
+			return terminalMerger.Try(reconcileCtx, id)
+		})
 	}
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})

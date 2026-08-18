@@ -3463,6 +3463,30 @@ components:
           type: boolean
         dcpPolicyModelActive:
           type: boolean
+        dcpPolicyProfile:
+          enum:
+          - synthetic-pr
+          - repo-only
+          - live-runtime
+          type: string
+        dcpPolicyReadmissionStatus:
+          enum:
+          - observed
+          - claimed
+          - prepared
+          - head_pushed
+          - review_queued
+          - reviewed
+          - admitted
+          - release_waiting
+          type: string
+        dcpPolicyReleasePhase:
+          enum:
+          - waiting_release_train
+          - release_train_running
+          - waiting_deploy
+          - deploy_running
+          type: string
         dcpPolicyState:
           enum:
           - reserved
@@ -3970,6 +3994,8 @@ components:
         profile:
           type: string
         prompt:
+          type: string
+        releasePhase:
           type: string
         repairCount:
           format: int64

@@ -7,9 +7,11 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pressly/goose/v3"
@@ -140,7 +142,58 @@ func migrate(db *sql.DB) error {
 	if err := reconcileSchema(db); err != nil {
 		return err
 	}
+	if err := reconcileDCPWBCAdmissionIndex(db); err != nil {
+		return err
+	}
 	return repairDCPReviewLabCard13CreationBase(db)
+}
+
+// reconcileDCPWBCAdmissionIndex relaxes only the physical one-active-row
+// guard needed for exact same-session readmission generations. Historical
+// incident rows remain immutable FIFO blockers in ClaimDCPReviewLabAdmission;
+// only waiting/claimed/refreshing rows remain mutually exclusive here.
+//
+// The table-existence guard preserves the historical burned-migration profile
+// whose foreign 0050 ledger entry omitted the DCP admission table entirely.
+// That profile can still serve its non-DCP sessions; a healthy DCP database
+// receives this exact index immediately after migration 0080 creates the
+// readmission authority table.
+func reconcileDCPWBCAdmissionIndex(db *sql.DB) error {
+	var admissionTable, readmissionTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dcp_review_lab_admission'`).Scan(&admissionTable); err != nil {
+		return fmt.Errorf("schema verification: inspect DCP admission table: %w", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dcp_wbc_readmission_generation'`).Scan(&readmissionTable); err != nil {
+		return fmt.Errorf("schema verification: inspect WBC readmission table: %w", err)
+	}
+	if admissionTable == 0 || readmissionTable == 0 {
+		return nil
+	}
+	var indexSQL sql.NullString
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_dcp_review_lab_admission_one_active_per_session'`).Scan(&indexSQL)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("schema verification: inspect DCP admission active index: %w", err)
+	}
+	if err == nil && indexSQL.Valid && strings.Contains(indexSQL.String, "WHERE status IN ('waiting', 'claimed', 'refreshing')") {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("schema repair: begin WBC readmission admission-index update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DROP INDEX IF EXISTS idx_dcp_review_lab_admission_one_active_per_session`); err != nil {
+		return fmt.Errorf("schema repair: drop predecessor DCP admission active index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX idx_dcp_review_lab_admission_one_active_per_session
+    ON dcp_review_lab_admission (session_id)
+    WHERE status IN ('waiting', 'claimed', 'refreshing')`); err != nil {
+		return fmt.Errorf("schema repair: create WBC readmission admission active index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("schema repair: commit WBC readmission admission-index update: %w", err)
+	}
+	return nil
 }
 
 // repairDCPReviewLabCard13CreationBase heals the one already-provisioned live

@@ -85,10 +85,13 @@ type SessionRecord struct {
 // plus derived display facts. Neither Status nor SCMStatus is persisted.
 type Session struct {
 	SessionRecord
-	Status           SessionStatus           `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,review_failed,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
-	SCMStatus        SessionStatus           `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
-	TerminalHandleID string                  `json:"terminalHandleId,omitempty"`
-	DCPPolicyState   DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,release_waiting,merged,failed,incident"`
+	Status                     SessionStatus           `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,review_failed,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	SCMStatus                  SessionStatus           `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	TerminalHandleID           string                  `json:"terminalHandleId,omitempty"`
+	DCPPolicyState             DCPReviewLabPolicyState `json:"dcpPolicyState,omitempty" enum:"reserved,worker_queued,worker_running,ci_waiting,review_queued,review_running,repair_queued,repair_running,admission_waiting,release_waiting,merged,failed,incident"`
+	DCPPolicyProfile           string                  `json:"dcpPolicyProfile,omitempty" enum:"synthetic-pr,repo-only,live-runtime"`
+	DCPPolicyReleasePhase      DCPWBCReleasePhase      `json:"dcpPolicyReleasePhase,omitempty" enum:"waiting_release_train,release_train_running,waiting_deploy,deploy_running"`
+	DCPPolicyReadmissionStatus DCPWBCReadmissionStatus `json:"dcpPolicyReadmissionStatus,omitempty" enum:"observed,claimed,prepared,head_pushed,review_queued,reviewed,admitted,release_waiting"`
 	// DCPPolicyModelActive is true only while a durable model action is
 	// running. DCPPolicyWorkflowActive remains true across zero-action waits so
 	// the UI can show lifecycle motion without claiming a model slot.

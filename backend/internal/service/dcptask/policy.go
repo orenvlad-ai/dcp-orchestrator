@@ -14,6 +14,11 @@ import (
 
 var errPolicyPRFactsPending = errors.New("policy PR provider facts are incomplete")
 
+type wbcReadmissionPolicyStore interface {
+	GetOpenDCPWBCReadmissionGenerationByTask(context.Context, string) (domain.DCPWBCReadmissionGeneration, bool, error)
+	QueueDCPWBCReadmissionReview(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask, domain.DCPModelAction, domain.DCPWBCReadmissionGeneration) (domain.DCPModelAction, bool, error)
+}
+
 // DrainModelActions performs one event-driven FIFO drain. It owns no goroutine,
 // timer, heartbeat, or poll loop; callers invoke it only after submission,
 // action release, a lifecycle/SCM event, or startup reconciliation.
@@ -286,26 +291,48 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 		if !ready {
 			return true, false, nil
 		}
-		if task.RepairCount == 0 {
+		var readmission domain.DCPWBCReadmissionGeneration
+		var hasReadmission bool
+		readmissionStore, supportsReadmission := s.policyStore.(wbcReadmissionPolicyStore)
+		if supportsReadmission {
+			readmission, hasReadmission, err = readmissionStore.GetOpenDCPWBCReadmissionGenerationByTask(ctx, task.TaskID)
+			if err != nil {
+				return true, false, err
+			}
+		}
+		freshReadmission := hasReadmission && exactWBCReadmissionFreshReview(task, readmission, head)
+		if !freshReadmission && task.RepairCount == 0 {
 			if task.CurrentHeadSHA != "" {
 				return true, false, errors.New("initial review head was already bound")
 			}
-		} else if task.CurrentHeadSHA == "" || task.CurrentHeadSHA == head {
+		} else if !freshReadmission && (task.CurrentHeadSHA == "" || task.CurrentHeadSHA == head) {
 			_ = s.failPolicyTask(ctx, task, "repair_head_unchanged", "repair did not produce a fresh exact head")
 			return true, false, errors.New("repair did not produce a fresh exact head")
 		}
 		next := task
 		next.State = domain.DCPPolicyReviewQueued
 		next.PRURL, next.PRNumber = pr.URL, int64(pr.Number)
-		next.PreviousHeadSHA, next.CurrentHeadSHA = task.CurrentHeadSHA, head
+		if freshReadmission {
+			next.CurrentHeadSHA = head
+		} else {
+			next.PreviousHeadSHA, next.CurrentHeadSHA = task.CurrentHeadSHA, head
+		}
 		next.ReviewRunID = ""
 		now := s.now().UTC()
+		actionID := "dcp-model-" + task.TaskID + "-review-" + strconv.FormatInt(task.RepairCount+1, 10)
+		if hasReadmission {
+			actionID = "dcp-model-" + task.TaskID + "-readmission-" + strconv.FormatInt(readmission.Sequence, 10) + "-review-" + strconv.FormatInt(task.RepairCount+1, 10)
+		}
 		action := domain.DCPModelAction{
-			ID:     "dcp-model-" + task.TaskID + "-review-" + strconv.FormatInt(task.RepairCount+1, 10),
+			ID:     actionID,
 			TaskID: task.TaskID, SessionID: id, Kind: domain.DCPActionReviewer,
 			ExactHeadSHA: head, Status: domain.DCPActionQueued, CreatedAt: now, UpdatedAt: now,
 		}
-		_, _, err := s.policyStore.QueueDCPModelAction(ctx, task, next, action)
+		if hasReadmission {
+			_, _, err = readmissionStore.QueueDCPWBCReadmissionReview(ctx, task, next, action, readmission)
+		} else {
+			_, _, err = s.policyStore.QueueDCPModelAction(ctx, task, next, action)
+		}
 		return true, false, err
 	case domain.DCPPolicyReviewQueued:
 		if task.CurrentHeadSHA != head || task.PRURL != prURL {
@@ -321,6 +348,12 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 	default:
 		return true, false, nil
 	}
+}
+
+func exactWBCReadmissionFreshReview(task domain.DCPReviewLabPolicyTask, generation domain.DCPWBCReadmissionGeneration, head string) bool {
+	return task.Target == "wb-core" && task.TaskID == generation.TaskID && task.SessionID == generation.SessionID &&
+		generation.Status == domain.DCPWBCReadmissionHeadPushed && generation.NewHeadSHA != "" &&
+		strings.EqualFold(generation.NewHeadSHA, head) && strings.EqualFold(task.CurrentHeadSHA, head)
 }
 
 func (s *Service) IsPolicyReviewSession(ctx context.Context, id domain.SessionID) (bool, error) {

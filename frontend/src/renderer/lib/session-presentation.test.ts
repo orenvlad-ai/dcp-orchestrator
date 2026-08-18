@@ -212,6 +212,53 @@ describe("session presentation", () => {
 	});
 
 	it.each([
+		["waiting_release_train", "Waiting for Release Train"],
+		["release_train_running", "Release Train running"],
+		["waiting_deploy", "Waiting for deploy"],
+		["deploy_running", "Deploy running"],
+	] as const)("keeps live-runtime %s visibly active without claiming a model slot", (phase, detail) => {
+		const session = sessionWith({
+			dcpPolicyState: "release_waiting",
+			dcpPolicyProfile: "live-runtime",
+			dcpPolicyReleasePhase: phase,
+			dcpPolicyModelActive: false,
+			dcpPolicyWorkflowActive: true,
+		});
+		const visual = getSessionVisualStatus(session);
+		expect(visual).toMatchObject({
+			policyPhase: "ready_to_merge",
+			zone: "merge",
+			detail,
+			workflowActive: true,
+			modelActive: false,
+			indicatorClassName: "bg-status-ready animate-status-pulse",
+		});
+		expect(getSessionAccessibilityStatus(session)).toBe(`Waiting for Release Train. ${detail}`);
+	});
+
+	it("keeps readmission active on the same incident card and makes target terminals profile-specific", () => {
+		const readmission = sessionWith({
+			id: "same-wbc-task",
+			status: "review_failed",
+			dcpPolicyState: "incident",
+			dcpPolicyProfile: "repo-only",
+			dcpPolicyReadmissionStatus: "prepared",
+			dcpPolicyWorkflowActive: true,
+			dcpPolicyModelActive: false,
+		});
+		expect(getSessionVisualStatus(readmission)).toMatchObject({
+			policyPhase: "working",
+			detail: "Readmission prepared",
+			workflowActive: true,
+			modelActive: false,
+		});
+		const repoTerminal = sessionWith({ dcpPolicyState: "merged", dcpPolicyProfile: "repo-only" });
+		const liveTerminal = sessionWith({ dcpPolicyState: "merged", dcpPolicyProfile: "live-runtime" });
+		expect(getSessionAccessibilityStatus(repoTerminal)).toBe("Merged / released. Repository release verified");
+		expect(getSessionAccessibilityStatus(liveTerminal)).toBe("Merged / released. Production deployment verified");
+	});
+
+	it.each([
 		["waiting", "requested", "queued", false, "Waiting for arbiter", true],
 		["claimed", "claimed", "claimed", true, "Arbiter evaluating", true],
 		["running", "running", "running", true, "Arbiter evaluating", true],

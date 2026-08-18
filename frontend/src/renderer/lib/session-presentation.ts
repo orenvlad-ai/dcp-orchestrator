@@ -178,6 +178,13 @@ function policyVisualStatus(
 		});
 	}
 
+	if (state === "incident" && session.dcpPolicyReadmissionStatus) {
+		return policy(
+			"working", "working", "working", "working", "bg-status-working", "status.ci_waiting",
+			`Readmission ${session.dcpPolicyReadmissionStatus.replaceAll("_", " ")}`,
+		);
+	}
+
 	if (state === "incident" && isAutomaticArbiterContinuation(session.dcpArbiterStatus)) {
 		const evaluating = session.dcpArbiterStatus === "claimed" || session.dcpArbiterStatus === "running";
 		return visualStatus("arbiter", "bg-status-arbiter", {
@@ -228,9 +235,17 @@ function policyVisualStatus(
 		case "admission_waiting":
 			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready", "status.admission_waiting", "Waiting for FIFO admission");
 		case "release_waiting":
-			return policy("ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready", "status.release_waiting", "Waiting for Release Train");
+			return policy(
+				"ready_to_merge", "merge", "mergeable", "ready", "bg-status-ready", "status.release_waiting",
+				{
+					waiting_release_train: "Waiting for Release Train",
+					release_train_running: "Release Train running",
+					waiting_deploy: "Waiting for deploy",
+					deploy_running: "Deploy running",
+				}[session.dcpPolicyReleasePhase ?? "waiting_release_train"],
+			);
 		case "merged":
-			return policy("merged", "merge", "merged", "merged", "bg-status-merged", "status.policy_complete");
+			return policy("merged", "merge", "merged", "merged", "bg-status-merged", "status.policy_complete", session.dcpPolicyProfile === "live-runtime" ? "Production deployment verified" : "Repository release verified");
 		case "failed":
 			return visualStatus("failed", "bg-status-exited", {
 				policyPhase: "needs_you", zone: "action", displayStatus: "review_failed",
@@ -367,6 +382,7 @@ export function getSessionVisualStatus(session: WorkspaceSession): SessionVisual
 function fallbackPolicyWorkflowActive(session: WorkspaceSession): boolean {
 	if (!session.dcpPolicyState || session.dcpPolicyState === "merged" || session.dcpPolicyState === "failed") return false;
 	if (session.dcpPolicyState !== "incident") return true;
+	if (session.dcpPolicyReadmissionStatus) return true;
 	return isAutomaticArbiterContinuation(session.dcpArbiterStatus);
 }
 

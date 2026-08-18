@@ -81,8 +81,14 @@ func TestValidatePolicySubmitFailsClosedOutsideExactIdentity(t *testing.T) {
 	}
 	wbc := PolicySubmitInput{TaskID: "wbc-canary-1", Target: WBCTarget, Profile: RepoOnlyProfile, Repository: WBCRepositoryName, Prompt: "add one bounded repo-only canary"}
 	if spec, err := validatePolicySubmit(wbc); err != nil || spec.PolicyVersion != domain.DCPWBCRepoOnlyPolicyVersion ||
-		spec.ProviderRepositoryID != 1201929580 || spec.ProviderOwnerID != 237411244 || !spec.UsesWBCReleaseTrain() || spec.CompatibilityMarker != "wb-core.dcp-release-handoff/v1" {
+		spec.ProviderRepositoryID != 1201929580 || spec.ProviderOwnerID != 237411244 || !spec.UsesWBCReleaseTrain() || spec.CompatibilityMarker != "wb-core.dcp-release-handoff/v2" {
 		t.Fatalf("valid WBC repo-only input: spec=%+v err=%v", spec, err)
+	}
+	live := wbc
+	live.TaskID, live.Profile, live.Prompt = "wbc-live-1", WBCLiveRuntimeProfile, "add one inert live-runtime provenance canary"
+	if spec, err := validatePolicySubmit(live); err != nil || spec.PolicyVersion != domain.DCPWBCLiveRuntimePolicyVersion ||
+		spec.AgentRules != domain.DCPWBCRepoOnlyPolicyAgentRules || !spec.UsesWBCReleaseTrain() {
+		t.Fatalf("valid WBC live-runtime input: spec=%+v err=%v", spec, err)
 	}
 	legacy := repoOnly
 	legacy.Target, legacy.Repository = "wb-price-extension", "orenvlad-ai/wb-price-extension"
@@ -159,6 +165,10 @@ func TestPolicyPromptUsesTheExactAllowlistedProfile(t *testing.T) {
 	if got, want := policyPrompt(repoOnly), "DCP repo-only task brief-1: refine the architecture brief"; got != want {
 		t.Fatalf("repo-only prompt = %q, want %q", got, want)
 	}
+	liveRuntime := domain.DCPReviewLabPolicyTask{TaskID: "live-1", Profile: WBCLiveRuntimeProfile, Prompt: "add inert runtime provenance"}
+	if got, want := policyPrompt(liveRuntime), "DCP live-runtime task live-1: add inert runtime provenance"; got != want {
+		t.Fatalf("live-runtime prompt = %q, want %q", got, want)
+	}
 	initial, err := (&Service{}).workerActionPrompt(context.Background(), repoOnly, domain.DCPModelAction{Kind: domain.DCPActionInitialWorker})
 	if err != nil || initial != policyPrompt(repoOnly) {
 		t.Fatalf("repo-only initial action prompt = %q, err=%v", initial, err)
@@ -167,6 +177,28 @@ func TestPolicyPromptUsesTheExactAllowlistedProfile(t *testing.T) {
 	synthetic := domain.DCPReviewLabPolicyTask{TaskID: "fixture-1", Profile: PolicyProfile, Prompt: "add one fixture"}
 	if got, want := policyPrompt(synthetic), "DCP synthetic task fixture-1: add one fixture"; got != want {
 		t.Fatalf("synthetic prompt = %q, want %q", got, want)
+	}
+}
+
+func TestWBCReadmissionFreshReviewRemainsEligibleAfterPriorRepair(t *testing.T) {
+	const (
+		oldHead = "1111111111111111111111111111111111111111"
+		newHead = "2222222222222222222222222222222222222222"
+	)
+	task := domain.DCPReviewLabPolicyTask{
+		TaskID: "wbc-repaired-v1", Target: "wb-core", Profile: "repo-only", SessionID: "wb-core-7",
+		RepairCount: 1, PreviousHeadSHA: oldHead, CurrentHeadSHA: newHead,
+	}
+	generation := domain.DCPWBCReadmissionGeneration{
+		TaskID: task.TaskID, SessionID: task.SessionID, Status: domain.DCPWBCReadmissionHeadPushed,
+		AdmittedHeadSHA: oldHead, NewHeadSHA: newHead,
+	}
+	if !exactWBCReadmissionFreshReview(task, generation, newHead) {
+		t.Fatal("a prior bounded repair incorrectly disabled the mandatory fresh readmission review")
+	}
+	generation.Status = domain.DCPWBCReadmissionReviewQueue
+	if exactWBCReadmissionFreshReview(task, generation, newHead) {
+		t.Fatal("a replay after the generation left head_pushed was treated as a new fresh review")
 	}
 }
 

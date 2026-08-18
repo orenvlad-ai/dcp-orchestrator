@@ -137,6 +137,9 @@ export type WorkspaceSession = {
 	scmStatus?: SessionStatus;
 	/** Durable happy-path policy lifecycle projected through this same native session. */
 	dcpPolicyState?: DCPPolicyState;
+	dcpPolicyProfile?: "synthetic-pr" | "repo-only" | "live-runtime";
+	dcpPolicyReleasePhase?: "waiting_release_train" | "release_train_running" | "waiting_deploy" | "deploy_running";
+	dcpPolicyReadmissionStatus?: "observed" | "claimed" | "prepared" | "head_pushed" | "review_queued" | "reviewed" | "admitted" | "release_waiting";
 	/** True only while the current bounded policy action is durably running. */
 	dcpPolicyActionActive?: boolean;
 	/** True only while a durable DCP model action is actually running. */

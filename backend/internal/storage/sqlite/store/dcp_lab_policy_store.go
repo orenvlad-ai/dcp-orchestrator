@@ -350,6 +350,19 @@ func finishDCPModelActionTx(ctx context.Context, q *gen.Queries, action domain.D
 	if err != nil || rows != 1 {
 		return false, errors.Join(err, ErrDCPPolicyStale)
 	}
+	if action.Kind == domain.DCPActionReviewer && next.State == domain.DCPPolicyAdmissionWait {
+		generation, generationErr := q.GetOpenDCPWBCReadmissionGenerationByTask(ctx, action.TaskID)
+		if generationErr == nil {
+			rows, err = q.BindDCPWBCReadmissionReviewRun(ctx, gen.BindDCPWBCReadmissionReviewRunParams{
+				ReviewRunID: action.ReviewRunID, UpdatedAt: now, GenerationID: generation.GenerationID, ReviewActionID: action.ID,
+			})
+			if err != nil || rows != 1 {
+				return false, errors.Join(err, ErrDCPPolicyStale)
+			}
+		} else if !errors.Is(generationErr, sql.ErrNoRows) {
+			return false, generationErr
+		}
+	}
 	return true, nil
 }
 
@@ -409,7 +422,7 @@ func dcpPolicyTaskFromGen(row gen.DcpReviewLabPolicyTask) domain.DCPReviewLabPol
 		WorktreePath: row.WorktreePath, SourceBranch: row.SourceBranch, Prompt: row.Prompt,
 		State: domain.DCPReviewLabPolicyState(row.State), Revision: row.Revision, RepairCount: row.RepairCount,
 		PRURL: row.PRURL, PRNumber: row.PRNumber, CurrentHeadSHA: row.CurrentHeadSha, PreviousHeadSHA: row.PreviousHeadSha,
-		ReviewRunID: row.ReviewRunID, AdmissionID: row.AdmissionID, MergeCommitSHA: row.MergeCommitSha,
+		ReviewRunID: row.ReviewRunID, AdmissionID: row.AdmissionID, ReleasePhase: domain.DCPWBCReleasePhase(row.ReleasePhase), MergeCommitSHA: row.MergeCommitSha,
 		ErrorCode: row.ErrorCode, IncidentPacket: row.IncidentPacket, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
 }
@@ -431,7 +444,7 @@ func policyTaskInsertParams(task domain.DCPReviewLabPolicyTask) gen.InsertDCPRev
 		SourceBranch: task.SourceBranch, Prompt: task.Prompt, State: string(task.State), Revision: task.Revision,
 		RepairCount: task.RepairCount, PRURL: task.PRURL, PRNumber: task.PRNumber,
 		CurrentHeadSha: task.CurrentHeadSHA, PreviousHeadSha: task.PreviousHeadSHA, ReviewRunID: task.ReviewRunID,
-		AdmissionID: task.AdmissionID, MergeCommitSha: task.MergeCommitSHA, ErrorCode: task.ErrorCode,
+		AdmissionID: task.AdmissionID, ReleasePhase: string(task.ReleasePhase), MergeCommitSha: task.MergeCommitSHA, ErrorCode: task.ErrorCode,
 		IncidentPacket: task.IncidentPacket, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
 	}
 }
@@ -440,7 +453,7 @@ func policyTaskUpdateParams(current, next domain.DCPReviewLabPolicyTask) gen.Upd
 	return gen.UpdateDCPReviewLabPolicyTaskParams{
 		State: string(next.State), RepairCount: next.RepairCount, PRURL: next.PRURL, PRNumber: next.PRNumber,
 		CurrentHeadSha: next.CurrentHeadSHA, PreviousHeadSha: next.PreviousHeadSHA, ReviewRunID: next.ReviewRunID,
-		AdmissionID: next.AdmissionID, MergeCommitSha: next.MergeCommitSHA, ErrorCode: next.ErrorCode,
+		AdmissionID: next.AdmissionID, ReleasePhase: string(next.ReleasePhase), MergeCommitSha: next.MergeCommitSHA, ErrorCode: next.ErrorCode,
 		IncidentPacket: next.IncidentPacket, UpdatedAt: next.UpdatedAt,
 		TaskID: current.TaskID, State_2: string(current.State), Revision: current.Revision,
 	}

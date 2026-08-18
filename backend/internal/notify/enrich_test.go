@@ -66,3 +66,32 @@ func TestEnrichReadyToMergeUsesReleaseTrainTruthForWBCPolicy(t *testing.T) {
 		t.Fatalf("release-train notification=%+v", rec)
 	}
 }
+
+func TestEnrichWBCCompletionUsesProfileTerminalTruth(t *testing.T) {
+	for _, tc := range []struct {
+		destination string
+		title       string
+		body        string
+	}{
+		{
+			destination: "wbc_repo_release", title: "PR #987 released",
+			body: "WBC Release Train merged the exact admitted head and published release:done; no deploy applies.",
+		},
+		{
+			destination: "wbc_production", title: "PR #987 deployed to production",
+			body: "WBC Release Train merged, deployed and verified the exact release SHA in production.",
+		},
+	} {
+		rec, err := enrich(Intent{
+			Type: domain.NotificationPRMerged, SessionID: "wb-core-1", ProjectID: "wb-core",
+			PRURL: "https://github.com/orenvlad-ai/wb-core/pull/987", PRNumber: 987,
+			CompletionDestination: tc.destination, CreatedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Title != tc.title || rec.Body != tc.body {
+			t.Fatalf("completion notification=%+v", rec)
+		}
+	}
+}

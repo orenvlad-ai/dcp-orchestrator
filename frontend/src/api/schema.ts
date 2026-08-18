@@ -1164,6 +1164,12 @@ export interface components {
             dcpPolicyActionActive?: boolean;
             dcpPolicyModelActive?: boolean;
             /** @enum {string} */
+            dcpPolicyProfile?: "synthetic-pr" | "repo-only" | "live-runtime";
+            /** @enum {string} */
+            dcpPolicyReadmissionStatus?: "observed" | "claimed" | "prepared" | "head_pushed" | "review_queued" | "reviewed" | "admitted" | "release_waiting";
+            /** @enum {string} */
+            dcpPolicyReleasePhase?: "waiting_release_train" | "release_train_running" | "waiting_deploy" | "deploy_running";
+            /** @enum {string} */
             dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "release_waiting" | "merged" | "failed" | "incident";
             dcpPolicyWorkflowActive?: boolean;
             displayName?: string;
@@ -1343,6 +1349,7 @@ export interface components {
             previousHeadSha?: string;
             profile: string;
             prompt: string;
+            releasePhase?: string;
             /** Format: int64 */
             repairCount: number;
             repository: string;

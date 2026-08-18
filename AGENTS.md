@@ -22,6 +22,7 @@ repository:
 10. [repo-only repository rename v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/a1bfdd9328566dc630587220b60b7faa7ba1d745/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md)
 11. [`wb-core` Release Train handoff v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/036b1101284f626c931f7edb1750ddd228634832/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md)
 12. [`wb-core` CI truth and lifecycle UX v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/1ca282408bec53a1d696cb58d247e33285209ee9/docs/DCP_WB_CORE_CI_TRUTH_LIFECYCLE_UX_V1_CONTRACT.md)
+13. [`wb-core` end-to-end release and deploy v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f7775f375a612a38e96496f09908ab48e3598c5/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -37,6 +38,15 @@ Release Train job, and workflow activity remains visibly live across
 zero-model autonomous waits. It also authorizes the exact model-free
 `wbc-canary-v1` recovery after a separately reviewed source/pin/install chain.
 It does not widen model, merge, Release Train, target or runtime authority.
+
+Item 13 and the merged root/current authorities at exact
+`4f7775f375a612a38e96496f09908ab48e3598c5`, operating revision
+`2026-08-18.2`, supersede only the proven post-admission WBC blocker. They
+authorize one Actions-event-driven fresh-readmission generation per exact
+immutable marker on the same task/PR, plus exact profile `live-runtime` with
+Actions-owned `release:production` proof. DCP model roles remain repository-
+only; DCP direct merge and deploy remain forbidden. Source remains inactive
+until the separate immutable pin and governed deterministic install pass.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
@@ -78,11 +88,12 @@ deterministic install and stopped preflight complete.
   repository beneath the explicit lab root. Only exact tuples
   `dcp-review-lab` / `synthetic-pr` / `orenvlad-ai/dcp-review-lab` and
   `wb-browser-extension` / `repo-only` / `orenvlad-ai/wb-browser-extension` and
-  `wb-core` / `repo-only` / `orenvlad-ai/wb-core` may receive their exact typed
-  contours. The `wb-core` target remains locked before native/model mutation
-  until its repository-owned compatibility marker is present, is permanently
-  ineligible for DCP direct merge, and may hand off only `release:ready` to the
-  WBC GitHub Actions Release Train. Existing
+  `wb-core` / `repo-only` / `orenvlad-ai/wb-core` and `wb-core` /
+  `live-runtime` / `orenvlad-ai/wb-core` may receive their exact typed contours.
+  The `wb-core` target remains locked before native/model mutation until its
+  repository-owned v2 compatibility marker is present, is permanently
+  ineligible for DCP direct merge or deploy, and may hand off only
+  `release:ready` to the WBC GitHub Actions Release Train. Existing
   PRs and cards 1-12 are immutable audit evidence and must not be changed or
   reused. Every other repository or remote, WBC production, hosted
   systems and public distribution remain out of scope. The real target ends at
@@ -105,12 +116,17 @@ existing daemon and SQLite own one idempotent stock native card/session/
 worktree/branch, a durable FIFO of model actions with at most three active
 slots globally, one initial worker, one fresh context-free review per exact
 head, at most one same-task findings repair and one shared durable FIFO
-admission/release lease. Queued work, CI and admission own no model or new
-loop. Only current exact public provider facts for one of the three compile-time
-target/profile/repository identities may enter that line. The synthetic and
+admission/release lease. Queued work, CI, readmission, admission and release
+waits own no model or new loop. Only current exact public provider facts for
+one of the four compile-time target/profile/repository identities may enter
+that line. The synthetic and
 browser-extension targets may reach their ordinary daemon-owned expected-head
 terminal merge; `wb-core` may only enter the typed zero-action Release Train
-wait and receive `release:ready`, never a DCP merge call. Any other identity,
+wait and receive `release:ready`, never a DCP merge or deploy call. Its
+repo-only profile is terminal only on exact Actions-owned `release:done`; its
+live-runtime profile is terminal only on exact Actions-owned
+`release:production` plus matching merge/deployed SHA, canonical target/service
+and required probe proof. Any other identity,
 stale head,
 second findings cycle, conflict or ambiguity fails closed without arbiter,
 HumanGate, manual bypass or replacement card. Historical rows below remain

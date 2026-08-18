@@ -150,7 +150,7 @@ func (q *Queries) GetDCPModelActionByIdentity(ctx context.Context, arg GetDCPMod
 }
 
 const getDCPReviewLabPolicyTaskBySessionID = `-- name: GetDCPReviewLabPolicyTaskBySessionID :one
-SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task WHERE session_id = ?
+SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, release_phase, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task WHERE session_id = ?
 `
 
 func (q *Queries) GetDCPReviewLabPolicyTaskBySessionID(ctx context.Context, sessionID string) (DcpReviewLabPolicyTask, error) {
@@ -178,6 +178,7 @@ func (q *Queries) GetDCPReviewLabPolicyTaskBySessionID(ctx context.Context, sess
 		&i.PreviousHeadSha,
 		&i.ReviewRunID,
 		&i.AdmissionID,
+		&i.ReleasePhase,
 		&i.MergeCommitSha,
 		&i.ErrorCode,
 		&i.IncidentPacket,
@@ -188,7 +189,7 @@ func (q *Queries) GetDCPReviewLabPolicyTaskBySessionID(ctx context.Context, sess
 }
 
 const getDCPReviewLabPolicyTaskByTaskID = `-- name: GetDCPReviewLabPolicyTaskByTaskID :one
-SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task WHERE task_id = ?
+SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, release_phase, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task WHERE task_id = ?
 `
 
 func (q *Queries) GetDCPReviewLabPolicyTaskByTaskID(ctx context.Context, taskID string) (DcpReviewLabPolicyTask, error) {
@@ -216,6 +217,7 @@ func (q *Queries) GetDCPReviewLabPolicyTaskByTaskID(ctx context.Context, taskID 
 		&i.PreviousHeadSha,
 		&i.ReviewRunID,
 		&i.AdmissionID,
+		&i.ReleasePhase,
 		&i.MergeCommitSha,
 		&i.ErrorCode,
 		&i.IncidentPacket,
@@ -272,9 +274,9 @@ INSERT INTO dcp_review_lab_policy_task (
     task_id, payload_json, payload_digest, target, profile, repository,
     policy_version, session_id, card_number, worktree_path, source_branch,
     prompt, state, revision, repair_count, pr_url, pr_number,
-    current_head_sha, previous_head_sha, review_run_id, admission_id,
+    current_head_sha, previous_head_sha, review_run_id, admission_id, release_phase,
     merge_commit_sha, error_code, incident_packet, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertDCPReviewLabPolicyTaskParams struct {
@@ -299,6 +301,7 @@ type InsertDCPReviewLabPolicyTaskParams struct {
 	PreviousHeadSha string
 	ReviewRunID     string
 	AdmissionID     string
+	ReleasePhase    string
 	MergeCommitSha  string
 	ErrorCode       string
 	IncidentPacket  string
@@ -329,6 +332,7 @@ func (q *Queries) InsertDCPReviewLabPolicyTask(ctx context.Context, arg InsertDC
 		arg.PreviousHeadSha,
 		arg.ReviewRunID,
 		arg.AdmissionID,
+		arg.ReleasePhase,
 		arg.MergeCommitSha,
 		arg.ErrorCode,
 		arg.IncidentPacket,
@@ -423,7 +427,7 @@ func (q *Queries) ListDCPModelActions(ctx context.Context) ([]DcpModelAction, er
 }
 
 const listDCPReviewLabPolicyTasks = `-- name: ListDCPReviewLabPolicyTasks :many
-SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task ORDER BY created_at, task_id
+SELECT task_id, payload_json, payload_digest, target, profile, repository, policy_version, session_id, card_number, worktree_path, source_branch, prompt, state, revision, repair_count, pr_url, pr_number, current_head_sha, previous_head_sha, review_run_id, admission_id, release_phase, merge_commit_sha, error_code, incident_packet, created_at, updated_at FROM dcp_review_lab_policy_task ORDER BY created_at, task_id
 `
 
 func (q *Queries) ListDCPReviewLabPolicyTasks(ctx context.Context) ([]DcpReviewLabPolicyTask, error) {
@@ -457,6 +461,7 @@ func (q *Queries) ListDCPReviewLabPolicyTasks(ctx context.Context) ([]DcpReviewL
 			&i.PreviousHeadSha,
 			&i.ReviewRunID,
 			&i.AdmissionID,
+			&i.ReleasePhase,
 			&i.MergeCommitSha,
 			&i.ErrorCode,
 			&i.IncidentPacket,
@@ -549,7 +554,7 @@ const updateDCPReviewLabPolicyTask = `-- name: UpdateDCPReviewLabPolicyTask :exe
 UPDATE dcp_review_lab_policy_task SET
     state = ?, revision = revision + 1, repair_count = ?, pr_url = ?,
     pr_number = ?, current_head_sha = ?, previous_head_sha = ?,
-    review_run_id = ?, admission_id = ?, merge_commit_sha = ?,
+    review_run_id = ?, admission_id = ?, release_phase = ?, merge_commit_sha = ?,
     error_code = ?, incident_packet = ?, updated_at = ?
 WHERE task_id = ? AND state = ? AND revision = ?
 `
@@ -563,6 +568,7 @@ type UpdateDCPReviewLabPolicyTaskParams struct {
 	PreviousHeadSha string
 	ReviewRunID     string
 	AdmissionID     string
+	ReleasePhase    string
 	MergeCommitSha  string
 	ErrorCode       string
 	IncidentPacket  string
@@ -582,6 +588,7 @@ func (q *Queries) UpdateDCPReviewLabPolicyTask(ctx context.Context, arg UpdateDC
 		arg.PreviousHeadSha,
 		arg.ReviewRunID,
 		arg.AdmissionID,
+		arg.ReleasePhase,
 		arg.MergeCommitSha,
 		arg.ErrorCode,
 		arg.IncidentPacket,

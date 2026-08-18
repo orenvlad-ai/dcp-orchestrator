@@ -32,6 +32,8 @@ type fakeStore struct {
 	admission         *domain.DCPReviewLabAdmission
 	includeCohortPeer bool
 	policyTask        *domain.DCPReviewLabPolicyTask
+	readmission       *domain.DCPWBCReadmissionGeneration
+	readmissions      []domain.DCPWBCReadmissionGeneration
 }
 
 func (f *fakeStore) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -62,6 +64,87 @@ func (f *fakeStore) GetDCPReviewLabAdmissionByRun(_ context.Context, runID strin
 		return domain.DCPReviewLabAdmission{}, false, nil
 	}
 	return *f.admission, true, nil
+}
+func (f *fakeStore) GetDCPReviewLabAdmissionByID(_ context.Context, id string) (domain.DCPReviewLabAdmission, bool, error) {
+	if f.admission == nil || f.admission.ID != id {
+		return domain.DCPReviewLabAdmission{}, false, nil
+	}
+	return *f.admission, true, nil
+}
+func (f *fakeStore) ListDCPReviewLabPolicyTasks(context.Context) ([]domain.DCPReviewLabPolicyTask, error) {
+	if f.policyTask == nil {
+		return nil, nil
+	}
+	return []domain.DCPReviewLabPolicyTask{*f.policyTask}, nil
+}
+func (f *fakeStore) GetOpenDCPWBCReadmissionGenerationByTask(_ context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error) {
+	if f.readmission == nil || f.readmission.TaskID != taskID || f.readmission.Status == domain.DCPWBCReadmissionTerminal || f.readmission.Status == domain.DCPWBCReadmissionConflict || f.readmission.Status == domain.DCPWBCReadmissionFailed {
+		return domain.DCPWBCReadmissionGeneration{}, false, nil
+	}
+	return *f.readmission, true, nil
+}
+func (f *fakeStore) GetLatestDCPWBCReadmissionGenerationByTask(_ context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error) {
+	if f.readmission == nil || f.readmission.TaskID != taskID {
+		return domain.DCPWBCReadmissionGeneration{}, false, nil
+	}
+	return *f.readmission, true, nil
+}
+func (f *fakeStore) ListDCPWBCReadmissionGenerations(context.Context) ([]domain.DCPWBCReadmissionGeneration, error) {
+	rows := append([]domain.DCPWBCReadmissionGeneration(nil), f.readmissions...)
+	if f.readmission != nil {
+		rows = append(rows, *f.readmission)
+	}
+	return rows, nil
+}
+func (f *fakeStore) ObserveDCPWBCReadmissionGeneration(_ context.Context, row domain.DCPWBCReadmissionGeneration, _ domain.DCPReviewLabPolicyTask, _ domain.DCPReviewLabAdmission) (domain.DCPWBCReadmissionGeneration, bool, error) {
+	if f.readmission != nil {
+		return *f.readmission, false, nil
+	}
+	row.Sequence = 1
+	f.readmission = &row
+	return row, true, nil
+}
+func (f *fakeStore) ClaimDCPWBCReadmissionGeneration(_ context.Context, row domain.DCPWBCReadmissionGeneration, lease string, now time.Time) (bool, error) {
+	if f.readmission == nil || f.readmission.GenerationID != row.GenerationID || f.readmission.Status != domain.DCPWBCReadmissionObserved {
+		return false, nil
+	}
+	f.readmission.Status, f.readmission.LeaseID, f.readmission.UpdatedAt = domain.DCPWBCReadmissionClaimed, lease, now
+	return true, nil
+}
+func (f *fakeStore) PrepareDCPWBCReadmissionGeneration(_ context.Context, row domain.DCPWBCReadmissionGeneration, tree, head, currentMain string, now time.Time) (bool, error) {
+	if f.readmission == nil || f.readmission.GenerationID != row.GenerationID || f.readmission.Status != domain.DCPWBCReadmissionClaimed {
+		return false, nil
+	}
+	f.readmission.Status, f.readmission.MergeTreeSHA, f.readmission.NewHeadSHA, f.readmission.CurrentMainSHA, f.readmission.UpdatedAt = domain.DCPWBCReadmissionPrepared, tree, head, currentMain, now
+	return true, nil
+}
+func (f *fakeStore) AdvanceDCPWBCReadmissionHead(_ context.Context, row domain.DCPWBCReadmissionGeneration, task domain.DCPReviewLabPolicyTask, now time.Time) (bool, error) {
+	if f.readmission == nil || f.policyTask == nil || f.readmission.GenerationID != row.GenerationID || f.readmission.Status != domain.DCPWBCReadmissionPrepared || f.policyTask.TaskID != task.TaskID {
+		return false, nil
+	}
+	f.readmission.Status, f.readmission.UpdatedAt = domain.DCPWBCReadmissionHeadPushed, now
+	f.policyTask.State, f.policyTask.PreviousHeadSHA, f.policyTask.CurrentHeadSHA = domain.DCPPolicyCIWaiting, task.CurrentHeadSHA, row.NewHeadSHA
+	f.policyTask.ReviewRunID, f.policyTask.AdmissionID, f.policyTask.ErrorCode, f.policyTask.IncidentPacket = "", "", "", ""
+	f.policyTask.Revision++
+	return true, nil
+}
+func (f *fakeStore) FailDCPWBCReadmissionGeneration(_ context.Context, row domain.DCPWBCReadmissionGeneration, code string, conflict bool, now time.Time) (bool, error) {
+	if f.readmission == nil || f.readmission.GenerationID != row.GenerationID {
+		return false, nil
+	}
+	f.readmission.Status, f.readmission.ErrorCode, f.readmission.UpdatedAt = domain.DCPWBCReadmissionFailed, code, now
+	if conflict {
+		f.readmission.Status = domain.DCPWBCReadmissionConflict
+	}
+	return true, nil
+}
+func (f *fakeStore) UpdateDCPWBCReleasePhase(_ context.Context, current domain.DCPReviewLabPolicyTask, phase domain.DCPWBCReleasePhase, _ time.Time) (bool, error) {
+	if f.policyTask == nil || f.policyTask.TaskID != current.TaskID || f.policyTask.State != domain.DCPPolicyReleaseWaiting {
+		return false, nil
+	}
+	f.policyTask.ReleasePhase = phase
+	f.policyTask.Revision++
+	return true, nil
 }
 func (f *fakeStore) GetClaimedDCPReviewLabAdmission(context.Context) (domain.DCPReviewLabAdmission, bool, error) {
 	if f.admission == nil || f.admission.Status != domain.DCPAdmissionClaimed {
@@ -129,7 +212,7 @@ func (f *fakeStore) ClaimDCPReleaseTrainAdmission(ctx context.Context, admission
 	}
 	claimed, err := f.ClaimDCPReviewLabAdmission(ctx, admission, leaseID, baseSHA, now)
 	if claimed {
-		f.policyTask.State = domain.DCPPolicyReleaseWaiting
+		f.policyTask.State, f.policyTask.ReleasePhase = domain.DCPPolicyReleaseWaiting, domain.DCPWBCReleaseWaitingTrain
 		f.policyTask.Revision++
 	}
 	return claimed, err
@@ -618,7 +701,8 @@ func (f *fakeSCM) MergePullRequest(_ context.Context, request ports.SCMMergeRequ
 func (f *fakeSCM) ApplyReleaseReady(_ context.Context, request ports.SCMReleaseReadyRequest) error {
 	f.releaseReadyCalls++
 	if request.PR.Repo.Repo != "orenvlad-ai/wb-core" || request.ExpectedHeadSHA != f.expectedHead ||
-		request.ExpectedBaseBranch != "main" || request.RequiredTaskLabel != "task:standard" || request.RequiredScopeLabel != "scope:repo-only" {
+		request.ExpectedBaseBranch != "main" || request.RequiredTaskLabel != "task:standard" ||
+		(request.RequiredScopeLabel != "scope:repo-only" && request.RequiredScopeLabel != "scope:live-runtime") {
 		return errors.New("unexpected release-ready request")
 	}
 	if !hasExactLabel(f.releaseObservation.Labels, "release:ready") {
@@ -776,7 +860,8 @@ func policyTargetFixture(t *testing.T, spec domain.DCPPolicyTargetSpec, card int
 		TaskID: "future-1", Target: spec.Target, Profile: spec.Profile, Repository: spec.Repository,
 		PolicyVersion: spec.PolicyVersion, SessionID: id, CardNumber: card,
 		WorktreePath: workspace, SourceBranch: branch, Prompt: "Add one future policy fixture.",
-		State: domain.DCPPolicyAdmissionWait, Revision: 8, CurrentHeadSHA: testHead, ReviewRunID: store.run.ID,
+		State: domain.DCPPolicyAdmissionWait, Revision: 8, PRURL: prURL, PRNumber: 4,
+		CurrentHeadSHA: testHead, ReviewRunID: store.run.ID,
 	}
 	scm.observation.Repo, scm.observation.PR.HeadRepo = spec.Repository, spec.Repository
 	scm.expectedRepo = spec.Repository
@@ -797,7 +882,7 @@ func policyTargetFixture(t *testing.T, spec domain.DCPPolicyTargetSpec, card int
 		scm.releaseObservation = ports.SCMReleaseObservation{
 			Number: 4, URL: prURL, State: "open", HeadRepository: spec.Repository, HeadBranch: branch,
 			HeadSHA: testHead, BaseBranch: spec.DefaultBranch, Author: "orenvlad-ai",
-			Labels: []string{"scope:repo-only", "task:standard"},
+			Labels: []string{"scope:" + spec.Profile, "task:standard"},
 		}
 	}
 	engine.git = func(_ context.Context, path string, args ...string) (string, error) {
@@ -912,6 +997,7 @@ func TestWBCPolicyHandsOffOnlyReleaseReadyAndObservesExactTerminalProof(t *testi
 	}
 	scm.releaseObservation.State = "closed"
 	scm.releaseObservation.Merged = true
+	scm.releaseObservation.MergedBy = "github-actions[bot]"
 	scm.releaseObservation.MergeCommitSHA = testMerge
 	scm.releaseObservation.Labels = []string{"release:done", "scope:repo-only", "task:standard"}
 	scm.releaseObservation.Body = "<!-- wb-core-release-completion-proof contour=repo-only merge=" + testMerge + " pr=4 -->"
@@ -921,6 +1007,58 @@ func TestWBCPolicyHandsOffOnlyReleaseReadyAndObservesExactTerminalProof(t *testi
 	if scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyMerged || store.policyTask.MergeCommitSHA != testMerge ||
 		store.admission.Status != domain.DCPAdmissionSucceeded {
 		t.Fatalf("WBC terminal observation: merges=%d task=%+v admission=%+v", scm.mergeCalls, store.policyTask, store.admission)
+	}
+}
+
+func TestWBCLiveRuntimeWaitsThroughMergeUntilExactProductionProof(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "live-runtime")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting ||
+		store.policyTask.ReleasePhase != domain.DCPWBCReleaseWaitingTrain {
+		t.Fatalf("live handoff: merges=%d ready=%d task=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask)
+	}
+	scm.releaseObservation.Labels = []string{"release:running", "scope:live-runtime", "task:standard"}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.policyTask.State != domain.DCPPolicyReleaseWaiting || store.policyTask.ReleasePhase != domain.DCPWBCReleaseTrainRunning {
+		t.Fatalf("live train phase=%+v", store.policyTask)
+	}
+	scm.releaseObservation.State, scm.releaseObservation.Merged = "closed", true
+	scm.releaseObservation.MergedBy, scm.releaseObservation.MergeCommitSHA = "github-actions[bot]", testMerge
+	scm.releaseObservation.Labels = []string{"release:ready", "scope:live-runtime", "task:standard"}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.policyTask.State != domain.DCPPolicyReleaseWaiting || store.policyTask.ReleasePhase != domain.DCPWBCReleaseWaitingDeploy {
+		t.Fatalf("live deploy wait phase=%+v", store.policyTask)
+	}
+	scm.releaseObservation.Labels = []string{"release:running", "scope:live-runtime", "task:standard"}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.policyTask.State != domain.DCPPolicyReleaseWaiting || store.policyTask.ReleasePhase != domain.DCPWBCReleaseDeployRunning {
+		t.Fatalf("live deploy phase=%+v", store.policyTask)
+	}
+	marker := wbcReadmissionMarker{
+		repository: spec.Repository, base: spec.DefaultBranch, task: "standard", scope: spec.Profile,
+		headRef: store.policyTask.SourceBranch, session: store.policyTask.CardNumber, pr: store.policyTask.PRNumber,
+		admittedHead: store.policyTask.CurrentHeadSHA, main: testBase, readyEvent: 900, admissionCheck: 901, handoffProof: 902,
+		comment: ports.SCMReleaseComment{CreatedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)},
+	}
+	scm.releaseObservation.Labels = []string{"release:production", "scope:live-runtime", "task:standard"}
+	scm.releaseObservation.Comments = []ports.SCMReleaseComment{
+		canonicalHandoffComment(marker, "github-actions[bot]"),
+		canonicalProductionComment(marker, testMerge, "github-actions[bot]"),
+	}
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || store.policyTask.State != domain.DCPPolicyMerged || store.policyTask.MergeCommitSHA != testMerge {
+		t.Fatalf("live terminal: merges=%d task=%+v", scm.mergeCalls, store.policyTask)
 	}
 }
 
@@ -1003,6 +1141,43 @@ func TestWBCPolicyReleaseWaitSurvivesRestartWithoutDuplicateHandoff(t *testing.T
 	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting ||
 		store.admission == nil || store.admission.Status != domain.DCPAdmissionClaimed {
 		t.Fatalf("WBC restart replay: merges=%d ready=%d task=%+v admission=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask, store.admission)
+	}
+}
+
+func TestWBCPolicyPriorIncidentRemainsTerminalAcrossSequentialReadmissionGenerations(t *testing.T) {
+	firstAdmission := domain.DCPReviewLabAdmission{
+		ID: "admission-1", SessionID: "wb-core-1", ReviewRunID: "review-1",
+		TargetSHA: strings.Repeat("1", 40), Status: domain.DCPAdmissionIncident,
+	}
+	store := &fakeStore{
+		policyTask: &domain.DCPReviewLabPolicyTask{
+			TaskID: "wbc-canary-v1", Target: "wb-core", SessionID: firstAdmission.SessionID,
+			State: domain.DCPPolicyIncident, AdmissionID: "admission-2", ReviewRunID: "review-2",
+			CurrentHeadSHA: strings.Repeat("2", 40), ErrorCode: "release_state_drift", IncidentPacket: `{}`,
+		},
+		readmissions: []domain.DCPWBCReadmissionGeneration{{
+			Sequence: 1, GenerationID: "generation-1", TaskID: "wbc-canary-v1", SessionID: firstAdmission.SessionID,
+			OldAdmissionID: firstAdmission.ID, AdmissionID: "admission-2", Status: domain.DCPWBCReadmissionFailed,
+			ErrorCode: "superseded_by_readmission",
+		}},
+		readmission: &domain.DCPWBCReadmissionGeneration{
+			Sequence: 2, GenerationID: "generation-2", TaskID: "wbc-canary-v1", SessionID: firstAdmission.SessionID,
+			OldAdmissionID: "admission-2", Status: domain.DCPWBCReadmissionObserved,
+		},
+	}
+	engine := New(store, &fakeSCM{}, t.TempDir())
+	terminal, err := engine.policyAdmissionIncidentTerminal(context.Background(), firstAdmission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal {
+		t.Fatal("prior exact incident became a FIFO blocker after its generation was superseded by the next exact readmission")
+	}
+
+	store.readmission.SessionID = "wb-core-2"
+	terminal, err = engine.policyAdmissionIncidentTerminal(context.Background(), firstAdmission)
+	if err == nil || terminal {
+		t.Fatalf("cross-session successor did not fail closed: terminal=%v err=%v", terminal, err)
 	}
 }
 

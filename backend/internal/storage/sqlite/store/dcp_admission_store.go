@@ -45,14 +45,25 @@ func (s *Store) EnqueueDCPReviewLabPolicyAdmission(ctx context.Context, a domain
 		if result.ID != a.ID || result.ReviewRunID != a.ReviewRunID || result.SessionID != a.SessionID || result.TargetSHA != a.TargetSHA {
 			return errors.New("persisted policy admission identity drifted")
 		}
-		if current.AdmissionID == result.ID {
-			return nil
+		if current.AdmissionID != result.ID {
+			next := current
+			next.AdmissionID, next.UpdatedAt = result.ID, a.UpdatedAt
+			n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
+			if err != nil || n != 1 {
+				return errors.Join(err, errors.New("exact policy admission binding was unavailable"))
+			}
 		}
-		next := current
-		next.AdmissionID, next.UpdatedAt = result.ID, a.UpdatedAt
-		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
-		if err != nil || n != 1 {
-			return errors.Join(err, errors.New("exact policy admission binding was unavailable"))
+		generation, generationErr := q.GetOpenDCPWBCReadmissionGenerationByTask(ctx, current.TaskID)
+		if generationErr == nil && generation.Status == string(domain.DCPWBCReadmissionReviewed) {
+			n, bindErr := q.BindDCPWBCReadmissionAdmission(ctx, gen.BindDCPWBCReadmissionAdmissionParams{
+				AdmissionID: result.ID, UpdatedAt: a.UpdatedAt, GenerationID: generation.GenerationID,
+				NewHeadSha: generation.NewHeadSha, ReviewRunID: result.ReviewRunID,
+			})
+			if bindErr != nil || n != 1 {
+				return errors.Join(bindErr, errors.New("WBC readmission admission binding was unavailable"))
+			}
+		} else if generationErr != nil && !errors.Is(generationErr, sql.ErrNoRows) {
+			return generationErr
 		}
 		return nil
 	})
@@ -202,10 +213,21 @@ func (s *Store) ClaimDCPReleaseTrainAdmission(ctx context.Context, a domain.DCPR
 			return errors.Join(err, errors.New("exact WBC ReviewRun release claim was unavailable"))
 		}
 		next := current
-		next.State, next.UpdatedAt = domain.DCPPolicyReleaseWaiting, now
+		next.State, next.ReleasePhase, next.UpdatedAt = domain.DCPPolicyReleaseWaiting, domain.DCPWBCReleasePhaseNone, now
 		n, err = q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
 		if err != nil || n != 1 {
 			return errors.Join(err, errors.New("exact WBC release-wait projection was unavailable"))
+		}
+		generation, generationErr := q.GetOpenDCPWBCReadmissionGenerationByTask(ctx, current.TaskID)
+		if generationErr == nil && generation.Status == string(domain.DCPWBCReadmissionAdmitted) {
+			n, markErr := q.MarkDCPWBCReadmissionReleaseWaiting(ctx, gen.MarkDCPWBCReadmissionReleaseWaitingParams{
+				UpdatedAt: now, GenerationID: generation.GenerationID, AdmissionID: a.ID,
+			})
+			if markErr != nil || n != 1 {
+				return errors.Join(markErr, errors.New("WBC readmission release binding was unavailable"))
+			}
+		} else if generationErr != nil && !errors.Is(generationErr, sql.ErrNoRows) {
+			return generationErr
 		}
 		claimed = true
 		return nil
@@ -250,10 +272,21 @@ func (s *Store) CompleteDCPReviewLabPolicyAdmission(ctx context.Context, a domai
 			return err
 		}
 		next := current
-		next.State, next.MergeCommitSHA, next.UpdatedAt = domain.DCPPolicyMerged, mergeSHA, now
+		next.State, next.ReleasePhase, next.MergeCommitSHA, next.UpdatedAt = domain.DCPPolicyMerged, domain.DCPWBCReleasePhaseNone, mergeSHA, now
 		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
 		if err != nil || n != 1 {
 			return errors.Join(err, errors.New("exact policy terminal projection was unavailable"))
+		}
+		generation, generationErr := q.GetOpenDCPWBCReadmissionGenerationByTask(ctx, current.TaskID)
+		if generationErr == nil && generation.Status == string(domain.DCPWBCReadmissionReleaseWait) {
+			n, markErr := q.CompleteDCPWBCReadmissionGeneration(ctx, gen.CompleteDCPWBCReadmissionGenerationParams{
+				UpdatedAt: now, GenerationID: generation.GenerationID, AdmissionID: a.ID,
+			})
+			if markErr != nil || n != 1 {
+				return errors.Join(markErr, errors.New("WBC readmission terminal binding was unavailable"))
+			}
+		} else if generationErr != nil && !errors.Is(generationErr, sql.ErrNoRows) {
+			return generationErr
 		}
 		completed = true
 		return nil
@@ -385,7 +418,7 @@ func (s *Store) RecordDCPReviewLabPolicyIncident(ctx context.Context, a domain.D
 			return err
 		}
 		next := current
-		next.State, next.ErrorCode, next.IncidentPacket, next.UpdatedAt = domain.DCPPolicyIncident, errorCode, packet, now
+		next.State, next.ReleasePhase, next.ErrorCode, next.IncidentPacket, next.UpdatedAt = domain.DCPPolicyIncident, domain.DCPWBCReleasePhaseNone, errorCode, packet, now
 		n, err := q.UpdateDCPReviewLabPolicyTask(ctx, policyTaskUpdateParams(current, next))
 		if err != nil || n != 1 {
 			return errors.Join(err, errors.New("exact policy incident projection was unavailable"))

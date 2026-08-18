@@ -880,6 +880,7 @@ type DcpReviewLabPolicyTask struct {
 	PreviousHeadSha string
 	ReviewRunID     string
 	AdmissionID     string
+	ReleasePhase    string
 	MergeCommitSha  string
 	ErrorCode       string
 	IncidentPacket  string
@@ -962,6 +963,57 @@ type DcpWbcCITruthRecoveryV1 struct {
 	Authority               string
 	Status                  string
 	CreatedAt               time.Time
+}
+
+type DcpWbcReadmissionGeneration struct {
+	Sequence         int64
+	GenerationID     string
+	MarkerDigest     string
+	MarkerVersion    string
+	MarkerCommentID  int64
+	MarkerAuthor     string
+	MarkerCreatedAt  time.Time
+	MarkerUpdatedAt  time.Time
+	MarkerMainSha    string
+	TaskID           string
+	SessionID        string
+	OldAdmissionID   string
+	PRURL            string
+	PRNumber         int64
+	Repository       string
+	BaseBranch       string
+	Scope            string
+	HeadRef          string
+	SessionNumber    int64
+	AdmittedHeadSha  string
+	AdmittedBaseSha  string
+	ObservedHeadSha  string
+	CurrentMainSha   string
+	ReadyEventID     int64
+	AdmissionCheckID int64
+	HandoffProofID   int64
+	Reason           string
+	Status           string
+	LeaseID          string
+	MergeTreeSha     string
+	NewHeadSha       string
+	ReviewActionID   string
+	ReviewRunID      string
+	AdmissionID      string
+	ErrorCode        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type DcpWbcReleaseDeployV1Authority struct {
+	AuthorityID         string
+	Target              string
+	Repository          string
+	Profiles            string
+	Marker              string
+	ReleaseActor        string
+	DirectMergeEligible int64
+	InstalledAt         time.Time
 }
 
 type Notification struct {

@@ -131,6 +131,8 @@ type Manager struct {
 	reviewEligibility          func(context.Context, domain.SessionID)
 	terminalMergeEligibilityMu sync.RWMutex
 	terminalMergeEligibility   func(context.Context, domain.SessionID)
+	wbcTerminalReconcileMu     sync.RWMutex
+	wbcTerminalReconcile       func(context.Context, domain.SessionID) error
 	dcpModelActionMu           sync.RWMutex
 	dcpModelAction             func(context.Context, domain.SessionID, string, bool)
 }
@@ -194,6 +196,28 @@ func (m *Manager) signalTerminalMergeEligibility(ctx context.Context, id domain.
 	if handler != nil {
 		handler(ctx, id)
 	}
+}
+
+// SetWBCTerminalReconciliationHandler binds the synchronous exact-proof
+// readback used only when an SCM event already reports a merged WBC policy PR.
+// It exists separately from the general asynchronous eligibility wake so a
+// one-shot release:done/release:production event cannot outrun notification
+// truth.
+func (m *Manager) SetWBCTerminalReconciliationHandler(handler func(context.Context, domain.SessionID) error) {
+	m.wbcTerminalReconcileMu.Lock()
+	m.wbcTerminalReconcile = handler
+	m.wbcTerminalReconcileMu.Unlock()
+}
+
+func (m *Manager) reconcileWBCTerminal(ctx context.Context, id domain.SessionID) error {
+	m.wbcTerminalReconcileMu.RLock()
+	handler := m.wbcTerminalReconcile
+	m.wbcTerminalReconcileMu.RUnlock()
+	if handler != nil {
+		return handler(ctx, id)
+	}
+	m.signalTerminalMergeEligibility(ctx, id)
+	return nil
 }
 
 // SetDCPModelActionHandler late-binds the future-policy process boundary. It

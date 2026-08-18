@@ -20,11 +20,20 @@ const DCPRepoOnlyPolicyVersion = "dcp.repo-only.happy-path/v1"
 // merger is never eligible for this policy.
 const DCPWBCRepoOnlyPolicyVersion = "dcp.wb-core.repo-only.release-train/v1"
 
+// DCPWBCLiveRuntimePolicyVersion is the exact wb-core live-runtime policy.
+// Model actions remain repository-only. Only the repository-owned Release
+// Train may merge and deploy, and terminal success requires production proof.
+const DCPWBCLiveRuntimePolicyVersion = "dcp.wb-core.live-runtime.release-train/v1"
+
 const DCPReviewLabPolicyAgentRules = "DCP synthetic PR profile v4. Work only in this exact public synthetic repository, current native worktree and current AO branch. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
 const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-browser-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
-const DCPWBCRepoOnlyPolicyAgentRules = "DCP wb-core repo-only profile v1. Work only in this exact public wb-core repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. The task must remain task:standard with exactly scope:repo-only. Do not access live runtime, production, SSH, secrets, runtime data, business data, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run baseline, create one commit lineage, push the current branch, open one ready pull request targeting main with exactly task:standard and scope:repo-only and no release label, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run baseline, push, and stop. Never add release:ready, merge, release or manually review; only the trusted daemon may perform exact-head review and FIFO admission, and only the WBC GitHub Actions Release Train may merge and add release:done."
+const DCPWBCReleaseTrainPolicyAgentRules = "DCP wb-core Release Train profiles v2. Work only in this exact public wb-core repository, current native worktree and current AO branch. Read and obey repository AGENTS.md. The immutable DCP task profile is either repo-only or live-runtime; keep task:standard and exactly the matching scope label. Model actions are repository-only for both profiles: never access production, SSH, secrets, runtime or business data, servers, telemetry, deployments, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, services, or pull requests. On the initial action implement only the direct task, run baseline, create one commit lineage, push the current branch, open one ready PR targeting main with the exact task/scope labels and no release label, then stop. On the one bounded findings repair, change only that task on the same branch and PR, create one new head, run baseline, push, then stop. Never synchronize an admitted head, add release labels, merge, deploy, release, or manually review. Only the trusted DCP daemon may perform exact-head review and FIFO admission and add release:ready. Only WBC GitHub Actions may merge, add release:done for repo-only, or deploy and add release:production for live-runtime."
+
+// Retain the old exported name as a source-compatible alias. Both wb-core
+// profiles intentionally share one exact native project configuration.
+const DCPWBCRepoOnlyPolicyAgentRules = DCPWBCReleaseTrainPolicyAgentRules
 
 const dcpLegacyRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-price-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
@@ -149,7 +158,20 @@ var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
 		SessionPrefix: "wb-core", PolicyVersion: DCPWBCRepoOnlyPolicyVersion,
 		AgentRules: DCPWBCRepoOnlyPolicyAgentRules, MinimumCardNumber: 1,
-		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: "wb-core.dcp-release-handoff/v1",
+		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: "wb-core.dcp-release-handoff/v2",
+		CompatibilityFiles: [3]string{
+			"docs/architecture/11_github_release_train.md",
+			"apps/github_release_train.py",
+			"apps/github_release_train_spec.py",
+		},
+	},
+	{
+		Target: "wb-core", Profile: "live-runtime", Repository: "orenvlad-ai/wb-core",
+		OriginURL: "https://github.com/orenvlad-ai/wb-core.git", ProviderRepositoryID: 1201929580,
+		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
+		SessionPrefix: "wb-core", PolicyVersion: DCPWBCLiveRuntimePolicyVersion,
+		AgentRules: DCPWBCReleaseTrainPolicyAgentRules, MinimumCardNumber: 1,
+		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: "wb-core.dcp-release-handoff/v2",
 		CompatibilityFiles: [3]string{
 			"docs/architecture/11_github_release_train.md",
 			"apps/github_release_train.py",
@@ -176,12 +198,25 @@ func DCPPolicyTarget(target, profile string) (DCPPolicyTargetSpec, bool) {
 }
 
 func DCPPolicyTargetForProject(target string) (DCPPolicyTargetSpec, bool) {
+	var project DCPPolicyTargetSpec
+	found := false
 	for _, spec := range dcpPolicyTargetSpecs {
 		if spec.Target == target {
-			return spec, true
+			if !found {
+				project, found = spec, true
+				continue
+			}
+			if project.Repository != spec.Repository || project.OriginURL != spec.OriginURL ||
+				project.ProviderRepositoryID != spec.ProviderRepositoryID || project.ProviderOwnerID != spec.ProviderOwnerID ||
+				project.DefaultBranch != spec.DefaultBranch || project.RequiredCheck != spec.RequiredCheck ||
+				project.SessionPrefix != spec.SessionPrefix || project.AgentRules != spec.AgentRules ||
+				project.ReleaseAuthority != spec.ReleaseAuthority || project.CompatibilityMarker != spec.CompatibilityMarker ||
+				project.CompatibilityFiles != spec.CompatibilityFiles {
+				return DCPPolicyTargetSpec{}, false
+			}
 		}
 	}
-	return DCPPolicyTargetSpec{}, false
+	return project, found
 }
 
 func DCPPolicyTargetForRepository(repository string) (DCPPolicyTargetSpec, bool) {
@@ -249,12 +284,25 @@ type DCPReviewLabPolicyTask struct {
 	PreviousHeadSHA string                  `json:"previousHeadSha,omitempty"`
 	ReviewRunID     string                  `json:"reviewRunId,omitempty"`
 	AdmissionID     string                  `json:"admissionId,omitempty"`
+	ReleasePhase    DCPWBCReleasePhase      `json:"releasePhase,omitempty"`
 	MergeCommitSHA  string                  `json:"mergeCommitSha,omitempty"`
 	ErrorCode       string                  `json:"errorCode,omitempty"`
 	IncidentPacket  string                  `json:"incidentPacket,omitempty"`
 	CreatedAt       time.Time               `json:"createdAt"`
 	UpdatedAt       time.Time               `json:"updatedAt"`
 }
+
+// DCPWBCReleasePhase is a typed presentation/observation fact separate from
+// model action accounting and the durable policy state.
+type DCPWBCReleasePhase string
+
+const (
+	DCPWBCReleasePhaseNone     DCPWBCReleasePhase = ""
+	DCPWBCReleaseWaitingTrain  DCPWBCReleasePhase = "waiting_release_train"
+	DCPWBCReleaseTrainRunning  DCPWBCReleasePhase = "release_train_running"
+	DCPWBCReleaseWaitingDeploy DCPWBCReleasePhase = "waiting_deploy"
+	DCPWBCReleaseDeployRunning DCPWBCReleasePhase = "deploy_running"
+)
 
 // DCPReviewLabPolicyState is the durable projection shown through the same
 // native card. Waiting states own no process, timer, heartbeat, or poller.
@@ -320,4 +368,64 @@ type DCPModelAction struct {
 
 func (s DCPReviewLabPolicyState) Terminal() bool {
 	return s == DCPPolicyMerged || s == DCPPolicyFailed || s == DCPPolicyIncident
+}
+
+// DCPWBCReadmissionStatus is the durable model-free generation lifecycle. It
+// never owns a model slot and it never replaces the native task/session/PR.
+type DCPWBCReadmissionStatus string
+
+const (
+	DCPWBCReadmissionObserved    DCPWBCReadmissionStatus = "observed"
+	DCPWBCReadmissionClaimed     DCPWBCReadmissionStatus = "claimed"
+	DCPWBCReadmissionPrepared    DCPWBCReadmissionStatus = "prepared"
+	DCPWBCReadmissionHeadPushed  DCPWBCReadmissionStatus = "head_pushed"
+	DCPWBCReadmissionReviewQueue DCPWBCReadmissionStatus = "review_queued"
+	DCPWBCReadmissionReviewed    DCPWBCReadmissionStatus = "reviewed"
+	DCPWBCReadmissionAdmitted    DCPWBCReadmissionStatus = "admitted"
+	DCPWBCReadmissionReleaseWait DCPWBCReadmissionStatus = "release_waiting"
+	DCPWBCReadmissionTerminal    DCPWBCReadmissionStatus = "terminal"
+	DCPWBCReadmissionConflict    DCPWBCReadmissionStatus = "conflict"
+	DCPWBCReadmissionFailed      DCPWBCReadmissionStatus = "failed"
+)
+
+// DCPWBCReadmissionGeneration binds one immutable Actions-owned event to one
+// lease, integration head, fresh review and fresh admission of the same task.
+type DCPWBCReadmissionGeneration struct {
+	Sequence         int64
+	GenerationID     string
+	MarkerDigest     string
+	MarkerVersion    string
+	MarkerCommentID  int64
+	MarkerAuthor     string
+	MarkerCreatedAt  time.Time
+	MarkerUpdatedAt  time.Time
+	MarkerMainSHA    string
+	TaskID           string
+	SessionID        SessionID
+	OldAdmissionID   string
+	PRURL            string
+	PRNumber         int64
+	Repository       string
+	BaseBranch       string
+	Scope            string
+	HeadRef          string
+	SessionNumber    int64
+	AdmittedHeadSHA  string
+	AdmittedBaseSHA  string
+	ObservedHeadSHA  string
+	CurrentMainSHA   string
+	ReadyEventID     int64
+	AdmissionCheckID int64
+	HandoffProofID   int64
+	Reason           string
+	Status           DCPWBCReadmissionStatus
+	LeaseID          string
+	MergeTreeSHA     string
+	NewHeadSHA       string
+	ReviewActionID   string
+	ReviewRunID      string
+	AdmissionID      string
+	ErrorCode        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

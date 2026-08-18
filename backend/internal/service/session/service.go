@@ -49,6 +49,10 @@ type dcpPolicyActionReader interface {
 	GetActiveDCPModelActionBySession(ctx context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error)
 }
 
+type dcpWBCReadmissionReader interface {
+	GetOpenDCPWBCReadmissionGenerationByTask(ctx context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error)
+}
+
 type dcpFutureArbiterReader interface {
 	GetDCPFutureArbiterIncidentByTask(ctx context.Context, taskID string) (domain.DCPFutureArbiterIncident, bool, error)
 	GetDCPModelActionByID(ctx context.Context, id string) (domain.DCPModelAction, bool, error)
@@ -768,6 +772,9 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	prs = deduplicatePRFacts(prs)
 	status := deriveStatus(rec, prs, s.now(), s.harnessSignals(rec.Harness))
 	var policyState domain.DCPReviewLabPolicyState
+	var policyProfile string
+	var policyReleasePhase domain.DCPWBCReleasePhase
+	var policyReadmissionStatus domain.DCPWBCReadmissionStatus
 	var policyModelActive, policyWorkflowActive bool
 	var arbiterStatus domain.DCPFutureArbiterStatus
 	var arbiterGeneration int64
@@ -789,6 +796,16 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		}
 		if found {
 			policyState = task.State
+			policyProfile, policyReleasePhase = task.Profile, task.ReleasePhase
+			if readmissions, ok := s.store.(dcpWBCReadmissionReader); ok {
+				generation, generationFound, generationErr := readmissions.GetOpenDCPWBCReadmissionGenerationByTask(ctx, task.TaskID)
+				if generationErr != nil {
+					return domain.Session{}, fmt.Errorf("DCP readmission facts %s: %w", rec.ID, generationErr)
+				}
+				if generationFound {
+					policyReadmissionStatus = generation.Status
+				}
+			}
 			status = overlayDCPPolicyStatus(status, task.State)
 			if actions, ok := s.store.(dcpPolicyActionReader); ok {
 				action, active, actionErr := actions.GetActiveDCPModelActionBySession(ctx, rec.ID)
@@ -825,33 +842,39 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 					arbiterActionStatus = action.Status
 				}
 			}
-			policyWorkflowActive = dcpPolicyWorkflowActive(task.State, arbiterStatus)
+			policyWorkflowActive = dcpPolicyWorkflowActive(task.State, arbiterStatus, policyReadmissionStatus)
 		}
 	}
 	return domain.Session{
-		SessionRecord:           rec,
-		Status:                  status,
-		SCMStatus:               deriveSCMStatus(prs),
-		TerminalHandleID:        rec.Metadata.RuntimeHandleID,
-		DCPPolicyState:          policyState,
-		DCPPolicyModelActive:    policyModelActive,
-		DCPPolicyWorkflowActive: policyWorkflowActive,
-		DCPPolicyActionActive:   policyModelActive,
-		DCPArbiterStatus:        arbiterStatus,
-		DCPArbiterGeneration:    arbiterGeneration,
-		DCPArbiterIncidentKind:  arbiterIncidentKind,
-		DCPArbiterCohort:        arbiterCohort,
-		DCPArbiterActionStatus:  arbiterActionStatus,
-		DCPHumanGateQuestion:    humanGateQuestion,
-		PRs:                     prs,
+		SessionRecord:              rec,
+		Status:                     status,
+		SCMStatus:                  deriveSCMStatus(prs),
+		TerminalHandleID:           rec.Metadata.RuntimeHandleID,
+		DCPPolicyState:             policyState,
+		DCPPolicyProfile:           policyProfile,
+		DCPPolicyReleasePhase:      policyReleasePhase,
+		DCPPolicyReadmissionStatus: policyReadmissionStatus,
+		DCPPolicyModelActive:       policyModelActive,
+		DCPPolicyWorkflowActive:    policyWorkflowActive,
+		DCPPolicyActionActive:      policyModelActive,
+		DCPArbiterStatus:           arbiterStatus,
+		DCPArbiterGeneration:       arbiterGeneration,
+		DCPArbiterIncidentKind:     arbiterIncidentKind,
+		DCPArbiterCohort:           arbiterCohort,
+		DCPArbiterActionStatus:     arbiterActionStatus,
+		DCPHumanGateQuestion:       humanGateQuestion,
+		PRs:                        prs,
 	}, nil
 }
 
-func dcpPolicyWorkflowActive(state domain.DCPReviewLabPolicyState, arbiter domain.DCPFutureArbiterStatus) bool {
+func dcpPolicyWorkflowActive(state domain.DCPReviewLabPolicyState, arbiter domain.DCPFutureArbiterStatus, readmission domain.DCPWBCReadmissionStatus) bool {
 	switch state {
 	case domain.DCPPolicyMerged, domain.DCPPolicyFailed:
 		return false
 	case domain.DCPPolicyIncident:
+		if readmission != "" && readmission != domain.DCPWBCReadmissionConflict && readmission != domain.DCPWBCReadmissionFailed {
+			return true
+		}
 		switch arbiter {
 		case domain.DCPFutureArbiterRequested, domain.DCPFutureArbiterClaimed, domain.DCPFutureArbiterRunning,
 			domain.DCPFutureArbiterHold, domain.DCPFutureArbiterRepairQueued,
