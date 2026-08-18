@@ -154,7 +154,7 @@ func (e *Engine) advanceWBCReadmissionGeneration(ctx context.Context, store wbcR
 		if getErr != nil || !found {
 			return false, errors.Join(getErr, errors.New("dcp WBC readmission: old admission is unavailable"))
 		}
-		candidate, ok, err := e.candidateForFutureArbiterAdmission(ctx, oldAdmission)
+		candidate, ok, err := e.candidateForWBCReadmissionAdmission(ctx, oldAdmission)
 		if err != nil || !ok {
 			return false, errors.Join(err, errors.New("dcp WBC readmission: exact incident candidate is unavailable"))
 		}
