@@ -70,6 +70,7 @@ type Store interface {
 
 type policyStore interface {
 	GetDCPReviewLabPolicyTaskBySession(context.Context, domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+	ListDCPModelActions(context.Context) ([]domain.DCPModelAction, error)
 	UpdateDCPReviewLabPolicyTaskCAS(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPReviewLabPolicyTask) (bool, error)
 	EnqueueDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask) (domain.DCPReviewLabAdmission, bool, error)
 	ClaimDCPReleaseTrainAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, time.Time) (bool, error)
@@ -1105,22 +1106,23 @@ func (e *Engine) candidateForFutureArbiterAdmission(ctx context.Context, admissi
 }
 
 func (e *Engine) candidateForWBCReadmissionAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
-	candidate, ok, err := e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, domain.DCPPolicyIncident, true)
+	candidate, ok, err := e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, domain.DCPPolicyIncident)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
-	if admission.Status != domain.DCPAdmissionIncident || candidate.policyTask.AdmissionID != admission.ID {
+	if !candidate.spec.UsesWBCReleaseTrain() || candidate.policyTask.ErrorCode != "release_state_drift" ||
+		admission.Status != domain.DCPAdmissionIncident || candidate.policyTask.AdmissionID != admission.ID {
 		return mergeCandidate{}, false, nil
 	}
 	return candidate, true, nil
 }
 
 func (e *Engine) candidateForAdmissionInPolicyState(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
-	return e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, state, false)
+	return e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, state)
 }
 
-func (e *Engine) candidateForAdmissionInPolicyStateWithSession(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState, allowExitedWBCReadmission bool) (mergeCandidate, bool, error) {
-	candidate, ok, err := e.candidateInPolicyStateWithSession(ctx, admission.SessionID, state, allowExitedWBCReadmission)
+func (e *Engine) candidateForAdmissionInPolicyStateWithSession(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
+	candidate, ok, err := e.candidateInPolicyStateWithSession(ctx, admission.SessionID, state)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
@@ -1137,10 +1139,10 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 }
 
 func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
-	return e.candidateInPolicyStateWithSession(ctx, id, state, false)
+	return e.candidateInPolicyStateWithSession(ctx, id, state)
 }
 
-func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState, allowExitedWBCReadmission bool) (mergeCandidate, bool, error) {
+func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
 	var policyTask domain.DCPReviewLabPolicyTask
 	policy := false
 	if ps, ok := e.store.(policyStore); ok {
@@ -1162,21 +1164,59 @@ func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domai
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
-	exitedWBCReadmissionShell := allowExitedWBCReadmission && policy && spec.UsesWBCReleaseTrain() &&
-		policyTask.State == domain.DCPPolicyIncident && policyTask.ErrorCode == "release_state_drift" &&
-		session.Activity.State == domain.ActivityExited && session.IsTerminated
-	reviewedWBCReadmissionShell, err := e.reviewedWBCReadmissionAdmissionShell(ctx, policyTask, spec, session)
-	if err != nil {
-		return mergeCandidate{}, false, err
-	}
 	if session.ProjectID != domain.ProjectID(spec.Target) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
 		session.ReviewerHarness != "" || session.IssueID != "" ||
-		(!exitedWBCReadmissionShell && !reviewedWBCReadmissionShell && (session.Activity.State != domain.ActivityIdle || session.IsTerminated)) ||
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
 		(!policy && !validTaskIdentity(session)) {
 		return mergeCandidate{}, false, nil
 	}
 	if policy && (!validPolicyTaskIdentity(policyTask, session, e.dataDir) || policyTask.State != state) {
+		return mergeCandidate{}, false, nil
+	}
+	if policy {
+		phase, mapped := domain.DCPTaskLifecyclePhaseForState(policyTask.State)
+		if !mapped {
+			return mergeCandidate{}, false, nil
+		}
+		actions, actionErr := e.store.(policyStore).ListDCPModelActions(ctx)
+		if actionErr != nil {
+			return mergeCandidate{}, false, actionErr
+		}
+		var action *domain.DCPModelAction
+		globalActive := 0
+		for i := range actions {
+			candidate := &actions[i]
+			if candidate.Status == domain.DCPActionClaimed || candidate.Status == domain.DCPActionRunning {
+				globalActive++
+			}
+			if candidate.TaskID != policyTask.TaskID || candidate.SessionID != policyTask.SessionID ||
+				(candidate.Status != domain.DCPActionQueued && candidate.Status != domain.DCPActionClaimed && candidate.Status != domain.DCPActionRunning) {
+				continue
+			}
+			if action != nil {
+				return mergeCandidate{}, false, nil
+			}
+			action = candidate
+		}
+		process := domain.DCPModelProcessNone
+		if session.Metadata.RuntimeLaunchID != "" || (!session.IsTerminated && session.Activity.State != domain.ActivityIdle) {
+			process = domain.DCPModelProcessUnexpected
+		}
+		decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+			Task: policyTask, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(session), Action: action,
+			Process: process, GlobalActiveActions: globalActive,
+		})
+		if !decision.Eligible {
+			return mergeCandidate{}, false, nil
+		}
+		required, exact, bindingErr := e.reviewedWBCReadmissionAdmissionBinding(ctx, policyTask, spec)
+		if bindingErr != nil {
+			return mergeCandidate{}, false, bindingErr
+		}
+		if required && !exact {
+			return mergeCandidate{}, false, nil
+		}
+	} else if session.Activity.State != domain.ActivityIdle || session.IsTerminated {
 		return mergeCandidate{}, false, nil
 	}
 	if session.ID == ArbiterSessionA || session.ID == ArbiterSessionB {
@@ -1264,34 +1304,50 @@ func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domai
 	return mergeCandidate{session: session, project: project, pr: pr, run: run, policyTask: policyTask, spec: spec, policy: policy}, true, nil
 }
 
-// reviewedWBCReadmissionAdmissionShell permits only the exact preserved native
-// shell whose durable readmission generation has completed a fresh review for
-// the task's current head. The shell remains eligible across the one atomic
+// reviewedWBCReadmissionAdmissionBinding retains only the provider-specific
+// generation/review/admission binding after the common task lifecycle has
+// decided native-shell liveness. The binding remains exact across the atomic
 // reviewed-to-admitted enqueue transition only when the task, generation and
-// admission IDs are bound exactly. It does not make a general terminated
-// session admission-eligible and closes as soon as the generation advances or
-// drifts.
-func (e *Engine) reviewedWBCReadmissionAdmissionShell(ctx context.Context, task domain.DCPReviewLabPolicyTask, spec domain.DCPPolicyTargetSpec, session domain.SessionRecord) (bool, error) {
-	if !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyAdmissionWait ||
-		task.CurrentHeadSHA == "" || task.ReviewRunID == "" || session.Activity.State != domain.ActivityExited || !session.IsTerminated {
-		return false, nil
+// admission IDs are bound exactly. It grants no shell-liveness exception.
+func (e *Engine) reviewedWBCReadmissionAdmissionBinding(ctx context.Context, task domain.DCPReviewLabPolicyTask, spec domain.DCPPolicyTargetSpec) (required, exact bool, err error) {
+	if !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyAdmissionWait || task.CurrentHeadSHA == "" || task.ReviewRunID == "" {
+		return false, false, nil
 	}
 	store, ok := e.store.(wbcReadmissionStore)
 	if !ok {
-		return false, nil
+		return false, false, nil
 	}
-	generation, found, err := store.GetOpenDCPWBCReadmissionGenerationByTask(ctx, task.TaskID)
-	if err != nil || !found {
-		return false, err
+	generations, err := store.ListDCPWBCReadmissionGenerations(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	var generation domain.DCPWBCReadmissionGeneration
+	for _, candidate := range generations {
+		if candidate.Status == domain.DCPWBCReadmissionTerminal || candidate.Status == domain.DCPWBCReadmissionConflict || candidate.Status == domain.DCPWBCReadmissionFailed {
+			continue
+		}
+		linked := candidate.TaskID == task.TaskID || candidate.SessionID == task.SessionID || candidate.PRURL == task.PRURL ||
+			(candidate.PRNumber == task.PRNumber && candidate.Repository == task.Repository) || strings.EqualFold(candidate.NewHeadSHA, task.CurrentHeadSHA)
+		if !linked {
+			continue
+		}
+		if required {
+			return true, false, nil
+		}
+		required, generation = true, candidate
+	}
+	if !required {
+		return false, false, nil
 	}
 	preAdmission := generation.Status == domain.DCPWBCReadmissionReviewed && generation.AdmissionID == "" && task.AdmissionID == ""
 	boundAdmission := generation.Status == domain.DCPWBCReadmissionAdmitted && generation.AdmissionID != "" && generation.AdmissionID == task.AdmissionID
-	return (preAdmission || boundAdmission) && generation.TaskID == task.TaskID &&
+	exact = (preAdmission || boundAdmission) && generation.TaskID == task.TaskID &&
 		generation.SessionID == task.SessionID && generation.Repository == task.Repository &&
 		generation.Scope == task.Profile && generation.PRURL == task.PRURL && generation.PRNumber == task.PRNumber &&
 		generation.HeadRef == task.SourceBranch && strings.EqualFold(generation.NewHeadSHA, task.CurrentHeadSHA) &&
 		generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID &&
-		generation.LeaseID != "", nil
+		generation.LeaseID != ""
+	return true, exact, nil
 }
 
 func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObservation, ports.SCMReviewObservation, error) {

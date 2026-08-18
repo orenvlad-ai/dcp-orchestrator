@@ -927,6 +927,24 @@ type DcpTaskEvent struct {
 	IntegrityDigest string
 }
 
+type DcpTaskFirstNativeLifecycleRecoveryV1 struct {
+	RecoveryID            string
+	ContractCommit        string
+	PredecessorSource     string
+	TaskID                string
+	SessionID             string
+	GenerationID          string
+	AdmissionID           string
+	ReviewActionID        string
+	ReviewRunID           string
+	PriorTaskRevision     int64
+	AdmissionSequence     int64
+	PreservedIncidentSize int64
+	Authority             string
+	Status                string
+	CreatedAt             time.Time
+}
+
 type DcpWbCoreReleaseHandoffV1 struct {
 	AuthorityID          string
 	ContractCommit       string

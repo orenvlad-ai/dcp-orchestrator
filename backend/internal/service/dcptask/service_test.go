@@ -321,7 +321,7 @@ func TestValidateExactPolicyNamedCIFailsClosedForRequiredBaselineOnly(t *testing
 	}
 }
 
-func TestExactPolicyNativeIdentityAcceptsOnlyTerminalArchivedShell(t *testing.T) {
+func TestExactPolicyNativeIdentityPreservesArchivedShellAcrossTaskLifecycle(t *testing.T) {
 	task := domain.DCPReviewLabPolicyTask{
 		TaskID: "archived-1", Target: PolicyTarget, Profile: PolicyProfile,
 		Repository: PolicyRepositoryName, PolicyVersion: domain.DCPReviewLabPolicyVersion,
@@ -345,8 +345,8 @@ func TestExactPolicyNativeIdentityAcceptsOnlyTerminalArchivedShell(t *testing.T)
 
 	nonterminal := task
 	nonterminal.State = domain.DCPPolicyReviewQueued
-	if exactPolicyNativeIdentity(nonterminal, session) {
-		t.Fatal("terminated nonterminal shell was accepted")
+	if !exactPolicyNativeIdentity(nonterminal, session) {
+		t.Fatal("exact archived shell was rejected only because the durable task is nonterminal")
 	}
 
 	notExited := session
