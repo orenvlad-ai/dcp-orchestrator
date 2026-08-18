@@ -315,6 +315,10 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 	if err := m.ApplyPRObservation(ctx, id, scmToPRObservation(o)); err != nil {
 		return err
 	}
+	terminalSignaled, err := m.reconcileWBCTerminalBeforeNotification(ctx, id, o)
+	if err != nil {
+		return err
+	}
 	intent, readyNotificationApplies, err := m.notificationIntentForCurrentSCM(ctx, id, o)
 	if err != nil {
 		return err
@@ -325,9 +329,39 @@ func (m *Manager) ApplySCMObservation(ctx context.Context, id domain.SessionID, 
 		return err
 	} else if ok {
 		m.signalReviewEligibility(ctx, id)
-		m.signalTerminalMergeEligibility(ctx, id)
+		if !terminalSignaled {
+			m.signalTerminalMergeEligibility(ctx, id)
+		}
 	}
 	return nil
+}
+
+// reconcileWBCTerminalBeforeNotification closes the one-shot webhook ordering
+// gap for Release Train targets. The synchronous terminal handler revalidates
+// provider proof and may move only the exact WBC policy task to merged before
+// stock notification intent is derived. Other targets retain the existing
+// notify-then-signal ordering.
+func (m *Manager) reconcileWBCTerminalBeforeNotification(ctx context.Context, id domain.SessionID, o ports.SCMObservation) (bool, error) {
+	if !o.PR.Merged {
+		return false, nil
+	}
+	policies, ok := m.store.(dcpNotificationPolicyStore)
+	if !ok {
+		return false, nil
+	}
+	task, found, err := policies.GetDCPReviewLabPolicyTaskBySession(ctx, id)
+	if err != nil || !found {
+		return false, err
+	}
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	if !exact || !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyReleaseWaiting ||
+		task.PRURL == "" || task.CurrentHeadSHA == "" || !sameSCMIdentity(task.PRURL, task.CurrentHeadSHA, o) {
+		return false, nil
+	}
+	if err := m.reconcileWBCTerminal(ctx, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // dcpAdmissionEligibilityStore is the optional durable policy/admission read
@@ -429,11 +463,27 @@ func (m *Manager) notificationIntentForCurrentSCM(ctx context.Context, id domain
 	if !found {
 		return intent, readyApplies, nil
 	}
+	spec, exact := domain.DCPPolicyTargetForTask(task)
 	if intent != nil && intent.Type != domain.NotificationReadyToMerge {
+		if intent.Type != domain.NotificationPRMerged {
+			return intent, false, nil
+		}
+		if !exact || !spec.UsesWBCReleaseTrain() {
+			return intent, false, nil
+		}
+		if intent.Type != domain.NotificationPRMerged || task.State != domain.DCPPolicyMerged ||
+			task.PRURL == "" || task.CurrentHeadSHA == "" || !sameSCMIdentity(task.PRURL, task.CurrentHeadSHA, o) {
+			return nil, false, nil
+		}
+		if task.Profile == "live-runtime" {
+			intent.CompletionDestination = "wbc_production"
+		} else {
+			intent.CompletionDestination = "wbc_repo_release"
+		}
 		return intent, false, nil
 	}
-	spec, exact := domain.DCPPolicyTargetForTask(task)
 	readyApplies = exact && spec.UsesWBCReleaseTrain() && task.State == domain.DCPPolicyReleaseWaiting &&
+		task.ReleasePhase == domain.DCPWBCReleaseWaitingTrain &&
 		task.PRURL != "" && task.CurrentHeadSHA != "" && sameSCMIdentity(task.PRURL, task.CurrentHeadSHA, o) &&
 		scmObservationIsReadyToMerge(o)
 	if intent == nil || !readyApplies {

@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -24,19 +25,33 @@ type SCMReleaseReadyRequest struct {
 // directly from the pull request so label/body facts are not inferred from the
 // ordinary AO persistence projection.
 type SCMReleaseObservation struct {
-	Number         int
-	URL            string
-	State          string
-	Draft          bool
-	Merged         bool
-	HeadRepository string
-	HeadBranch     string
-	HeadSHA        string
-	BaseBranch     string
-	Author         string
-	MergeCommitSHA string
-	Labels         []string
-	Body           string
+	Number          int
+	URL             string
+	State           string
+	Draft           bool
+	Merged          bool
+	HeadRepository  string
+	HeadBranch      string
+	HeadSHA         string
+	BaseBranch      string
+	BaseSHA         string
+	ProviderMainSHA string
+	Author          string
+	MergedBy        string
+	MergeCommitSHA  string
+	Labels          []string
+	Body            string
+	Comments        []SCMReleaseComment
+}
+
+// SCMReleaseComment carries immutable provider metadata needed to authenticate
+// Actions-owned readmission and terminal production proofs.
+type SCMReleaseComment struct {
+	ID        int64
+	Author    string
+	Body      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // SCMReleaseTrain applies only the release-ready handoff and observes terminal

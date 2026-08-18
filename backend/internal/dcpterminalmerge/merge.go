@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,10 @@ type policyStore interface {
 	ClaimDCPReleaseTrainAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, time.Time) (bool, error)
 	CompleteDCPReviewLabPolicyAdmission(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, time.Time) (bool, error)
 	RecordDCPReviewLabPolicyIncident(context.Context, domain.DCPReviewLabAdmission, domain.DCPReviewLabPolicyTask, string, string, string, string, time.Time) (bool, error)
+}
+
+type wbcReleasePhaseStore interface {
+	UpdateDCPWBCReleasePhase(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPWBCReleasePhase, time.Time) (bool, error)
 }
 
 type SCM interface {
@@ -148,6 +153,9 @@ func (e *Engine) ReconcileStartup(ctx context.Context) error {
 		if reconcileErr != nil || !continued {
 			return reconcileErr
 		}
+	}
+	if err := e.reconcileAllWBCReadmissions(ctx); err != nil {
+		return err
 	}
 	if err := e.recoverCanonicalBaseIncidents(ctx); err != nil {
 		return err
@@ -263,6 +271,12 @@ func (e *Engine) recoverCanonicalBaseIncidents(ctx context.Context) error {
 func (e *Engine) Try(ctx context.Context, sessionID domain.SessionID) error {
 	if err := e.configured(); err != nil {
 		return err
+	}
+	e.mu.Lock()
+	handled, readmissionErr := e.reconcileWBCReadmission(ctx, sessionID)
+	e.mu.Unlock()
+	if readmissionErr != nil || handled {
+		return readmissionErr
 	}
 	if eligible, err := e.eligibleSession(ctx, sessionID); err != nil {
 		return err
@@ -599,9 +613,58 @@ func (e *Engine) policyAdmissionIncidentTerminal(ctx context.Context, admission 
 	if err != nil || !found {
 		return false, err
 	}
+	if readmissions, ok := e.store.(wbcReadmissionStore); ok && task.Target == "wb-core" {
+		generations, generationErr := readmissions.ListDCPWBCReadmissionGenerations(ctx)
+		if generationErr != nil {
+			return false, generationErr
+		}
+		retired, retirementErr := wbcReadmissionRetiresAdmission(generations, task, admission.ID)
+		if retirementErr != nil || retired {
+			return retired, retirementErr
+		}
+	}
 	return admission.Status == domain.DCPAdmissionIncident && task.State == domain.DCPPolicyIncident &&
 		task.AdmissionID == admission.ID && task.ReviewRunID == admission.ReviewRunID && task.CurrentHeadSHA == admission.TargetSHA &&
 		task.IncidentPacket == admission.IncidentPacket && task.ErrorCode == admission.ErrorCode, nil
+}
+
+func wbcReadmissionRetiresAdmission(generations []domain.DCPWBCReadmissionGeneration, task domain.DCPReviewLabPolicyTask, admissionID string) (bool, error) {
+	var matched []domain.DCPWBCReadmissionGeneration
+	for _, generation := range generations {
+		if generation.OldAdmissionID == admissionID {
+			matched = append(matched, generation)
+		}
+	}
+	if len(matched) == 0 {
+		return false, nil
+	}
+	if len(matched) != 1 || matched[0].TaskID != task.TaskID || matched[0].SessionID != task.SessionID {
+		return false, errors.New("dcp admission: WBC readmission retirement identity drifted")
+	}
+	generation := matched[0]
+	switch generation.Status {
+	case domain.DCPWBCReadmissionHeadPushed, domain.DCPWBCReadmissionReviewQueue,
+		domain.DCPWBCReadmissionReviewed, domain.DCPWBCReadmissionAdmitted,
+		domain.DCPWBCReadmissionReleaseWait, domain.DCPWBCReadmissionTerminal:
+		return true, nil
+	case domain.DCPWBCReadmissionFailed:
+		if generation.ErrorCode != "superseded_by_readmission" || generation.AdmissionID == "" {
+			return false, nil
+		}
+		var successors []domain.DCPWBCReadmissionGeneration
+		for _, successor := range generations {
+			if successor.OldAdmissionID == generation.AdmissionID {
+				successors = append(successors, successor)
+			}
+		}
+		if len(successors) != 1 || successors[0].TaskID != task.TaskID || successors[0].SessionID != task.SessionID ||
+			successors[0].Sequence <= generation.Sequence {
+			return false, errors.New("dcp admission: WBC readmission successor identity drifted")
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func (e *Engine) cohortReady(ctx context.Context, admission domain.DCPReviewLabAdmission) (bool, error) {
@@ -769,13 +832,21 @@ func (e *Engine) handoffWBCRelease(ctx context.Context, admission domain.DCPRevi
 			Number: candidate.pr.Number, URL: candidate.pr.URL,
 		},
 		ExpectedHeadSHA: candidate.run.TargetSHA, ExpectedBaseBranch: candidate.spec.DefaultBranch,
-		RequiredTaskLabel: "task:standard", RequiredScopeLabel: "scope:repo-only",
+		RequiredTaskLabel: "task:standard", RequiredScopeLabel: "scope:" + candidate.spec.Profile,
 	}
 	if err := release.ApplyReleaseReady(ctx, request); err != nil {
 		if incidentErr := e.recordIncident(ctx, admission, candidate, observation, "release_handoff_failed"); incidentErr != nil {
 			return false, errors.Join(err, incidentErr)
 		}
 		return false, err
+	}
+	phases, ok := e.store.(wbcReleasePhaseStore)
+	if !ok {
+		return false, errors.New("dcp WBC release handoff phase store is unavailable")
+	}
+	changed, err := phases.UpdateDCPWBCReleasePhase(ctx, candidate.policyTask, domain.DCPWBCReleaseWaitingTrain, e.clock())
+	if err != nil || !changed {
+		return false, errors.Join(err, errors.New("dcp WBC release handoff phase could not be confirmed"))
 	}
 	return false, nil
 }
@@ -803,20 +874,50 @@ func (e *Engine) reconcileWBCRelease(ctx context.Context, admission domain.DCPRe
 	if !strings.EqualFold(observed.HeadSHA, admission.TargetSHA) {
 		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_head_drift")
 	}
-	if !exactWBCReleaseLabels(observed.Labels) {
+	if !exactWBCReleaseLabels(observed.Labels, candidate.spec.Profile) {
 		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_label_drift")
 	}
 	if !observed.Merged {
-		if observed.State != "open" || observed.Draft || !exactWBCReleasePhase(observed.Labels, false) {
+		phase, valid := exactWBCActiveReleasePhase(observed.Labels, false, candidate.spec.Profile)
+		if observed.State != "open" || observed.Draft || !valid {
 			return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_state_drift")
+		}
+		if phases, ok := e.store.(wbcReleasePhaseStore); ok && candidate.policyTask.ReleasePhase != phase {
+			if _, err := phases.UpdateDCPWBCReleasePhase(ctx, candidate.policyTask, phase, e.clock()); err != nil {
+				return false, err
+			}
 		}
 		return false, nil
 	}
 	mergeSHA := strings.ToLower(observed.MergeCommitSHA)
-	proof := fmt.Sprintf("<!-- wb-core-release-completion-proof contour=repo-only merge=%s pr=%d -->", mergeSHA, observed.Number)
-	if observed.State != "closed" || !validSHA(mergeSHA) || !exactWBCReleasePhase(observed.Labels, true) ||
-		strings.Count(observed.Body, proof) != 1 {
+	if observed.State != "closed" || !validSHA(mergeSHA) || (observed.MergedBy != "github-actions" && observed.MergedBy != "github-actions[bot]") {
 		return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_terminal_proof_invalid")
+	}
+	if candidate.spec.Profile == "repo-only" {
+		proof := fmt.Sprintf("<!-- wb-core-release-completion-proof contour=repo-only merge=%s pr=%d -->", mergeSHA, observed.Number)
+		if !exactWBCReleasePhase(observed.Labels, "release:done") || strings.Count(observed.Body, proof) != 1 {
+			return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_terminal_proof_invalid")
+		}
+	} else {
+		if exactWBCReleasePhase(observed.Labels, "release:ready") {
+			if phases, ok := e.store.(wbcReleasePhaseStore); ok && candidate.policyTask.ReleasePhase != domain.DCPWBCReleaseWaitingDeploy {
+				if _, err := phases.UpdateDCPWBCReleasePhase(ctx, candidate.policyTask, domain.DCPWBCReleaseWaitingDeploy, e.clock()); err != nil {
+					return false, err
+				}
+			}
+			return false, nil
+		}
+		if exactWBCReleasePhase(observed.Labels, "release:running") {
+			if phases, ok := e.store.(wbcReleasePhaseStore); ok && candidate.policyTask.ReleasePhase != domain.DCPWBCReleaseDeployRunning {
+				if _, err := phases.UpdateDCPWBCReleasePhase(ctx, candidate.policyTask, domain.DCPWBCReleaseDeployRunning, e.clock()); err != nil {
+					return false, err
+				}
+			}
+			return false, nil
+		}
+		if !exactWBCReleasePhase(observed.Labels, "release:production") || !validWBCProductionProof(observed, candidate.policyTask, mergeSHA) {
+			return false, e.recordIncident(ctx, admission, candidate, incidentObservation, "release_terminal_proof_invalid")
+		}
 	}
 	updated, err := e.store.(policyStore).CompleteDCPReviewLabPolicyAdmission(ctx, admission, candidate.policyTask, mergeSHA, e.clock())
 	if err != nil {
@@ -828,17 +929,10 @@ func (e *Engine) reconcileWBCRelease(ctx context.Context, admission domain.DCPRe
 	return true, nil
 }
 
-func exactWBCReleasePhase(labels []string, terminal bool) bool {
-	allowed, seen := "release:ready", 0
-	if terminal {
-		allowed = "release:done"
-	}
+func exactWBCReleasePhase(labels []string, allowed string) bool {
+	seen := 0
 	for _, label := range labels {
 		if !strings.HasPrefix(label, "release:") {
-			continue
-		}
-		if !terminal && label == "release:running" {
-			seen++
 			continue
 		}
 		if label != allowed {
@@ -849,7 +943,23 @@ func exactWBCReleasePhase(labels []string, terminal bool) bool {
 	return seen == 1
 }
 
-func exactWBCReleaseLabels(labels []string) bool {
+func exactWBCActiveReleasePhase(labels []string, merged bool, profile string) (domain.DCPWBCReleasePhase, bool) {
+	if exactWBCReleasePhase(labels, "release:ready") {
+		if merged && profile == "live-runtime" {
+			return domain.DCPWBCReleaseWaitingDeploy, true
+		}
+		return domain.DCPWBCReleaseWaitingTrain, !merged
+	}
+	if exactWBCReleasePhase(labels, "release:running") {
+		if merged && profile == "live-runtime" {
+			return domain.DCPWBCReleaseDeployRunning, true
+		}
+		return domain.DCPWBCReleaseTrainRunning, !merged
+	}
+	return domain.DCPWBCReleasePhaseNone, false
+}
+
+func exactWBCReleaseLabels(labels []string, profile string) bool {
 	taskLabels, scopeLabels := 0, 0
 	for _, label := range labels {
 		switch {
@@ -860,7 +970,7 @@ func exactWBCReleaseLabels(labels []string) bool {
 			}
 		case strings.HasPrefix(label, "scope:"):
 			scopeLabels++
-			if label != "scope:repo-only" {
+			if label != "scope:"+profile {
 				return false
 			}
 		}
@@ -1320,16 +1430,67 @@ func (e *Engine) validateGit(ctx context.Context, candidate mergeCandidate, head
 		// task. The canonical delta still bounds every task-owned side commit to
 		// the initial worker plus the one permitted repair.
 		canonicalDelta := base + ".." + strings.ToLower(head)
+		maxCommits := int(1 + candidate.policyTask.RepairCount)
+		var readmission domain.DCPWBCReadmissionGeneration
+		readmissionActive := false
+		var readmissionMerges []string
+		if store, ok := e.store.(wbcReadmissionStore); ok && candidate.policyTask.Target == "wb-core" {
+			readmission, readmissionActive, err = store.GetOpenDCPWBCReadmissionGenerationByTask(ctx, candidate.policyTask.TaskID)
+			if err != nil {
+				return err
+			}
+			if readmissionActive {
+				if readmission.Status != domain.DCPWBCReadmissionReviewed && readmission.Status != domain.DCPWBCReadmissionAdmitted && readmission.Status != domain.DCPWBCReadmissionReleaseWait {
+					return errors.New("dcp admission: WBC readmission has not reached a reviewed head")
+				}
+				if _, ancestorErr := e.git(ctx, workspacePath, "merge-base", "--is-ancestor", readmission.NewHeadSHA, strings.ToLower(head)); ancestorErr != nil {
+					return errors.New("dcp admission: reviewed head does not descend from its WBC readmission generation")
+				}
+			}
+			generations, listErr := store.ListDCPWBCReadmissionGenerations(ctx)
+			if listErr != nil {
+				return listErr
+			}
+			for _, generation := range generations {
+				if generation.TaskID != candidate.policyTask.TaskID || generation.NewHeadSHA == "" {
+					continue
+				}
+				parents, parentErr := e.git(ctx, workspacePath, "rev-list", "--parents", "-n", "1", generation.NewHeadSHA)
+				wantParents := generation.NewHeadSHA + " " + generation.AdmittedHeadSHA + " " + generation.CurrentMainSHA
+				tree, treeErr := e.git(ctx, workspacePath, "rev-parse", generation.NewHeadSHA+"^{tree}")
+				if parentErr != nil || treeErr != nil || parents != wantParents || tree != generation.MergeTreeSHA {
+					return errors.New("dcp admission: WBC readmission integration identity drifted")
+				}
+				if _, ancestorErr := e.git(ctx, workspacePath, "merge-base", "--is-ancestor", generation.NewHeadSHA, strings.ToLower(head)); ancestorErr != nil {
+					return errors.New("dcp admission: reviewed head dropped a prior WBC readmission generation")
+				}
+				readmissionMerges = append(readmissionMerges, generation.NewHeadSHA)
+				maxCommits++
+			}
+		}
 		countText, err := e.git(ctx, workspacePath, "rev-list", "--count", canonicalDelta)
 		count, parseErr := strconv.Atoi(countText)
-		if err != nil || parseErr != nil || count < 1 || count > int(1+candidate.policyTask.RepairCount) {
+		if err != nil || parseErr != nil || count < 1 || count > maxCommits {
 			return errors.New("dcp admission: policy commit lineage exceeds its bounded worker actions")
 		}
-		if merges, err := e.git(ctx, workspacePath, "rev-list", "--merges", canonicalDelta); err != nil || merges != "" {
-			return errors.New("dcp admission: policy commit lineage contains a merge commit")
+		if merges, err := e.git(ctx, workspacePath, "rev-list", "--merges", canonicalDelta); err != nil || !sameExactLines(merges, readmissionMerges) {
+			return errors.New("dcp admission: policy commit lineage contains an unauthorized merge commit")
 		}
 	}
 	return nil
+}
+
+func sameExactLines(got string, want []string) bool {
+	gotLines := []string{}
+	if got != "" {
+		gotLines = strings.Split(got, "\n")
+	}
+	if len(gotLines) != len(want) {
+		return false
+	}
+	slices.Sort(gotLines)
+	slices.Sort(want)
+	return slices.Equal(gotLines, want)
 }
 
 func refreshPrompt(candidate mergeCandidate, admission domain.DCPReviewLabAdmission, baseSHA string) string {

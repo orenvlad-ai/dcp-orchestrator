@@ -2193,20 +2193,22 @@ func TestSCMObservation_DCPPolicyReadyNotificationWaitsForReleaseTrainHandoff(t 
 	for _, tc := range []struct {
 		name        string
 		state       domain.DCPReviewLabPolicyState
+		phase       domain.DCPWBCReleasePhase
 		wantIntent  int
 		wantResolve int
 		wantReady   string
 	}{
 		{name: "before DCP review and admission", state: domain.DCPPolicyCIWaiting, wantResolve: 1},
 		{name: "review queued", state: domain.DCPPolicyReviewQueued, wantResolve: 1},
-		{name: "waiting for Release Train", state: domain.DCPPolicyReleaseWaiting, wantIntent: 1, wantReady: "wbc_release_train"},
+		{name: "claimed before release label", state: domain.DCPPolicyReleaseWaiting, wantResolve: 1},
+		{name: "waiting for Release Train", state: domain.DCPPolicyReleaseWaiting, phase: domain.DCPWBCReleaseWaitingTrain, wantIntent: 1, wantReady: "wbc_release_train"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newFakeStore()
 			st.sessions[sessionID] = working(sessionID)
 			st.policyTask = &domain.DCPReviewLabPolicyTask{
 				TaskID: "wbc-canary-v1", Target: "wb-core", Profile: "repo-only", Repository: "orenvlad-ai/wb-core",
-				PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: sessionID, State: tc.state,
+				PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: sessionID, State: tc.state, ReleasePhase: tc.phase,
 				PRURL: prURL, CurrentHeadSHA: head,
 			}
 			sink := &fakeNotificationSink{}
@@ -2225,20 +2227,93 @@ func TestSCMObservation_DCPPolicyReadyNotificationWaitsForReleaseTrainHandoff(t 
 }
 
 func TestSCMObservation_DCPPolicyTerminalNotificationIsNotSuppressed(t *testing.T) {
+	const head = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
+	for _, tc := range []struct {
+		name        string
+		profile     string
+		version     string
+		state       domain.DCPReviewLabPolicyState
+		wantIntent  int
+		destination string
+	}{
+		{name: "repo-only merge before DCP proof", profile: "repo-only", version: domain.DCPWBCRepoOnlyPolicyVersion, state: domain.DCPPolicyReleaseWaiting},
+		{name: "live merge while deploy pending", profile: "live-runtime", version: domain.DCPWBCLiveRuntimePolicyVersion, state: domain.DCPPolicyReleaseWaiting},
+		{name: "repo-only exact terminal", profile: "repo-only", version: domain.DCPWBCRepoOnlyPolicyVersion, state: domain.DCPPolicyMerged, wantIntent: 1, destination: "wbc_repo_release"},
+		{name: "live exact production terminal", profile: "live-runtime", version: domain.DCPWBCLiveRuntimePolicyVersion, state: domain.DCPPolicyMerged, wantIntent: 1, destination: "wbc_production"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["wb-core-1"] = working("wb-core-1")
+			st.policyTask = &domain.DCPReviewLabPolicyTask{
+				TaskID: "wbc-canary-v1", Target: "wb-core", Profile: tc.profile, Repository: "orenvlad-ai/wb-core",
+				PolicyVersion: tc.version, SessionID: "wb-core-1", State: tc.state,
+				PRURL: "https://github.com/orenvlad-ai/wb-core/pull/987", CurrentHeadSHA: head,
+			}
+			sink := &fakeNotificationSink{}
+			m := New(st, nil, WithNotificationSink(sink))
+			obs := ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{
+				URL: st.policyTask.PRURL, HTMLURL: st.policyTask.PRURL, Number: 987, HeadSHA: head, Merged: true,
+			}}
+			if err := m.ApplySCMObservation(ctx, "wb-core-1", obs); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.intents) != tc.wantIntent {
+				t.Fatalf("terminal policy notification=%+v", sink.intents)
+			}
+			if tc.wantIntent == 1 && (sink.intents[0].Type != domain.NotificationPRMerged || sink.intents[0].CompletionDestination != tc.destination) {
+				t.Fatalf("terminal policy notification=%+v", sink.intents[0])
+			}
+		})
+	}
+}
+
+func TestSCMObservation_WBCTerminalProofReconcilesBeforeOneShotNotification(t *testing.T) {
+	const head = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
+	st := newFakeStore()
+	st.sessions["wb-core-1"] = working("wb-core-1")
+	st.policyTask = &domain.DCPReviewLabPolicyTask{
+		TaskID: "wbc-live-v1", Target: "wb-core", Profile: "live-runtime", Repository: "orenvlad-ai/wb-core",
+		PolicyVersion: domain.DCPWBCLiveRuntimePolicyVersion, SessionID: "wb-core-1", State: domain.DCPPolicyReleaseWaiting,
+		PRURL: "https://github.com/orenvlad-ai/wb-core/pull/991", CurrentHeadSHA: head,
+	}
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	m.SetWBCTerminalReconciliationHandler(func(_ context.Context, id domain.SessionID) error {
+		if id == st.policyTask.SessionID {
+			st.policyTask.State = domain.DCPPolicyMerged
+		}
+		return nil
+	})
+	obs := ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{
+		URL: st.policyTask.PRURL, HTMLURL: st.policyTask.PRURL, Number: 991, HeadSHA: head, Merged: true,
+	}}
+	if err := m.ApplySCMObservation(context.Background(), st.policyTask.SessionID, obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationPRMerged || sink.intents[0].CompletionDestination != "wbc_production" {
+		t.Fatalf("terminal proof notification=%+v", sink.intents)
+	}
+}
+
+func TestSCMObservation_DCPPolicyClosedUnmergedFailureIsNotSuppressed(t *testing.T) {
+	const head = "e8cca45f3995b8181fe81ead154f7a933dbacbe8"
 	st := newFakeStore()
 	st.sessions["wb-core-1"] = working("wb-core-1")
 	st.policyTask = &domain.DCPReviewLabPolicyTask{
 		TaskID: "wbc-canary-v1", Target: "wb-core", Profile: "repo-only", Repository: "orenvlad-ai/wb-core",
-		PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: "wb-core-1", State: domain.DCPPolicyMerged,
+		PolicyVersion: domain.DCPWBCRepoOnlyPolicyVersion, SessionID: "wb-core-1", State: domain.DCPPolicyReleaseWaiting,
+		PRURL: "https://github.com/orenvlad-ai/wb-core/pull/987", CurrentHeadSHA: head,
 	}
 	sink := &fakeNotificationSink{}
 	m := New(st, nil, WithNotificationSink(sink))
-	obs := ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{URL: "https://github.com/orenvlad-ai/wb-core/pull/987", Number: 987, Merged: true}}
+	obs := ports.SCMObservation{Fetched: true, PR: ports.SCMPRObservation{
+		URL: st.policyTask.PRURL, HTMLURL: st.policyTask.PRURL, Number: 987, HeadSHA: head, Closed: true,
+	}}
 	if err := m.ApplySCMObservation(ctx, "wb-core-1", obs); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationPRMerged {
-		t.Fatalf("terminal policy notification=%+v", sink.intents)
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationPRClosedUnmerged {
+		t.Fatalf("closed-unmerged policy failure notification=%+v", sink.intents)
 	}
 }
 

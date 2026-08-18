@@ -12,15 +12,15 @@ INSERT INTO dcp_review_lab_policy_task (
     task_id, payload_json, payload_digest, target, profile, repository,
     policy_version, session_id, card_number, worktree_path, source_branch,
     prompt, state, revision, repair_count, pr_url, pr_number,
-    current_head_sha, previous_head_sha, review_run_id, admission_id,
+    current_head_sha, previous_head_sha, review_run_id, admission_id, release_phase,
     merge_commit_sha, error_code, incident_packet, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateDCPReviewLabPolicyTask :execrows
 UPDATE dcp_review_lab_policy_task SET
     state = ?, revision = revision + 1, repair_count = ?, pr_url = ?,
     pr_number = ?, current_head_sha = ?, previous_head_sha = ?,
-    review_run_id = ?, admission_id = ?, merge_commit_sha = ?,
+    review_run_id = ?, admission_id = ?, release_phase = ?, merge_commit_sha = ?,
     error_code = ?, incident_packet = ?, updated_at = ?
 WHERE task_id = ? AND state = ? AND revision = ?;
 

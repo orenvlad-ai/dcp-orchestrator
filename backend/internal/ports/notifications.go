@@ -29,6 +29,11 @@ type NotificationIntent struct {
 	// "wbc_release_train" means DCP has completed review/FIFO admission and is
 	// waiting for the repository-owned Release Train.
 	ReadyDestination string
+	// CompletionDestination refines the stable pr_merged kind only after DCP
+	// has observed the profile-specific WBC terminal proof.
+	// "wbc_repo_release" means Actions-owned release:done;
+	// "wbc_production" means exact release:production deploy/verify proof.
+	CompletionDestination string
 }
 
 // NotificationResolution is the lifecycle-to-notification-producer contract for

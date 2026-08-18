@@ -113,6 +113,7 @@ const (
 	RepoOnlyRepositoryName = "orenvlad-ai/wb-browser-extension"
 	WBCTarget              = "wb-core"
 	WBCRepositoryName      = "orenvlad-ai/wb-core"
+	WBCLiveRuntimeProfile  = "live-runtime"
 )
 
 var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)
@@ -329,6 +330,9 @@ func policySpawnConfig(task domain.DCPReviewLabPolicyTask) ports.SpawnConfig {
 }
 
 func policyPrompt(task domain.DCPReviewLabPolicyTask) string {
+	if task.Profile == WBCLiveRuntimeProfile {
+		return "DCP live-runtime task " + task.TaskID + ": " + task.Prompt
+	}
 	if task.Profile == RepoOnlyProfile {
 		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
 	}

@@ -140,7 +140,37 @@ WHERE dcp_review_lab_admission.id = sqlc.arg(id)
       WHERE blocker.status IN ('claimed', 'refreshing')
          OR (
               blocker.status = 'incident'
-              AND NOT EXISTS (
+              AND NOT (
+                EXISTS (
+                  SELECT 1
+                  FROM dcp_wbc_readmission_generation AS readmission
+                  JOIN dcp_review_lab_policy_task AS readmission_task
+                    ON readmission_task.task_id = readmission.task_id
+                  WHERE readmission.old_admission_id = blocker.id
+                    AND (
+                      (readmission.status = 'admitted'
+                       AND readmission.admission_id = dcp_review_lab_admission.id
+                       AND readmission_task.session_id = dcp_review_lab_admission.session_id
+                       AND readmission_task.state = 'admission_waiting'
+                       AND readmission_task.admission_id = dcp_review_lab_admission.id
+                       AND readmission_task.review_run_id = dcp_review_lab_admission.review_run_id
+                       AND readmission_task.current_head_sha = dcp_review_lab_admission.target_sha) OR
+                      EXISTS (
+                        SELECT 1
+                        FROM dcp_review_lab_admission AS successor
+                        WHERE successor.id = readmission.admission_id
+                          AND successor.sequence > blocker.sequence
+                          AND successor.session_id = readmission_task.session_id
+                          AND (
+                            (readmission.status = 'release_waiting' AND successor.status IN ('claimed', 'incident')) OR
+                            (readmission.status = 'terminal' AND successor.status = 'succeeded') OR
+                            (readmission.status = 'failed'
+                             AND readmission.error_code = 'superseded_by_readmission'
+                             AND successor.status = 'incident')
+                          )
+                      )
+                    )
+                ) OR EXISTS (
                   SELECT 1
                   FROM dcp_review_lab_policy_task AS policy_task
                   JOIN dcp_future_card_arbiter_v1 AS arbiter
@@ -166,6 +196,7 @@ WHERE dcp_review_lab_admission.id = sqlc.arg(id)
                     AND arbiter.status = 'human_gate'
                     AND arbiter.verdict = 'human_gate'
                     AND arbiter.human_question <> ''
+                )
               )
          )
   );

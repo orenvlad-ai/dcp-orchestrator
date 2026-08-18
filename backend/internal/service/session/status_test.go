@@ -289,6 +289,7 @@ type policyReadStore struct {
 	actionActive bool
 	incident     domain.DCPFutureArbiterIncident
 	incidentOpen bool
+	readmission  *domain.DCPWBCReadmissionGeneration
 }
 
 func (s *policyReadStore) GetDCPFutureArbiterIncidentByTask(_ context.Context, taskID string) (domain.DCPFutureArbiterIncident, bool, error) {
@@ -308,6 +309,13 @@ func (s *policyReadStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, 
 
 func (s *policyReadStore) GetActiveDCPModelActionBySession(_ context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error) {
 	return s.action, s.actionActive && s.action.SessionID == id, nil
+}
+
+func (s *policyReadStore) GetOpenDCPWBCReadmissionGenerationByTask(_ context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error) {
+	if s.readmission == nil || s.readmission.TaskID != taskID {
+		return domain.DCPWBCReadmissionGeneration{}, false, nil
+	}
+	return *s.readmission, true, nil
 }
 
 func TestSessionReadModelSeparatesPolicyWorkflowAndRunningModelActivity(t *testing.T) {
@@ -349,6 +357,31 @@ func TestSessionReadModelSeparatesPolicyWorkflowAndRunningModelActivity(t *testi
 	}
 }
 
+func TestSessionReadModelProjectsWBCProfileReleaseAndReadmissionFacts(t *testing.T) {
+	const id = domain.SessionID("wb-core-1")
+	base := newFakeStore()
+	store := &policyReadStore{
+		fakeStore: base,
+		task: domain.DCPReviewLabPolicyTask{
+			TaskID: "wbc-canary-v1", SessionID: id, Target: "wb-core", Profile: "live-runtime",
+			State: domain.DCPPolicyIncident, ReleasePhase: domain.DCPWBCReleaseDeployRunning,
+		},
+		readmission: &domain.DCPWBCReadmissionGeneration{
+			TaskID: "wbc-canary-v1", Status: domain.DCPWBCReadmissionPrepared,
+		},
+	}
+	service := NewWithDeps(Deps{Store: store})
+	session, err := service.toSession(context.Background(), domain.SessionRecord{ID: id, Activity: domain.Activity{State: domain.ActivityIdle}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.DCPPolicyProfile != "live-runtime" || session.DCPPolicyReleasePhase != domain.DCPWBCReleaseDeployRunning ||
+		session.DCPPolicyReadmissionStatus != domain.DCPWBCReadmissionPrepared || !session.DCPPolicyWorkflowActive ||
+		session.DCPPolicyModelActive {
+		t.Fatalf("WBC lifecycle read model=%+v", session)
+	}
+}
+
 func TestDCPPolicyWorkflowActivityStopsOnlyForTerminalOrActionableStates(t *testing.T) {
 	for _, state := range []domain.DCPReviewLabPolicyState{
 		domain.DCPPolicyReserved, domain.DCPPolicyWorkerQueued, domain.DCPPolicyWorkerRunning,
@@ -356,13 +389,26 @@ func TestDCPPolicyWorkflowActivityStopsOnlyForTerminalOrActionableStates(t *test
 		domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning,
 		domain.DCPPolicyAdmissionWait, domain.DCPPolicyReleaseWaiting,
 	} {
-		if !dcpPolicyWorkflowActive(state, "") {
+		if !dcpPolicyWorkflowActive(state, "", "") {
 			t.Fatalf("autonomous state %s is not workflow-active", state)
 		}
 	}
-	if !dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterRequested) ||
-		!dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterHold) {
+	if !dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterRequested, "") ||
+		!dcpPolicyWorkflowActive(domain.DCPPolicyIncident, domain.DCPFutureArbiterHold, "") {
 		t.Fatal("automatic arbiter continuation is not workflow-active")
+	}
+	for _, status := range []domain.DCPWBCReadmissionStatus{
+		domain.DCPWBCReadmissionObserved, domain.DCPWBCReadmissionClaimed, domain.DCPWBCReadmissionPrepared,
+		domain.DCPWBCReadmissionHeadPushed, domain.DCPWBCReadmissionReviewQueue,
+		domain.DCPWBCReadmissionReviewed, domain.DCPWBCReadmissionAdmitted, domain.DCPWBCReadmissionReleaseWait,
+	} {
+		if !dcpPolicyWorkflowActive(domain.DCPPolicyIncident, "", status) {
+			t.Fatalf("readmission %s is not workflow-active", status)
+		}
+	}
+	if dcpPolicyWorkflowActive(domain.DCPPolicyIncident, "", domain.DCPWBCReadmissionConflict) ||
+		dcpPolicyWorkflowActive(domain.DCPPolicyIncident, "", domain.DCPWBCReadmissionFailed) {
+		t.Fatal("actionable readmission remained workflow-active")
 	}
 	for _, tc := range []struct {
 		state   domain.DCPReviewLabPolicyState
@@ -374,7 +420,7 @@ func TestDCPPolicyWorkflowActivityStopsOnlyForTerminalOrActionableStates(t *test
 		{state: domain.DCPPolicyIncident, arbiter: domain.DCPFutureArbiterHumanGate},
 		{state: domain.DCPPolicyIncident, arbiter: domain.DCPFutureArbiterFailed},
 	} {
-		if dcpPolicyWorkflowActive(tc.state, tc.arbiter) {
+		if dcpPolicyWorkflowActive(tc.state, tc.arbiter, "") {
 			t.Fatalf("actionable/terminal state %s/%s remained workflow-active", tc.state, tc.arbiter)
 		}
 	}

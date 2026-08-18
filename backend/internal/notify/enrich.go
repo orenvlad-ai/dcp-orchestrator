@@ -46,6 +46,12 @@ func titleForIntent(intent Intent) string {
 		}
 		return fmt.Sprintf("%s is ready to merge", prLabel(intent))
 	case domain.NotificationPRMerged:
+		if intent.CompletionDestination == "wbc_production" {
+			return fmt.Sprintf("%s deployed to production", prLabel(intent))
+		}
+		if intent.CompletionDestination == "wbc_repo_release" {
+			return fmt.Sprintf("%s released", prLabel(intent))
+		}
 		return fmt.Sprintf("%s merged", prLabel(intent))
 	case domain.NotificationPRClosedUnmerged:
 		return fmt.Sprintf("%s closed", prLabel(intent))
@@ -70,6 +76,12 @@ func bodyForIntent(intent Intent) string {
 		}
 		return "CI passed with no blocking review feedback."
 	case domain.NotificationPRMerged:
+		if intent.CompletionDestination == "wbc_production" {
+			return "WBC Release Train merged, deployed and verified the exact release SHA in production."
+		}
+		if intent.CompletionDestination == "wbc_repo_release" {
+			return "WBC Release Train merged the exact admitted head and published release:done; no deploy applies."
+		}
 		title := strings.TrimSpace(intent.PRTitle)
 		if target := strings.TrimSpace(intent.PRTargetBranch); title != "" && target != "" {
 			return fmt.Sprintf("%s is now on %s.", title, target)

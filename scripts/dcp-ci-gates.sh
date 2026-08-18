@@ -14,6 +14,8 @@ control_plane_commit='a1bfdd9328566dc630587220b60b7faa7ba1d745'
 operating_contract_revision='2026-08-16.1'
 wbc_control_plane_commit='036b1101284f626c931f7edb1750ddd228634832'
 wbc_operating_contract_revision='2026-08-17.1'
+wbc_end_to_end_control_plane_commit='4f7775f375a612a38e96496f09908ab48e3598c5'
+wbc_end_to_end_operating_contract_revision='2026-08-18.2'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -64,8 +66,10 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_SUBMIT_RECOVERY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact submit recovery v1 contract'
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact repo-only repository rename contract'
 	grep -Fq "dev-control-plane/blob/$wbc_control_plane_commit/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core Release Train handoff contract'
+	grep -Fq "dev-control-plane/blob/$wbc_end_to_end_control_plane_commit/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core end-to-end release/deploy contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq "\`$wbc_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core operating contract revision mismatch'
+	grep -Fq "\`$wbc_end_to_end_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core end-to-end operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
@@ -192,7 +196,8 @@ source_gates() {
 	repo_only_target_forward_migration='backend/internal/storage/sqlite/migrations/0077_dcp_repo_only_target_forward_v1.sql'
 	wbc_release_handoff_migration='backend/internal/storage/sqlite/migrations/0078_dcp_wb_core_release_train_handoff_v1.sql'
 	wbc_ci_truth_recovery_migration='backend/internal/storage/sqlite/migrations/0079_dcp_wbc_ci_truth_recovery_v1.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	wbc_readmission_live_runtime_migration='backend/internal/storage/sqlite/migrations/0080_dcp_wbc_readmission_live_runtime_v1.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" "$wbc_readmission_live_runtime_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -257,6 +262,21 @@ source_gates() {
 	grep -Fq "baseline.name = 'baseline' AND baseline.status = 'passed'" "$wbc_ci_truth_recovery_migration" || fail 'WBC CI truth recovery required-check proof is absent'
 	grep -Fq 'type SCMReleaseTrain interface' backend/internal/ports/scm_release_train.go || fail 'narrow Release Train port is absent'
 	! sed -n '/type SCMReleaseTrain interface/,/^}/p' backend/internal/ports/scm_release_train.go | grep -Fq 'MergePullRequest' || fail 'Release Train handoff port exposes direct merge authority'
+	[[ -s "$wbc_readmission_live_runtime_migration" ]] || fail 'WBC readmission/live-runtime migration is absent'
+	grep -Fq 'CREATE TABLE dcp_wbc_readmission_generation' "$wbc_readmission_live_runtime_migration" || fail 'WBC readmission generation is not durable'
+	grep -Fq "profile = 'live-runtime'" "$wbc_readmission_live_runtime_migration" || fail 'exact WBC live-runtime profile is not physical'
+	grep -Fq "marker = 'wb-core.dcp-release-handoff/v2'" "$wbc_readmission_live_runtime_migration" || fail 'versioned WBC handoff marker is not physical'
+	grep -Fq 'direct_merge_eligible = 0' "$wbc_readmission_live_runtime_migration" || fail 'WBC direct merge remains eligible'
+	grep -Fq 'dcp_wbc_readmission_generation_no_delete' "$wbc_readmission_live_runtime_migration" || fail 'WBC readmission evidence is deletable'
+	grep -Fq 'DCPWBCLiveRuntimePolicyVersion' backend/internal/domain/dcp_lab_policy.go || fail 'typed WBC live-runtime policy is absent'
+	grep -Fq 'wbcReadmissionProofMarker' backend/internal/dcpterminalmerge/wbc_readmission_engine.go || fail 'versioned WBC readmission proof gate is absent'
+	grep -Fq '"-c", "core.hooksPath=/dev/null", "push", "origin", generation.NewHeadSHA+":refs/heads/"+task.SourceBranch' backend/internal/dcpterminalmerge/wbc_readmission_engine.go || fail 'WBC readmission does not use a hook-free normal same-branch push'
+	! grep -Eq 'push[^\n]*(--force|-f([[:space:]]|$))' backend/internal/dcpterminalmerge/wbc_readmission_engine.go || fail 'WBC readmission can force-push'
+	grep -Fq 'ProviderMainSHA' backend/internal/ports/scm_release_train.go backend/internal/adapters/scm/github/release_train_action.go || fail 'WBC readmission lacks a fresh provider-main fact'
+	grep -Fq 'SetWBCTerminalReconciliationHandler' backend/internal/lifecycle/manager.go backend/internal/daemon/daemon.go || fail 'one-shot WBC terminal proof cannot precede notification truth'
+	grep -Fq 'release:production' backend/internal/dcpterminalmerge/merge.go || fail 'WBC live-runtime terminal label is absent'
+	grep -Fq 'ModelActive' backend/internal/domain/session.go || fail 'model activity is not projected independently'
+	grep -Fq 'WorkflowActive' backend/internal/domain/session.go || fail 'workflow activity is not projected independently'
 	grep -Fq 'ProviderRepositoryID: 1335072844' backend/internal/domain/dcp_lab_policy.go || fail 'repo-only provider database identity is absent'
 	grep -Fq '"gh", "api", "--method", "GET", "repos/"+repository' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup does not use stable REST repository metadata'
 	! grep -Fq '"gh", "repo", "view"' backend/internal/service/dcptask/review_repository.go || fail 'runtime provider lookup still uses unsupported repo-view projection'
@@ -452,6 +472,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/adapters/scm/github/release_train_action(_test)?\.go|backend/internal/ports/scm_release_train\.go|backend/internal/storage/sqlite/(migrations/0078_dcp_wb_core_release_train_handoff_v1\.sql|wb_core_release_handoff_live_copy_migration_test\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_required_check_test\.go|backend/internal/storage/sqlite/(migrations/0079_dcp_wbc_ci_truth_recovery_v1\.sql|wbc_ci_truth_recovery_live_copy_test\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/notify/enrich(_test)?\.go|backend/internal/ports/notifications\.go)$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/wbc_readmission_engine(_test)?\.go|backend/internal/storage/sqlite/(migrations/0080_dcp_wbc_readmission_live_runtime_v1\.sql|queries/dcp_wbc_readmission\.sql|gen/dcp_wbc_readmission\.sql\.go|store/dcp_wbc_readmission_store(_test)?\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check
