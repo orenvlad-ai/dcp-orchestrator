@@ -75,6 +75,15 @@ type preservedReviewStore interface {
 	ListReviewRunsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.ReviewRun, error)
 }
 
+// preservedWBCReadmissionStore is the optional policy read surface used to
+// keep the one exact archived wb-core shell observable while its durable
+// Actions-owned readmission generation remains active. It grants no mutation
+// path and is deliberately separate from the general terminated-session rule.
+type preservedWBCReadmissionStore interface {
+	GetDCPReviewLabPolicyTaskBySession(ctx context.Context, sessionID domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
+	GetOpenDCPWBCReadmissionGenerationByTask(ctx context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error)
+}
+
 // Lifecycle is the provider-neutral lifecycle notification sink.
 type Lifecycle interface {
 	ApplySCMObservation(ctx context.Context, sessionID domain.SessionID, obs ports.SCMObservation) error
@@ -509,7 +518,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 		if sess.IsTerminated {
 			eligible, err := o.preservedTerminatedSessionEligible(ctx, sess)
 			if err != nil {
-				return nil, nil, fmt.Errorf("preserved review eligibility for session %s: %w", sess.ID, err)
+				return nil, nil, fmt.Errorf("preserved terminated-session eligibility for session %s: %w", sess.ID, err)
 			}
 			if !eligible {
 				continue
@@ -583,14 +592,18 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 	return out, sessionRepos, nil
 }
 
-// preservedTerminatedSessionEligible admits only the already-bounded review
-// engine continuation. It does not make terminated workers generally
-// observable: exact terminal state, no worker launch, durable review ownership,
-// and the one consumable missing-worktree failure are all required.
+// preservedTerminatedSessionEligible admits only two already-bounded
+// continuations: the preserved review-engine recovery and an exact open WBC
+// readmission generation. It does not make terminated workers generally
+// observable: exact terminal state, no worker launch, and durable policy or
+// review ownership are required.
 func (o *Observer) preservedTerminatedSessionEligible(ctx context.Context, sess domain.SessionRecord) (bool, error) {
 	if sess.Kind != domain.KindWorker || !sess.IsTerminated || sess.Activity.State != domain.ActivityExited ||
 		sess.Metadata.RuntimeLaunchID != "" || strings.TrimSpace(sess.Metadata.WorkspacePath) == "" {
 		return false, nil
+	}
+	if eligible, err := o.preservedWBCReadmissionSessionEligible(ctx, sess); err != nil || eligible {
+		return eligible, err
 	}
 	store, ok := o.store.(preservedReviewStore)
 	if !ok {
@@ -608,6 +621,74 @@ func (o *Observer) preservedTerminatedSessionEligible(ctx context.Context, sess 
 		return false, err
 	}
 	return reviewcore.PreservedReviewContinuationEligible(true, runs), nil
+}
+
+func (o *Observer) preservedWBCReadmissionSessionEligible(ctx context.Context, sess domain.SessionRecord) (bool, error) {
+	store, ok := o.store.(preservedWBCReadmissionStore)
+	if !ok {
+		return false, nil
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskBySession(ctx, sess.ID)
+	if err != nil || !found {
+		return false, err
+	}
+	spec, exact := domain.DCPPolicyTargetForTask(task)
+	branch, workspace := strings.TrimSpace(sess.Metadata.Branch), strings.TrimSpace(sess.Metadata.WorkspacePath)
+	if !exact || !spec.UsesWBCReleaseTrain() || task.SessionID != sess.ID || string(sess.ProjectID) != task.Target ||
+		task.WorktreePath != workspace || task.SourceBranch != branch || task.ErrorCode != "" || task.IncidentPacket != "" ||
+		task.CardNumber <= 0 || task.PRURL == "" || task.PRNumber <= 0 || !validGitSHA(task.CurrentHeadSHA) {
+		return false, nil
+	}
+	generation, found, err := store.GetOpenDCPWBCReadmissionGenerationByTask(ctx, task.TaskID)
+	if err != nil || !found {
+		return false, err
+	}
+	if generation.GenerationID == "" || generation.LeaseID == "" || generation.ErrorCode != "" ||
+		generation.MarkerVersion != spec.CompatibilityMarker || generation.TaskID != task.TaskID || generation.SessionID != sess.ID ||
+		generation.Repository != spec.Repository || generation.BaseBranch != spec.DefaultBranch || generation.Scope != spec.Profile ||
+		generation.HeadRef != branch || generation.SessionNumber != task.CardNumber || generation.PRURL != task.PRURL ||
+		generation.PRNumber != task.PRNumber || !validGitSHA(generation.NewHeadSHA) {
+		return false, nil
+	}
+
+	sameGenerationHead := strings.EqualFold(task.CurrentHeadSHA, generation.NewHeadSHA)
+	repairedGenerationHead := task.RepairCount == 1 && validGitSHA(task.PreviousHeadSHA) &&
+		strings.EqualFold(task.PreviousHeadSHA, generation.NewHeadSHA) && !sameGenerationHead
+	switch generation.Status {
+	case domain.DCPWBCReadmissionHeadPushed:
+		return task.RepairCount == 0 && task.State == domain.DCPPolicyCIWaiting && sameGenerationHead, nil
+	case domain.DCPWBCReadmissionReviewQueue:
+		if generation.ReviewActionID == "" {
+			return false, nil
+		}
+		switch task.State {
+		case domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning:
+			return (task.RepairCount == 0 && sameGenerationHead) || repairedGenerationHead, nil
+		case domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning, domain.DCPPolicyCIWaiting:
+			return task.RepairCount == 1 && sameGenerationHead, nil
+		default:
+			return false, nil
+		}
+	case domain.DCPWBCReadmissionReviewed:
+		return task.State == domain.DCPPolicyAdmissionWait && generation.ReviewActionID != "" && generation.ReviewRunID != "" &&
+			generation.ReviewRunID == task.ReviewRunID && ((task.RepairCount == 0 && sameGenerationHead) || repairedGenerationHead), nil
+	case domain.DCPWBCReadmissionAdmitted:
+		return task.State == domain.DCPPolicyAdmissionWait && generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID && generation.AdmissionID != "" &&
+			generation.AdmissionID == task.AdmissionID && ((task.RepairCount == 0 && sameGenerationHead) || repairedGenerationHead), nil
+	case domain.DCPWBCReadmissionReleaseWait:
+		return task.State == domain.DCPPolicyReleaseWaiting && generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID && generation.AdmissionID != "" &&
+			generation.AdmissionID == task.AdmissionID && ((task.RepairCount == 0 && sameGenerationHead) || repairedGenerationHead), nil
+	default:
+		return false, nil
+	}
+}
+
+func validGitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 20
 }
 
 // resolveScanRepos returns the deduped set of repos whose open-PR lists should be
