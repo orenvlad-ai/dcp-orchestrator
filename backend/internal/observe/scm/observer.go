@@ -644,7 +644,7 @@ func (o *Observer) preservedWBCReadmissionSessionEligible(ctx context.Context, s
 		return false, err
 	}
 	if generation.GenerationID == "" || generation.LeaseID == "" || generation.ErrorCode != "" ||
-		generation.MarkerVersion != spec.CompatibilityMarker || generation.TaskID != task.TaskID || generation.SessionID != sess.ID ||
+		!spec.AcceptsWBCReadmissionMarker(generation.MarkerVersion) || generation.TaskID != task.TaskID || generation.SessionID != sess.ID ||
 		generation.Repository != spec.Repository || generation.BaseBranch != spec.DefaultBranch || generation.Scope != spec.Profile ||
 		generation.HeadRef != branch || generation.SessionNumber != task.CardNumber || generation.PRURL != task.PRURL ||
 		generation.PRNumber != task.PRNumber || !validGitSHA(generation.NewHeadSHA) {

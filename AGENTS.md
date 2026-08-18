@@ -165,6 +165,14 @@ project/worktree/branch/PR/head plus a compatible durable generation status and
 task state may refresh provider facts. This read-only exception closes when the
 generation becomes terminal, conflicted or failed; it does not observe other
 terminated sessions or weaken the existing preserved-review continuation.
+The first installed observer correction proved that the preserved repo-only
+generation still carries valid immutable v1 marker evidence while the native
+project is correctly registered against v2. Observer eligibility must use the
+same versioned envelope as the readmission engine: exact repo-only accepts v1
+or the configured v2 marker, exact live-runtime accepts only configured v2,
+and every foreign/direct-target combination remains ineligible. This changes
+no marker parsing, generation creation, project registration, model, merge or
+deploy authority.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display
