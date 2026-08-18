@@ -1266,10 +1266,13 @@ func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domai
 
 // reviewedWBCReadmissionAdmissionShell permits only the exact preserved native
 // shell whose durable readmission generation has completed a fresh review for
-// the task's current head. It does not make a general terminated session
-// admission-eligible and closes as soon as the generation advances or drifts.
+// the task's current head. The shell remains eligible across the one atomic
+// reviewed-to-admitted enqueue transition only when the task, generation and
+// admission IDs are bound exactly. It does not make a general terminated
+// session admission-eligible and closes as soon as the generation advances or
+// drifts.
 func (e *Engine) reviewedWBCReadmissionAdmissionShell(ctx context.Context, task domain.DCPReviewLabPolicyTask, spec domain.DCPPolicyTargetSpec, session domain.SessionRecord) (bool, error) {
-	if !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyAdmissionWait || task.AdmissionID != "" ||
+	if !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyAdmissionWait ||
 		task.CurrentHeadSHA == "" || task.ReviewRunID == "" || session.Activity.State != domain.ActivityExited || !session.IsTerminated {
 		return false, nil
 	}
@@ -1281,11 +1284,13 @@ func (e *Engine) reviewedWBCReadmissionAdmissionShell(ctx context.Context, task 
 	if err != nil || !found {
 		return false, err
 	}
-	return generation.Status == domain.DCPWBCReadmissionReviewed && generation.TaskID == task.TaskID &&
+	preAdmission := generation.Status == domain.DCPWBCReadmissionReviewed && generation.AdmissionID == "" && task.AdmissionID == ""
+	boundAdmission := generation.Status == domain.DCPWBCReadmissionAdmitted && generation.AdmissionID != "" && generation.AdmissionID == task.AdmissionID
+	return (preAdmission || boundAdmission) && generation.TaskID == task.TaskID &&
 		generation.SessionID == task.SessionID && generation.Repository == task.Repository &&
 		generation.Scope == task.Profile && generation.PRURL == task.PRURL && generation.PRNumber == task.PRNumber &&
 		generation.HeadRef == task.SourceBranch && strings.EqualFold(generation.NewHeadSHA, task.CurrentHeadSHA) &&
-		generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID && generation.AdmissionID == "" &&
+		generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID &&
 		generation.LeaseID != "", nil
 }
 

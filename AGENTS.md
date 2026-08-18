@@ -187,7 +187,7 @@ terminated-session authority.
 
 That fresh reviewer then approved exact readmission head `26044c696651ce5873748ec3f920d40e77c5686c`
 once, but the admission candidate retained the older nonterminal-shell rule and
-recorded `admission_identity_drift` before allocating a new FIFO row. Migration
+recorded `admission_identity_drift` before a new FIFO row could drain. Migration
 0081 preserves that exact false incident and re-arms only the already-approved
 head with zero new model authority. An `exited` / `terminated` shell is
 admission-eligible only while the same open WBC readmission generation is
@@ -198,6 +198,18 @@ Train while provider status is `BEHIND`; DCP still does not update or merge the
 branch. Actions must publish the next immutable readmission marker, after which
 the same task/PR repeats baseline, review and FIFO admission. Every other policy
 target remains CLEAN-only and every drift remains fail-closed.
+
+After migration 0081, the exact reviewed generation atomically allocated and
+bound admission sequence 32, then the waiting selector re-evaluated the same
+terminated shell after the durable generation had advanced from `reviewed` to
+`admitted`. The original helper accepted only the pre-enqueue state and recorded
+`waiting_identity_drift`. Migration 0082 preserves both exact incident packets,
+the bound generation/admission/review identities and action sequence 73, then
+re-arms only that same admission as `waiting`; it creates no task, session,
+action, review, admission, generation or release fact. The shell may survive
+the one reviewed-to-admitted transition only when the task admission ID and
+generation admission ID are the same non-empty value. A missing, crossed or
+later-generation binding remains ineligible.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display

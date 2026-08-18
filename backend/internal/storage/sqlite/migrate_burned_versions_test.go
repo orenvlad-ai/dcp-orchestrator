@@ -97,6 +97,7 @@ var shippedMigrations = map[int64]string{
 	79: "0079_dcp_wbc_ci_truth_recovery_v1.sql",
 	80: "0080_dcp_wbc_readmission_live_runtime_v1.sql",
 	81: "0081_dcp_wbc_readmission_admission_recovery_v1.sql",
+	82: "0082_dcp_wbc_readmission_waiting_recovery_v1.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
@@ -240,8 +241,9 @@ INSERT INTO projects (
 		t.Fatalf("repeat migrate on repaired schema: %v", err)
 	}
 	for table, want := range map[string][]string{
-		"sessions":      {"diff_base_sha", "diff_base_ref", "reviewer_harness"},
-		"notifications": {"resolved_at"},
+		"sessions":                 {"diff_base_sha", "diff_base_ref", "reviewer_harness"},
+		"notifications":            {"resolved_at"},
+		"dcp_review_lab_admission": {"review_base_sha", "recovered_incident_packet"},
 	} {
 		for _, column := range want {
 			var columns int
@@ -254,5 +256,20 @@ INSERT INTO projects (
 				t.Fatalf("%s.%s count = %d, want exactly 1 after repair", table, column, columns)
 			}
 		}
+	}
+	var admissionRows, admissionIndexes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dcp_review_lab_admission`).Scan(&admissionRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+		'idx_dcp_review_lab_admission_one_claim',
+		'idx_dcp_review_lab_admission_one_active_per_session',
+		'idx_dcp_review_lab_admission_fifo',
+		'idx_dcp_review_lab_admission_session'
+	)`).Scan(&admissionIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if admissionRows != 0 || admissionIndexes != 4 {
+		t.Fatalf("burned admission repair rows=%d indexes=%d, want 0/4", admissionRows, admissionIndexes)
 	}
 }
