@@ -508,6 +508,63 @@ func TestDCPReviewLabPolicyAuthorizesOneFreshExactHead(t *testing.T) {
 	}
 }
 
+func TestAutoTriggerAllowsExactPolicyReadmissionAfterApprovedPreservedHead(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "wb-core-1", "wb-core", domain.HarnessCodex
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	old := domain.ReviewRun{
+		ID: "approved-old-head", ReviewID: "review-wb-core-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("old-head").prs[0].URL, TargetSHA: "old-head", Status: domain.ReviewRunComplete,
+		Verdict: domain.VerdictApproved, Body: "approved", CreatedAt: time.Unix(1, 0),
+	}
+	store := &fakeStore{
+		review: &domain.Review{ID: old.ReviewID, SessionID: worker.ID, ReviewerHandleID: "review-wb-core-1", Harness: domain.ReviewerCodex},
+		runs:   []domain.ReviewRun{old},
+	}
+	launcher := &fakeLauncher{handle: "review-wb-core-1"}
+	restored := worker
+	restored.Metadata.WorkspacePath = "/restored/wb-core-1"
+	preparer := &fakeReviewWorkspacePreparer{rec: restored}
+	gate := &fakePolicyReviewGate{authorized: true}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prAt("readmitted-head"), fakeProjects{}, launcher, preparer)
+	eng.SetPolicyGate(gate)
+
+	result, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || !result.Created || result.Run.TargetSHA != "readmitted-head" {
+		t.Fatalf("policy readmission trigger = %+v err=%v", result, err)
+	}
+	if len(store.runs) != 2 || preparer.calls != 1 || preparer.targetSHA != "readmitted-head" || launcher.spawnCount != 1 || gate.marked != 1 {
+		t.Fatalf("runs=%+v preparer=%+v spawns=%d gate=%+v", store.runs, preparer, launcher.spawnCount, gate)
+	}
+}
+
+func TestAutoTriggerRejectsUncontractedPreservedPolicyHead(t *testing.T) {
+	worker := idleWorker()
+	worker.ID, worker.ProjectID, worker.Harness = "wb-core-1", "wb-core", domain.HarnessCodex
+	worker.IsTerminated = true
+	worker.Activity.State = domain.ActivityExited
+	old := domain.ReviewRun{
+		ID: "approved-old-head", ReviewID: "review-wb-core-1", SessionID: worker.ID, Harness: domain.ReviewerCodex,
+		PRURL: prAt("old-head").prs[0].URL, TargetSHA: "old-head", Status: domain.ReviewRunComplete,
+		Verdict: domain.VerdictApproved, Body: "approved", CreatedAt: time.Unix(1, 0),
+	}
+	store := &fakeStore{
+		review: &domain.Review{ID: old.ReviewID, SessionID: worker.ID, ReviewerHandleID: "review-wb-core-1", Harness: domain.ReviewerCodex},
+		runs:   []domain.ReviewRun{old},
+	}
+	launcher := &fakeLauncher{handle: "review-wb-core-1"}
+	preparer := &fakeReviewWorkspacePreparer{rec: worker}
+	gate := &fakePolicyReviewGate{authorized: false}
+	eng := newEngineForTestWithPreparer(store, fakeSessions{rec: worker, ok: true}, prAt("uncontracted-head"), fakeProjects{}, launcher, preparer)
+	eng.SetPolicyGate(gate)
+
+	result, err := eng.AutoTrigger(context.Background(), worker.ID)
+	if err != nil || result.Created || len(store.runs) != 1 || preparer.calls != 0 || launcher.spawnCount != 0 || gate.marked != 0 {
+		t.Fatalf("uncontracted policy trigger = %+v err=%v runs=%+v preparer=%d spawns=%d gate=%+v", result, err, store.runs, preparer.calls, launcher.spawnCount, gate)
+	}
+}
+
 func TestRepoOnlyPolicyReviewUsesGlobalActionGateAndRejectsManualTrigger(t *testing.T) {
 	worker := idleWorker()
 	worker.ID, worker.ProjectID, worker.Harness = "wb-browser-extension-1", "wb-browser-extension", domain.HarnessCodex
