@@ -159,6 +159,12 @@ remain authoritative. Only that exact conjunction may resume the model-free
 readmission generation; it does not make the general incident/arbiter candidate
 eligible. Idle/terminated, exited/nonterminated, waiting/blocked, another
 incident code, another target/profile or any identity drift remains ineligible.
+The same exact open readmission lifecycle must remain visible to the stock SCM
+observer after that shell is archived: only an exact WBC target/task/session/
+project/worktree/branch/PR/head plus a compatible durable generation status and
+task state may refresh provider facts. This read-only exception closes when the
+generation becomes terminal, conflicted or failed; it does not observe other
+terminated sessions or weaken the existing preserved-review continuation.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display

@@ -36,6 +36,8 @@ type fakeStore struct {
 	prs            map[domain.SessionID][]domain.PullRequest
 	reviews        map[domain.SessionID]domain.Review
 	reviewRuns     map[domain.SessionID][]domain.ReviewRun
+	policyTasks    map[domain.SessionID]domain.DCPReviewLabPolicyTask
+	readmissions   map[string]domain.DCPWBCReadmissionGeneration
 	checks         map[string][]domain.PullRequestCheck
 	writeErr       error
 
@@ -113,6 +115,20 @@ func (s *fakeStore) ListReviewRunsBySession(_ context.Context, id domain.Session
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.ReviewRun(nil), s.reviewRuns[id]...), nil
+}
+
+func (s *fakeStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.policyTasks[id]
+	return task, ok, nil
+}
+
+func (s *fakeStore) GetOpenDCPWBCReadmissionGenerationByTask(_ context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	generation, ok := s.readmissions[taskID]
+	return generation, ok, nil
 }
 
 func (s *fakeStore) ListChecks(_ context.Context, prURL string) ([]domain.PullRequestCheck, error) {
@@ -371,6 +387,264 @@ func TestDiscoverSubjectsIncludesOnlyProvenTerminatedReviewContinuation(t *testi
 	}
 	if len(subjects) != 0 || len(repos) != 0 {
 		t.Fatalf("consumed continuation remained observable: subjects=%v repos=%v", subjects, repos)
+	}
+}
+
+func TestDiscoverSubjectsIncludesExactTerminatedWBCReadmissionContinuation(t *testing.T) {
+	spec, ok := domain.DCPPolicyTarget("wb-core", "repo-only")
+	if !ok {
+		t.Fatal("wb-core repo-only target is unavailable")
+	}
+	const (
+		sessionID = domain.SessionID("wb-core-1")
+		taskID    = "wbc-canary-v1"
+		branch    = "ao/wb-core-1/root"
+		workspace = "/worktrees/wb-core-1"
+		prURL     = "https://github.com/orenvlad-ai/wb-core/pull/987"
+		head      = "26044c696651ce5873748ec3f920d40e77c5686c"
+	)
+	sess := domain.SessionRecord{
+		ID: sessionID, ProjectID: "wb-core", Kind: domain.KindWorker, IsTerminated: true,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{Branch: branch, WorkspacePath: workspace},
+	}
+	pr := knownPR(987)
+	pr.URL, pr.SessionID, pr.Repo = prURL, sessionID, spec.Repository
+	pr.Provider, pr.Host, pr.SourceBranch, pr.HeadSHA = "github", "github.com", branch, head
+	store := &fakeStore{
+		sessions: []domain.SessionRecord{sess},
+		projects: map[string]domain.ProjectRecord{
+			"wb-core": {ID: "wb-core", RepoOriginURL: spec.OriginURL},
+		},
+		prs: map[domain.SessionID][]domain.PullRequest{sessionID: {pr}},
+		policyTasks: map[domain.SessionID]domain.DCPReviewLabPolicyTask{sessionID: {
+			TaskID: taskID, Target: spec.Target, Profile: spec.Profile, Repository: spec.Repository,
+			PolicyVersion: spec.PolicyVersion, SessionID: sessionID, CardNumber: 1, WorktreePath: workspace,
+			SourceBranch: branch, State: domain.DCPPolicyCIWaiting, PRURL: prURL, PRNumber: 987,
+			CurrentHeadSHA: head,
+		}},
+		readmissions: map[string]domain.DCPWBCReadmissionGeneration{taskID: {
+			GenerationID:  "dcp-wbc-readmission-wbc-canary-v1-5319010312",
+			MarkerVersion: spec.CompatibilityMarker, LeaseID: "dcp-wbc-readmission-lease",
+			TaskID: taskID, SessionID: sessionID, PRURL: prURL, PRNumber: 987,
+			Repository: spec.Repository, BaseBranch: spec.DefaultBranch, Scope: spec.Profile,
+			HeadRef: branch, SessionNumber: 1, Status: domain.DCPWBCReadmissionHeadPushed, NewHeadSHA: head,
+		}},
+		checks: map[string][]domain.PullRequestCheck{},
+	}
+	obs := newTestObserver(store, &fakeProvider{}, &fakeLifecycle{}, time.Unix(10, 0).UTC())
+
+	subjects, repos, err := obs.discoverSubjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 1 || len(repos) != 1 {
+		t.Fatalf("exact WBC continuation subjects=%d repos=%d, want 1/1", len(subjects), len(repos))
+	}
+	if got := subjects[prKey(ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "wb-core", Repo: spec.Repository}, 987)]; got == nil || got.session.ID != sessionID {
+		t.Fatalf("continued WBC subject = %+v, want session %s", got, sessionID)
+	}
+}
+
+func TestPollObservesExactBaselineForTerminatedWBCReadmissionContinuation(t *testing.T) {
+	store, sess, taskID := exactTerminatedWBCReadmissionEligibilityFixture(t)
+	task := store.policyTasks[sess.ID]
+	repo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "orenvlad-ai", Name: "wb-core", Repo: task.Repository}
+	store.sessions = []domain.SessionRecord{sess}
+	store.projects = map[string]domain.ProjectRecord{
+		"wb-core": {ID: "wb-core", RepoOriginURL: "https://github.com/orenvlad-ai/wb-core.git"},
+	}
+	local := knownPR(987)
+	local.URL, local.SessionID, local.Provider, local.Host = task.PRURL, sess.ID, "github", "github.com"
+	local.Repo, local.SourceBranch, local.TargetBranch = task.Repository, task.SourceBranch, "main"
+	local.HeadSHA, local.MetadataHash, local.CIHash = task.CurrentHeadSHA, "old-metadata", "old-ci"
+	store.prs = map[domain.SessionID][]domain.PullRequest{sess.ID: {local}}
+	store.checks = map[string][]domain.PullRequestCheck{}
+	observed := testObs(987)
+	observed.Provider, observed.Host, observed.Repo = "github", "github.com", task.Repository
+	observed.PR.URL, observed.PR.HTMLURL, observed.PR.Number = task.PRURL, task.PRURL, 987
+	observed.PR.SourceBranch, observed.PR.TargetBranch, observed.PR.HeadSHA = task.SourceBranch, "main", task.CurrentHeadSHA
+	observed.CI = ports.SCMCIObservation{
+		Summary: string(domain.CIPassing), HeadSHA: task.CurrentHeadSHA,
+		Checks: []ports.SCMCheckObservation{{Name: "baseline", Status: string(domain.PRCheckPassed), Conclusion: "success", URL: "https://github.com/orenvlad-ai/wb-core/actions/runs/32129475530"}},
+	}
+	provider := &fakeProvider{
+		repoGuards:   map[string]ports.SCMGuardResult{prKey(repo, 0): {ETag: "repo", NotModified: true}},
+		checkGuards:  map[string]ports.SCMGuardResult{commitKey(repo, task.CurrentHeadSHA): {ETag: "ci-2"}},
+		observations: map[string]ports.SCMObservation{prKey(repo, 987): observed},
+	}
+	lifecycle := &fakeLifecycle{}
+	obs := newTestObserver(store, provider, lifecycle, time.Unix(20, 0).UTC())
+	obs.Cache.RepoPRListETag[prKey(repo, 0)] = "repo"
+	obs.Cache.CommitChecksETag[commitKey(repo, task.CurrentHeadSHA)] = "ci-1"
+
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.fetchBatches) != 1 || len(provider.fetchBatches[0]) != 1 || len(lifecycle.observed) != 1 {
+		t.Fatalf("archived WBC poll batches=%v lifecycle=%d", provider.fetchBatches, len(lifecycle.observed))
+	}
+	if len(store.writes) != 2 || len(store.writes[0].checks) != 1 || store.writes[0].checks[0].Name != "baseline" ||
+		!strings.EqualFold(store.writes[0].pr.HeadSHA, task.CurrentHeadSHA) {
+		t.Fatalf("exact-head baseline was not durably observed: writes=%+v", store.writes)
+	}
+	if store.readmissions[taskID].Status != domain.DCPWBCReadmissionHeadPushed {
+		t.Fatalf("observer mutated readmission generation: %+v", store.readmissions[taskID])
+	}
+}
+
+func exactTerminatedWBCReadmissionEligibilityFixture(t *testing.T) (*fakeStore, domain.SessionRecord, string) {
+	t.Helper()
+	spec, ok := domain.DCPPolicyTarget("wb-core", "repo-only")
+	if !ok {
+		t.Fatal("wb-core repo-only target is unavailable")
+	}
+	const (
+		sessionID = domain.SessionID("wb-core-1")
+		taskID    = "wbc-canary-v1"
+		branch    = "ao/wb-core-1/root"
+		workspace = "/worktrees/wb-core-1"
+		prURL     = "https://github.com/orenvlad-ai/wb-core/pull/987"
+		head      = "26044c696651ce5873748ec3f920d40e77c5686c"
+	)
+	sess := domain.SessionRecord{
+		ID: sessionID, ProjectID: "wb-core", Kind: domain.KindWorker, IsTerminated: true,
+		Activity: domain.Activity{State: domain.ActivityExited},
+		Metadata: domain.SessionMetadata{Branch: branch, WorkspacePath: workspace},
+	}
+	return &fakeStore{
+		policyTasks: map[domain.SessionID]domain.DCPReviewLabPolicyTask{sessionID: {
+			TaskID: taskID, Target: spec.Target, Profile: spec.Profile, Repository: spec.Repository,
+			PolicyVersion: spec.PolicyVersion, SessionID: sessionID, CardNumber: 1, WorktreePath: workspace,
+			SourceBranch: branch, State: domain.DCPPolicyCIWaiting, PRURL: prURL, PRNumber: 987,
+			CurrentHeadSHA: head,
+		}},
+		readmissions: map[string]domain.DCPWBCReadmissionGeneration{taskID: {
+			GenerationID:  "dcp-wbc-readmission-wbc-canary-v1-5319010312",
+			MarkerVersion: spec.CompatibilityMarker, LeaseID: "dcp-wbc-readmission-lease",
+			TaskID: taskID, SessionID: sessionID, PRURL: prURL, PRNumber: 987,
+			Repository: spec.Repository, BaseBranch: spec.DefaultBranch, Scope: spec.Profile,
+			HeadRef: branch, SessionNumber: 1, Status: domain.DCPWBCReadmissionHeadPushed, NewHeadSHA: head,
+		}},
+	}, sess, taskID
+}
+
+func TestTerminatedWBCReadmissionEligibilityTracksOnlyExactOpenLifecycle(t *testing.T) {
+	allowed := []struct {
+		name   string
+		mutate func(*domain.DCPReviewLabPolicyTask, *domain.DCPWBCReadmissionGeneration)
+	}{
+		{name: "head pushed CI wait"},
+		{name: "review queued", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State = domain.DCPPolicyReviewQueued
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReviewQueue, "review-action-1"
+		}},
+		{name: "review running", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State = domain.DCPPolicyReviewRunning
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReviewQueue, "review-action-1"
+		}},
+		{name: "repair CI wait", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, task.RepairCount = domain.DCPPolicyCIWaiting, 1
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReviewQueue, "review-action-1"
+		}},
+		{name: "repaired review running", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, task.RepairCount = domain.DCPPolicyReviewRunning, 1
+			task.PreviousHeadSHA, task.CurrentHeadSHA = generation.NewHeadSHA, strings.Repeat("b", 40)
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReviewQueue, "review-action-2"
+		}},
+		{name: "reviewed admission wait", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, task.ReviewRunID = domain.DCPPolicyAdmissionWait, "review-run-1"
+			generation.Status, generation.ReviewActionID, generation.ReviewRunID = domain.DCPWBCReadmissionReviewed, "review-action-1", task.ReviewRunID
+		}},
+		{name: "admitted", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, task.ReviewRunID, task.AdmissionID = domain.DCPPolicyAdmissionWait, "review-run-1", "admission-1"
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionAdmitted, "review-action-1"
+			generation.ReviewRunID, generation.AdmissionID = task.ReviewRunID, task.AdmissionID
+		}},
+		{name: "release waiting", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, task.ReviewRunID, task.AdmissionID = domain.DCPPolicyReleaseWaiting, "review-run-1", "admission-1"
+			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReleaseWait, "review-action-1"
+			generation.ReviewRunID, generation.AdmissionID = task.ReviewRunID, task.AdmissionID
+		}},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			store, sess, taskID := exactTerminatedWBCReadmissionEligibilityFixture(t)
+			task, generation := store.policyTasks[sess.ID], store.readmissions[taskID]
+			if tc.mutate != nil {
+				tc.mutate(&task, &generation)
+			}
+			store.policyTasks[sess.ID], store.readmissions[taskID] = task, generation
+			obs := newTestObserver(store, &fakeProvider{}, &fakeLifecycle{}, time.Unix(10, 0).UTC())
+			eligible, err := obs.preservedTerminatedSessionEligible(context.Background(), sess)
+			if err != nil || !eligible {
+				t.Fatalf("eligible=%v err=%v task=%+v generation=%+v", eligible, err, task, generation)
+			}
+		})
+	}
+
+	rejected := []struct {
+		name   string
+		mutate func(*domain.SessionRecord, *domain.DCPReviewLabPolicyTask, *domain.DCPWBCReadmissionGeneration)
+	}{
+		{name: "idle terminated", mutate: func(sess *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			sess.Activity.State = domain.ActivityIdle
+		}},
+		{name: "exited unterminated", mutate: func(sess *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			sess.IsTerminated = false
+		}},
+		{name: "project drift", mutate: func(sess *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			sess.ProjectID = "other"
+		}},
+		{name: "branch drift", mutate: func(sess *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			sess.Metadata.Branch = "other"
+		}},
+		{name: "task incident", mutate: func(_ *domain.SessionRecord, task *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			task.State = domain.DCPPolicyIncident
+		}},
+		{name: "task error", mutate: func(_ *domain.SessionRecord, task *domain.DCPReviewLabPolicyTask, _ *domain.DCPWBCReadmissionGeneration) {
+			task.ErrorCode = "release_state_drift"
+		}},
+		{name: "direct merge target", mutate: func(sess *domain.SessionRecord, task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			spec, _ := domain.DCPPolicyTarget("wb-browser-extension", "repo-only")
+			sess.ProjectID = domain.ProjectID(spec.Target)
+			task.Target, task.Profile, task.Repository, task.PolicyVersion = spec.Target, spec.Profile, spec.Repository, spec.PolicyVersion
+			generation.Repository, generation.Scope = spec.Repository, spec.Profile
+		}},
+		{name: "marker drift", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.MarkerVersion = "wb-core.dcp-release-handoff/v1"
+		}},
+		{name: "missing lease", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.LeaseID = ""
+		}},
+		{name: "wrong generation task", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.TaskID = "other"
+		}},
+		{name: "wrong head", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.NewHeadSHA = strings.Repeat("c", 40)
+		}},
+		{name: "prepared generation", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.Status = domain.DCPWBCReadmissionPrepared
+		}},
+		{name: "review status without action", mutate: func(_ *domain.SessionRecord, task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, generation.Status = domain.DCPPolicyReviewQueued, domain.DCPWBCReadmissionReviewQueue
+		}},
+		{name: "status state mismatch", mutate: func(_ *domain.SessionRecord, task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			task.State, generation.Status, generation.ReviewActionID = domain.DCPPolicyReleaseWaiting, domain.DCPWBCReadmissionReviewQueue, "review-action-1"
+		}},
+	}
+	for _, tc := range rejected {
+		t.Run("reject "+tc.name, func(t *testing.T) {
+			store, sess, taskID := exactTerminatedWBCReadmissionEligibilityFixture(t)
+			task, generation := store.policyTasks[sess.ID], store.readmissions[taskID]
+			tc.mutate(&sess, &task, &generation)
+			store.policyTasks["wb-core-1"], store.readmissions[taskID] = task, generation
+			obs := newTestObserver(store, &fakeProvider{}, &fakeLifecycle{}, time.Unix(10, 0).UTC())
+			eligible, err := obs.preservedTerminatedSessionEligible(context.Background(), sess)
+			if err != nil || eligible {
+				t.Fatalf("eligible=%v err=%v task=%+v generation=%+v", eligible, err, task, generation)
+			}
+		})
 	}
 }
 
