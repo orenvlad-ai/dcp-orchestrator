@@ -151,6 +151,15 @@ identity. A terminated nonterminal task or any metadata drift remains a hard
 startup failure. This is presentation cleanup compatibility, not task recovery
 or model authority.
 
+The sole nonterminal native-shell exception is an exact `wb-core` Release
+Train readmission already persisted as `release_state_drift`: stock UI cleanup
+may leave its unchanged worker session in the paired `exited` / `terminated`
+form while the DCP task, old incident admission and durable readmission lease
+remain authoritative. Only that exact conjunction may resume the model-free
+readmission generation; it does not make the general incident/arbiter candidate
+eligible. Idle/terminated, exited/nonterminated, waiting/blocked, another
+incident code, another target/profile or any identity drift remains ineligible.
+
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display
 one synthetic DCP task in exact state `SUBMITTED`. Submission is idempotent,

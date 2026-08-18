@@ -1091,8 +1091,23 @@ func (e *Engine) candidateForFutureArbiterAdmission(ctx context.Context, admissi
 	return e.candidateForAdmissionInPolicyState(ctx, admission, domain.DCPPolicyIncident)
 }
 
+func (e *Engine) candidateForWBCReadmissionAdmission(ctx context.Context, admission domain.DCPReviewLabAdmission) (mergeCandidate, bool, error) {
+	candidate, ok, err := e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, domain.DCPPolicyIncident, true)
+	if err != nil || !ok {
+		return mergeCandidate{}, false, err
+	}
+	if admission.Status != domain.DCPAdmissionIncident || candidate.policyTask.AdmissionID != admission.ID {
+		return mergeCandidate{}, false, nil
+	}
+	return candidate, true, nil
+}
+
 func (e *Engine) candidateForAdmissionInPolicyState(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
-	candidate, ok, err := e.candidateInPolicyState(ctx, admission.SessionID, state)
+	return e.candidateForAdmissionInPolicyStateWithSession(ctx, admission, state, false)
+}
+
+func (e *Engine) candidateForAdmissionInPolicyStateWithSession(ctx context.Context, admission domain.DCPReviewLabAdmission, state domain.DCPReviewLabPolicyState, allowExitedWBCReadmission bool) (mergeCandidate, bool, error) {
+	candidate, ok, err := e.candidateInPolicyStateWithSession(ctx, admission.SessionID, state, allowExitedWBCReadmission)
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
@@ -1109,6 +1124,10 @@ func (e *Engine) candidate(ctx context.Context, id domain.SessionID) (mergeCandi
 }
 
 func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState) (mergeCandidate, bool, error) {
+	return e.candidateInPolicyStateWithSession(ctx, id, state, false)
+}
+
+func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domain.SessionID, state domain.DCPReviewLabPolicyState, allowExitedWBCReadmission bool) (mergeCandidate, bool, error) {
 	var policyTask domain.DCPReviewLabPolicyTask
 	policy := false
 	if ps, ok := e.store.(policyStore); ok {
@@ -1130,8 +1149,12 @@ func (e *Engine) candidateInPolicyState(ctx context.Context, id domain.SessionID
 	if err != nil || !ok {
 		return mergeCandidate{}, false, err
 	}
+	exitedWBCReadmissionShell := allowExitedWBCReadmission && policy && spec.UsesWBCReleaseTrain() &&
+		policyTask.State == domain.DCPPolicyIncident && policyTask.ErrorCode == "release_state_drift" &&
+		session.Activity.State == domain.ActivityExited && session.IsTerminated
 	if session.ProjectID != domain.ProjectID(spec.Target) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
-		session.ReviewerHarness != "" || session.IssueID != "" || session.Activity.State != domain.ActivityIdle || session.IsTerminated ||
+		session.ReviewerHarness != "" || session.IssueID != "" ||
+		(!exitedWBCReadmissionShell && (session.Activity.State != domain.ActivityIdle || session.IsTerminated)) ||
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
 		(!policy && !validTaskIdentity(session)) {
 		return mergeCandidate{}, false, nil

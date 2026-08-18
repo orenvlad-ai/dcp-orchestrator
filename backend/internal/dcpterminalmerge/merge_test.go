@@ -1375,6 +1375,58 @@ func TestFutureArbiterCandidateAcceptsOnlyExactIncidentState(t *testing.T) {
 	}
 }
 
+func TestWBCReadmissionCandidateAcceptsExactExitedStockSession(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	engine, store, _ := policyTargetFixture(t, spec, 1)
+	store.policyTask.State = domain.DCPPolicyIncident
+	store.policyTask.ErrorCode = "release_state_drift"
+	store.policyTask.AdmissionID = "admission-old"
+	store.session.Activity.State = domain.ActivityExited
+	store.session.IsTerminated = true
+	store.admission = &domain.DCPReviewLabAdmission{
+		ID: "admission-old", SessionID: store.session.ID, ReviewRunID: store.run.ID,
+		ReviewID: store.run.ReviewID, PRURL: store.pr.URL, PRNumber: int64(store.pr.Number),
+		TargetSHA: store.run.TargetSHA, Status: domain.DCPAdmissionIncident,
+	}
+
+	if _, ok, err := engine.candidateForFutureArbiterAdmission(context.Background(), *store.admission); err != nil || ok {
+		t.Fatalf("general incident candidate accepted exited stock shell: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := engine.candidateForWBCReadmissionAdmission(context.Background(), *store.admission); err != nil || !ok {
+		t.Fatalf("exact WBC readmission candidate rejected exited stock shell: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestWBCReadmissionCandidateRejectsNonExactExitedSession(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeStore){
+		"wrong incident":          func(store *fakeStore) { store.policyTask.ErrorCode = "merge_conflict_or_ambiguity" },
+		"wrong admission state":   func(store *fakeStore) { store.admission.Status = domain.DCPAdmissionWaiting },
+		"wrong admission binding": func(store *fakeStore) { store.policyTask.AdmissionID = "admission-other" },
+		"idle terminated":         func(store *fakeStore) { store.session.Activity.State = domain.ActivityIdle },
+		"exited unterminated":     func(store *fakeStore) { store.session.IsTerminated = false },
+		"waiting input":           func(store *fakeStore) { store.session.Activity.State = domain.ActivityWaitingInput },
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+			engine, store, _ := policyTargetFixture(t, spec, 1)
+			store.policyTask.State = domain.DCPPolicyIncident
+			store.policyTask.ErrorCode = "release_state_drift"
+			store.policyTask.AdmissionID = "admission-old"
+			store.session.Activity.State = domain.ActivityExited
+			store.session.IsTerminated = true
+			store.admission = &domain.DCPReviewLabAdmission{
+				ID: "admission-old", SessionID: store.session.ID, ReviewRunID: store.run.ID,
+				ReviewID: store.run.ReviewID, PRURL: store.pr.URL, PRNumber: int64(store.pr.Number),
+				TargetSHA: store.run.TargetSHA, Status: domain.DCPAdmissionIncident,
+			}
+			mutate(store)
+			if _, ok, err := engine.candidateForWBCReadmissionAdmission(context.Background(), *store.admission); err != nil || ok {
+				t.Fatalf("non-exact WBC readmission candidate accepted: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
 func TestTryMergesExactCleanApprovedHeadOnce(t *testing.T) {
 	engine, store, scm := fixture(t)
 	scm.review.Decision = string(domain.ReviewApproved)
