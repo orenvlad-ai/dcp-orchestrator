@@ -753,6 +753,19 @@ func (e *Engine) processWaiting(ctx context.Context, admission domain.DCPReviewL
 	case dispositionIncident:
 		return false, e.recordIncident(ctx, admission, candidate, observation, "merge_conflict_or_ambiguity")
 	case dispositionRefresh:
+		if candidate.spec.UsesWBCReleaseTrain() {
+			// DCP never refreshes or merges a WBC branch after review. Hand the
+			// exact reviewed head to Release Train even when main advanced so
+			// Actions can publish the next immutable readmission generation.
+			canonicalBase, err := e.syncCanonicalMain(ctx, candidate, baseSHA)
+			if err != nil {
+				if errors.Is(err, errCanonicalDiverged) || errors.Is(err, errCanonicalBaseDrift) {
+					return false, e.recordIncident(ctx, admission, candidate, observation, "canonical_main_diverged")
+				}
+				return false, err
+			}
+			return e.handoffWBCRelease(ctx, admission, candidate, observation, canonicalBase)
+		}
 		if candidate.policy {
 			// Future policy heads may merge only with fresh provider CLEAN facts.
 			// BEHIND is not upgraded by a local merge-tree proof and cannot borrow
@@ -1152,9 +1165,13 @@ func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domai
 	exitedWBCReadmissionShell := allowExitedWBCReadmission && policy && spec.UsesWBCReleaseTrain() &&
 		policyTask.State == domain.DCPPolicyIncident && policyTask.ErrorCode == "release_state_drift" &&
 		session.Activity.State == domain.ActivityExited && session.IsTerminated
+	reviewedWBCReadmissionShell, err := e.reviewedWBCReadmissionAdmissionShell(ctx, policyTask, spec, session)
+	if err != nil {
+		return mergeCandidate{}, false, err
+	}
 	if session.ProjectID != domain.ProjectID(spec.Target) || session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex ||
 		session.ReviewerHarness != "" || session.IssueID != "" ||
-		(!exitedWBCReadmissionShell && (session.Activity.State != domain.ActivityIdle || session.IsTerminated)) ||
+		(!exitedWBCReadmissionShell && !reviewedWBCReadmissionShell && (session.Activity.State != domain.ActivityIdle || session.IsTerminated)) ||
 		session.TerminateOnPRMerge || session.Metadata.RuntimeLaunchID != "" || !validOptionalNativeBase(session.Metadata.DiffBaseSHA, session.Metadata.DiffBaseRef) ||
 		(!policy && !validTaskIdentity(session)) {
 		return mergeCandidate{}, false, nil
@@ -1245,6 +1262,31 @@ func (e *Engine) candidateInPolicyStateWithSession(ctx context.Context, id domai
 		return mergeCandidate{}, false, nil
 	}
 	return mergeCandidate{session: session, project: project, pr: pr, run: run, policyTask: policyTask, spec: spec, policy: policy}, true, nil
+}
+
+// reviewedWBCReadmissionAdmissionShell permits only the exact preserved native
+// shell whose durable readmission generation has completed a fresh review for
+// the task's current head. It does not make a general terminated session
+// admission-eligible and closes as soon as the generation advances or drifts.
+func (e *Engine) reviewedWBCReadmissionAdmissionShell(ctx context.Context, task domain.DCPReviewLabPolicyTask, spec domain.DCPPolicyTargetSpec, session domain.SessionRecord) (bool, error) {
+	if !spec.UsesWBCReleaseTrain() || task.State != domain.DCPPolicyAdmissionWait || task.AdmissionID != "" ||
+		task.CurrentHeadSHA == "" || task.ReviewRunID == "" || session.Activity.State != domain.ActivityExited || !session.IsTerminated {
+		return false, nil
+	}
+	store, ok := e.store.(wbcReadmissionStore)
+	if !ok {
+		return false, nil
+	}
+	generation, found, err := store.GetOpenDCPWBCReadmissionGenerationByTask(ctx, task.TaskID)
+	if err != nil || !found {
+		return false, err
+	}
+	return generation.Status == domain.DCPWBCReadmissionReviewed && generation.TaskID == task.TaskID &&
+		generation.SessionID == task.SessionID && generation.Repository == task.Repository &&
+		generation.Scope == task.Profile && generation.PRURL == task.PRURL && generation.PRNumber == task.PRNumber &&
+		generation.HeadRef == task.SourceBranch && strings.EqualFold(generation.NewHeadSHA, task.CurrentHeadSHA) &&
+		generation.ReviewActionID != "" && generation.ReviewRunID == task.ReviewRunID && generation.AdmissionID == "" &&
+		generation.LeaseID != "", nil
 }
 
 func (e *Engine) fresh(ctx context.Context, pr domain.PullRequest) (ports.SCMObservation, ports.SCMReviewObservation, error) {

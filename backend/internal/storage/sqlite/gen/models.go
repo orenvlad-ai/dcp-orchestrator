@@ -965,6 +965,27 @@ type DcpWbcCITruthRecoveryV1 struct {
 	CreatedAt               time.Time
 }
 
+type DcpWbcReadmissionAdmissionRecoveryV1 struct {
+	RecoveryID          string
+	ContractCommit      string
+	TaskID              string
+	SessionID           string
+	GenerationID        string
+	ReviewActionID      string
+	ReviewRunID         string
+	PRURL               string
+	PRNumber            int64
+	HeadSha             string
+	BaselineURL         string
+	PriorTaskState      string
+	PriorTaskRevision   int64
+	PriorErrorCode      string
+	PriorIncidentPacket string
+	Authority           string
+	Status              string
+	CreatedAt           time.Time
+}
+
 type DcpWbcReadmissionGeneration struct {
 	Sequence         int64
 	GenerationID     string
