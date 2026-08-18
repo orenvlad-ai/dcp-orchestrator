@@ -1026,6 +1026,25 @@ type DcpWbcReadmissionGeneration struct {
 	UpdatedAt        time.Time
 }
 
+type DcpWbcReadmissionWaitingRecoveryV1 struct {
+	RecoveryID             string
+	ContractCommit         string
+	SourceCommit           string
+	TaskID                 string
+	SessionID              string
+	GenerationID           string
+	AdmissionID            string
+	ReviewActionID         string
+	ReviewRunID            string
+	PriorTaskRevision      int64
+	PriorAdmissionSequence int64
+	PriorErrorCode         string
+	PriorIncidentPacket    string
+	Authority              string
+	Status                 string
+	CreatedAt              time.Time
+}
+
 type DcpWbcReleaseDeployV1Authority struct {
 	AuthorityID         string
 	Target              string

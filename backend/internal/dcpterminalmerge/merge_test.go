@@ -274,6 +274,11 @@ func (f *fakeStore) EnqueueDCPReviewLabPolicyAdmission(ctx context.Context, admi
 	if f.policyTask == nil || f.policyTask.TaskID != task.TaskID || f.policyTask.State != domain.DCPPolicyAdmissionWait {
 		return domain.DCPReviewLabAdmission{}, false, errors.New("policy task unavailable")
 	}
+	if f.readmission != nil && f.readmission.TaskID == task.TaskID &&
+		f.readmission.Status == domain.DCPWBCReadmissionReviewed && f.readmission.AdmissionID == "" {
+		f.readmission.Status = domain.DCPWBCReadmissionAdmitted
+		f.readmission.AdmissionID = row.ID
+	}
 	f.policyTask.AdmissionID = row.ID
 	f.policyTask.Revision++
 	return row, created, nil
@@ -1015,6 +1020,17 @@ func TestWBCPolicyHandsOffReviewedBehindHeadForReleaseTrainReadmission(t *testin
 		t.Run(profile, func(t *testing.T) {
 			spec, _ := domain.DCPPolicyTarget("wb-core", profile)
 			engine, store, scm := policyTargetFixture(t, spec, 1)
+			store.session.Activity.State = domain.ActivityExited
+			store.session.IsTerminated = true
+			store.readmission = &domain.DCPWBCReadmissionGeneration{
+				GenerationID: "readmission-1", TaskID: store.policyTask.TaskID,
+				SessionID: store.session.ID, Status: domain.DCPWBCReadmissionReviewed,
+				Repository: spec.Repository, Scope: spec.Profile, PRURL: store.policyTask.PRURL,
+				PRNumber: store.policyTask.PRNumber, HeadRef: store.policyTask.SourceBranch,
+				NewHeadSHA:     store.policyTask.CurrentHeadSHA,
+				ReviewActionID: "readmission-review-1", ReviewRunID: store.policyTask.ReviewRunID,
+				LeaseID: "readmission-lease-1",
+			}
 			scm.observation.PR.ProviderMergeStateStatus = "BEHIND"
 
 			if err := engine.Try(context.Background(), store.session.ID); err != nil {
@@ -1488,6 +1504,15 @@ func TestWBCReadmissionReviewedGenerationRejectsDriftedExitedAdmissionShell(t *t
 		"wrong generation head": func(store *fakeStore) { store.readmission.NewHeadSHA = testBase },
 		"wrong review run":      func(store *fakeStore) { store.readmission.ReviewRunID = "foreign-run" },
 		"task has admission":    func(store *fakeStore) { store.policyTask.AdmissionID = "admission-other" },
+		"admitted without task binding": func(store *fakeStore) {
+			store.readmission.Status = domain.DCPWBCReadmissionAdmitted
+			store.readmission.AdmissionID = "admission-exact"
+		},
+		"admitted with crossed binding": func(store *fakeStore) {
+			store.readmission.Status = domain.DCPWBCReadmissionAdmitted
+			store.readmission.AdmissionID = "admission-exact"
+			store.policyTask.AdmissionID = "admission-other"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
