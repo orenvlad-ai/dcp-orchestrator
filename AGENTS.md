@@ -185,6 +185,20 @@ single-use missing-workspace rule, and an uncontracted policy head remains
 inert. This adds no reviewer retry, replacement task/session or broader
 terminated-session authority.
 
+That fresh reviewer then approved exact readmission head `26044c696651ce5873748ec3f920d40e77c5686c`
+once, but the admission candidate retained the older nonterminal-shell rule and
+recorded `admission_identity_drift` before allocating a new FIFO row. Migration
+0081 preserves that exact false incident and re-arms only the already-approved
+head with zero new model authority. An `exited` / `terminated` shell is
+admission-eligible only while the same open WBC readmission generation is
+exactly `reviewed` and its task, session, repository, scope, PR, branch, head,
+review action, review run and empty admission identity all match. If WBC main
+advances again before admission, DCP may hand the exact reviewed head to Release
+Train while provider status is `BEHIND`; DCP still does not update or merge the
+branch. Actions must publish the next immutable readmission marker, after which
+the same task/PR repeats baseline, review and FIFO admission. Every other policy
+target remains CLEAN-only and every drift remains fail-closed.
+
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display
 one synthetic DCP task in exact state `SUBMITTED`. Submission is idempotent,

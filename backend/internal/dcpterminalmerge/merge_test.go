@@ -1010,6 +1010,37 @@ func TestWBCPolicyHandsOffOnlyReleaseReadyAndObservesExactTerminalProof(t *testi
 	}
 }
 
+func TestWBCPolicyHandsOffReviewedBehindHeadForReleaseTrainReadmission(t *testing.T) {
+	for _, profile := range []string{"repo-only", "live-runtime"} {
+		t.Run(profile, func(t *testing.T) {
+			spec, _ := domain.DCPPolicyTarget("wb-core", profile)
+			engine, store, scm := policyTargetFixture(t, spec, 1)
+			scm.observation.PR.ProviderMergeStateStatus = "BEHIND"
+
+			if err := engine.Try(context.Background(), store.session.ID); err != nil {
+				t.Fatal(err)
+			}
+			if scm.mergeCalls != 0 || scm.releaseReadyCalls != 1 || store.policyTask.State != domain.DCPPolicyReleaseWaiting ||
+				store.admission == nil || store.admission.Status != domain.DCPAdmissionClaimed {
+				t.Fatalf("reviewed WBC behind head did not reach Release Train handoff: merges=%d ready=%d task=%+v admission=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask, store.admission)
+			}
+		})
+	}
+}
+
+func TestNonWBCPolicyBehindHeadRemainsFailClosed(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-browser-extension", "repo-only")
+	engine, store, scm := policyTargetFixture(t, spec, 1)
+	scm.observation.PR.ProviderMergeStateStatus = "BEHIND"
+
+	if err := engine.Try(context.Background(), store.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if scm.mergeCalls != 0 || scm.releaseReadyCalls != 0 || store.policyTask.State != domain.DCPPolicyIncident || store.policyTask.ErrorCode != "provider_not_clean" {
+		t.Fatalf("non-WBC behind policy widened: merges=%d ready=%d task=%+v", scm.mergeCalls, scm.releaseReadyCalls, store.policyTask)
+	}
+}
+
 func TestWBCLiveRuntimeWaitsThroughMergeUntilExactProductionProof(t *testing.T) {
 	spec, _ := domain.DCPPolicyTarget("wb-core", "live-runtime")
 	engine, store, scm := policyTargetFixture(t, spec, 1)
@@ -1422,6 +1453,59 @@ func TestWBCReadmissionCandidateRejectsNonExactExitedSession(t *testing.T) {
 			mutate(store)
 			if _, ok, err := engine.candidateForWBCReadmissionAdmission(context.Background(), *store.admission); err != nil || ok {
 				t.Fatalf("non-exact WBC readmission candidate accepted: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestWBCReadmissionReviewedGenerationAcceptsExactExitedAdmissionShell(t *testing.T) {
+	spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+	engine, store, _ := policyTargetFixture(t, spec, 1)
+	store.session.Activity.State = domain.ActivityExited
+	store.session.IsTerminated = true
+	store.readmission = &domain.DCPWBCReadmissionGeneration{
+		GenerationID: "readmission-1", TaskID: store.policyTask.TaskID,
+		SessionID: store.session.ID, Status: domain.DCPWBCReadmissionReviewed,
+		Repository: spec.Repository, Scope: spec.Profile, PRURL: store.policyTask.PRURL,
+		PRNumber: store.policyTask.PRNumber, HeadRef: store.policyTask.SourceBranch,
+		NewHeadSHA:     store.policyTask.CurrentHeadSHA,
+		ReviewActionID: "readmission-review-1", ReviewRunID: store.policyTask.ReviewRunID,
+		LeaseID: "readmission-lease-1",
+	}
+
+	if _, ok, err := engine.candidate(context.Background(), store.session.ID); err != nil || !ok {
+		t.Fatalf("exact reviewed WBC readmission admission shell was rejected: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestWBCReadmissionReviewedGenerationRejectsDriftedExitedAdmissionShell(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeStore){
+		"wrong generation status": func(store *fakeStore) { store.readmission.Status = domain.DCPWBCReadmissionReviewQueue },
+		"wrong generation task":   func(store *fakeStore) { store.readmission.TaskID = "foreign-task" },
+		"wrong generation session": func(store *fakeStore) {
+			store.readmission.SessionID = "wb-core-2"
+		},
+		"wrong generation head": func(store *fakeStore) { store.readmission.NewHeadSHA = testBase },
+		"wrong review run":      func(store *fakeStore) { store.readmission.ReviewRunID = "foreign-run" },
+		"task has admission":    func(store *fakeStore) { store.policyTask.AdmissionID = "admission-other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec, _ := domain.DCPPolicyTarget("wb-core", "repo-only")
+			engine, store, _ := policyTargetFixture(t, spec, 1)
+			store.session.Activity.State = domain.ActivityExited
+			store.session.IsTerminated = true
+			store.readmission = &domain.DCPWBCReadmissionGeneration{
+				GenerationID: "readmission-1", TaskID: store.policyTask.TaskID,
+				SessionID: store.session.ID, Status: domain.DCPWBCReadmissionReviewed,
+				Repository: spec.Repository, Scope: spec.Profile, PRURL: store.policyTask.PRURL,
+				PRNumber: store.policyTask.PRNumber, HeadRef: store.policyTask.SourceBranch,
+				NewHeadSHA:     store.policyTask.CurrentHeadSHA,
+				ReviewActionID: "readmission-review-1", ReviewRunID: store.policyTask.ReviewRunID,
+				LeaseID: "readmission-lease-1",
+			}
+			mutate(store)
+			if _, ok, err := engine.candidate(context.Background(), store.session.ID); err != nil || ok {
+				t.Fatalf("drifted reviewed WBC readmission admission shell was accepted: ok=%v err=%v", ok, err)
 			}
 		})
 	}
