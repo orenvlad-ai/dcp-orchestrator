@@ -196,6 +196,13 @@ func (e *Engine) reconcileFutureArbiters(ctx context.Context) error {
 				if !alive {
 					return e.failFutureArbiter(ctx, incident, "missing_result")
 				}
+				action, found, actionErr := store.GetDCPModelActionByID(ctx, incident.ModelActionID)
+				if actionErr != nil || !found {
+					return errors.Join(actionErr, errors.New("DCP future arbiter running action disappeared"))
+				}
+				if lifecycleErr := e.validateFutureArbiterLifecycle(ctx, incident, action, domain.DCPModelProcessExact); lifecycleErr != nil {
+					return lifecycleErr
+				}
 			}
 		}
 	}
@@ -627,6 +634,9 @@ func (e *Engine) LaunchPolicyArbiterAction(ctx context.Context, action domain.DC
 	if err := e.futureArbiter.PreflightFuture(ctx, incident); err != nil {
 		return fail("preflight_failed", err)
 	}
+	if err := e.validateFutureArbiterLifecycle(ctx, incident, action, domain.DCPModelProcessLaunching); err != nil {
+		return fail("lifecycle_drift", err)
+	}
 	started, err := store.StartDCPModelAction(ctx, action, incident.IncidentID, "", e.clock())
 	if err != nil || !started {
 		return errors.Join(err, errors.New("DCP future arbiter one-call fence was unavailable"))
@@ -635,6 +645,39 @@ func (e *Engine) LaunchPolicyArbiterAction(ctx context.Context, action domain.DC
 	incident.Status, incident.ModelCallCount = domain.DCPFutureArbiterRunning, 1
 	if err := e.futureArbiter.LaunchFuture(ctx, incident); err != nil {
 		return fail("launch_failed", err)
+	}
+	return e.validateFutureArbiterLifecycle(ctx, incident, action, domain.DCPModelProcessExact)
+}
+
+func (e *Engine) validateFutureArbiterLifecycle(ctx context.Context, incident domain.DCPFutureArbiterIncident, action domain.DCPModelAction, process domain.DCPModelProcessState) error {
+	store, err := e.futureArbiterStore()
+	if err != nil {
+		return err
+	}
+	task, found, err := store.GetDCPReviewLabPolicyTaskByTaskID(ctx, incident.TaskID)
+	if err != nil || !found || task.SessionID != action.SessionID || incident.ModelActionID != action.ID || action.IncidentID != incident.IncidentID {
+		return errors.Join(err, errors.New("DCP future arbiter task/action identity drifted"))
+	}
+	session, found, err := e.store.GetSession(ctx, task.SessionID)
+	if err != nil || !found {
+		return errors.Join(err, errors.New("DCP future arbiter native shell disappeared"))
+	}
+	globalActive := 1
+	if lister, ok := e.store.(interface {
+		ListActiveDCPModelActions(context.Context) ([]domain.DCPModelAction, error)
+	}); ok {
+		active, listErr := lister.ListActiveDCPModelActions(ctx)
+		if listErr != nil {
+			return listErr
+		}
+		globalActive = len(active)
+	}
+	decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+		Task: task, Phase: domain.DCPTaskPhaseArbiterRunning, NativeShell: domain.DCPNativeShellStateForSession(session),
+		Action: &action, ExpectedActionKind: domain.DCPActionArbiter, Process: process, GlobalActiveActions: globalActive,
+	})
+	if !decision.Eligible {
+		return errors.New("DCP future arbiter lifecycle drifted: " + string(decision.Denial))
 	}
 	return nil
 }

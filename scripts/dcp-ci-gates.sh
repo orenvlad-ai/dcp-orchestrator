@@ -16,6 +16,8 @@ wbc_control_plane_commit='036b1101284f626c931f7edb1750ddd228634832'
 wbc_operating_contract_revision='2026-08-17.1'
 wbc_end_to_end_control_plane_commit='4f7775f375a612a38e96496f09908ab48e3598c5'
 wbc_end_to_end_operating_contract_revision='2026-08-18.2'
+task_first_lifecycle_control_plane_commit='5075235780b9c38d95faa9657a70265069d3a5c5'
+task_first_lifecycle_operating_contract_revision='2026-08-18.11'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -67,9 +69,11 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$control_plane_commit/docs/DCP_REAL_TARGET_REPOSITORY_RENAME_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact repo-only repository rename contract'
 	grep -Fq "dev-control-plane/blob/$wbc_control_plane_commit/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core Release Train handoff contract'
 	grep -Fq "dev-control-plane/blob/$wbc_end_to_end_control_plane_commit/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core end-to-end release/deploy contract'
+	grep -Fq "dev-control-plane/blob/$task_first_lifecycle_control_plane_commit/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact task-first native lifecycle contract'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq "\`$wbc_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core operating contract revision mismatch'
 	grep -Fq "\`$wbc_end_to_end_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core end-to-end operating contract revision mismatch'
+	grep -Fq "\`$task_first_lifecycle_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md task-first lifecycle operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
@@ -199,7 +203,8 @@ source_gates() {
 	wbc_readmission_live_runtime_migration='backend/internal/storage/sqlite/migrations/0080_dcp_wbc_readmission_live_runtime_v1.sql'
 	wbc_readmission_admission_recovery_migration='backend/internal/storage/sqlite/migrations/0081_dcp_wbc_readmission_admission_recovery_v1.sql'
 	wbc_readmission_waiting_recovery_migration='backend/internal/storage/sqlite/migrations/0082_dcp_wbc_readmission_waiting_recovery_v1.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" "$wbc_readmission_live_runtime_migration" "$wbc_readmission_admission_recovery_migration" "$wbc_readmission_waiting_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	task_first_lifecycle_recovery_migration='backend/internal/storage/sqlite/migrations/0083_dcp_task_first_native_lifecycle_recovery_v1.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" "$wbc_readmission_live_runtime_migration" "$wbc_readmission_admission_recovery_migration" "$wbc_readmission_waiting_recovery_migration" "$task_first_lifecycle_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -281,7 +286,7 @@ source_gates() {
 	grep -Fq "generation.status = 'reviewed'" "$wbc_readmission_admission_recovery_migration" || fail 'WBC admission recovery lacks reviewed-generation evidence'
 	grep -Fq 'resume_exact_reviewed_readmission_fifo_admission_zero_new_model_authority' "$wbc_readmission_admission_recovery_migration" || fail 'WBC admission recovery authority is not bounded'
 	! grep -Fq 'INSERT INTO dcp_model_action' "$wbc_readmission_admission_recovery_migration" || fail 'WBC admission recovery creates model activity'
-	grep -Fq 'reviewedWBCReadmissionAdmissionShell' backend/internal/dcpterminalmerge/merge.go || fail 'reviewed WBC preserved admission shell gate is absent'
+	grep -Fq 'reviewedWBCReadmissionAdmissionBinding' backend/internal/dcpterminalmerge/merge.go || fail 'reviewed WBC generation/admission binding gate is absent'
 	grep -Fq 'return e.handoffWBCRelease(ctx, admission, candidate, observation, canonicalBase)' backend/internal/dcpterminalmerge/merge.go || fail 'WBC behind head cannot reach Release Train readmission handoff'
 	[[ -s "$wbc_readmission_waiting_recovery_migration" ]] || fail 'WBC readmission waiting recovery migration is absent'
 	grep -Fq "prior_error_code        TEXT NOT NULL CHECK (prior_error_code = 'waiting_identity_drift')" "$wbc_readmission_waiting_recovery_migration" || fail 'WBC waiting false incident is not preserved'
@@ -458,6 +463,15 @@ source_gates() {
 	grep -Fq 'admission.Status != domain.DCPAdmissionWaiting' backend/internal/lifecycle/reactions.go || fail 'SCM admission catch-up is not fenced to one durable waiting identity'
 	grep -Fq 'SetAdmissionCommittedHandler' backend/internal/dcpterminalmerge/merge.go backend/internal/daemon/daemon.go || fail 'newly committed policy admission does not signal the existing terminal merger'
 	grep -Fq 'committed policy admission signal identity drifted' backend/internal/dcpterminalmerge/merge.go || fail 'post-commit admission signal lacks exact identity validation'
+	[[ -s "$task_first_lifecycle_recovery_migration" ]] || fail 'task-first lifecycle recovery migration is absent'
+	grep -Fq 'CREATE TABLE dcp_task_first_native_lifecycle_recovery_v1' "$task_first_lifecycle_recovery_migration" || fail 'task-first recovery audit is absent'
+	grep -Fq "contract_commit         TEXT NOT NULL CHECK (contract_commit = '$task_first_lifecycle_control_plane_commit')" "$task_first_lifecycle_recovery_migration" || fail 'task-first recovery contract identity is not exact'
+	grep -Fq "task.task_id = 'wbc-canary-v1'" "$task_first_lifecycle_recovery_migration" || fail 'task-first recovery task identity is not exact'
+	grep -Fq "(SELECT COUNT(*) FROM dcp_model_action WHERE status IN ('claimed','running')) = 0" "$task_first_lifecycle_recovery_migration" || fail 'task-first recovery does not prove zero active model actions'
+	grep -Fq 'func EvaluateDCPTaskLifecycle' backend/internal/domain/dcp_task_lifecycle.go || fail 'central task-first lifecycle evaluator is absent'
+	for lifecycle_caller in backend/internal/service/dcptask/policy.go backend/internal/observe/scm/observer.go backend/internal/dcpterminalmerge/merge.go backend/internal/dcpterminalmerge/future_arbiter_engine.go; do
+		grep -Fq 'EvaluateDCPTaskLifecycle' "$lifecycle_caller" || fail "task-first lifecycle evaluator is absent from governed caller $lifecycle_caller"
+	done
 	grep -Fq 'set(&base.DiffBaseSHA, in.DiffBaseSHA)' backend/internal/lifecycle/manager.go || fail 'native provisioning still drops the durable task creation base SHA'
 	grep -Fq 'repairDCPReviewLabCard13CreationBase' backend/internal/storage/sqlite/db.go || fail 'exact live card-13 creation-base repair is absent'
 	grep -Fq 'AND 0 = (' backend/internal/storage/sqlite/db.go || fail 'card-13 base repair is not fenced to zero active model actions'
@@ -492,6 +506,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/dcpterminalmerge/wbc_readmission_engine(_test)?\.go|backend/internal/storage/sqlite/(migrations/0080_dcp_wbc_readmission_live_runtime_v1\.sql|queries/dcp_wbc_readmission\.sql|gen/dcp_wbc_readmission\.sql\.go|store/dcp_wbc_readmission_store(_test)?\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0081_dcp_wbc_readmission_admission_recovery_v1\.sql|wbc_readmission_admission_recovery_live_copy_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0082_dcp_wbc_readmission_waiting_recovery_v1\.sql|wbc_readmission_waiting_recovery_live_copy_test\.go)$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_task_lifecycle(_test)?\.go|backend/internal/storage/sqlite/(migrations/0083_dcp_task_first_native_lifecycle_recovery_v1\.sql|task_first_native_lifecycle_recovery_live_copy_test\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

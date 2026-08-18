@@ -23,6 +23,7 @@ repository:
 11. [`wb-core` Release Train handoff v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/036b1101284f626c931f7edb1750ddd228634832/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md)
 12. [`wb-core` CI truth and lifecycle UX v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/1ca282408bec53a1d696cb58d247e33285209ee9/docs/DCP_WB_CORE_CI_TRUTH_LIFECYCLE_UX_V1_CONTRACT.md)
 13. [`wb-core` end-to-end release and deploy v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f7775f375a612a38e96496f09908ab48e3598c5/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md)
+14. [task-first native lifecycle v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/5075235780b9c38d95faa9657a70265069d3a5c5/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -47,6 +48,17 @@ immutable marker on the same task/PR, plus exact profile `live-runtime` with
 Actions-owned `release:production` proof. DCP model roles remain repository-
 only; DCP direct merge and deploy remain forbidden. Source remains inactive
 until the separate immutable pin and governed deterministic install pass.
+
+Item 14 and the merged root/current authorities at exact
+`5075235780b9c38d95faa9657a70265069d3a5c5`, operating revision
+`2026-08-18.11`, replace only the duplicated native-shell liveness predicates
+with one provider-neutral task-first lifecycle policy. The durable task/card
+remains authoritative through its profile terminal proof. An exact model
+runtime is required only for an exact fenced launching/running model action;
+CI, review queue, admission, Release Train, Human Gate, incident and terminal
+observation remain passive and may retain the exact archived native shell.
+Action/process asymmetry remains fail-closed. This source and schema-83
+recovery remain inactive until a separate reviewed pin/install pass.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
@@ -141,30 +153,25 @@ migration 0068 after its immutable task/session/worker/PR/head/base/named-check
 conjunction is preserved in one audit row; the migration itself launches no
 model action, push, review, admission or merge.
 
-The same controlled start proved a separate cleanup/restart boundary before
-any reviewer launch: stock UI Terminate had correctly archived already-merged
-cards 13-17 as terminated/exited native shells, but policy startup rejected the
-first terminal shell and returned before draining card 20's single queued
-reviewer. An exact terminated/exited shell is valid only for an already-terminal
-policy task and must retain the same session/card/branch/worktree/prompt
-identity. A terminated nonterminal task or any metadata drift remains a hard
-startup failure. This is presentation cleanup compatibility, not task recovery
-or model authority.
+Stock UI Terminate may archive an exact native shell without terminating its
+durable policy task. The common lifecycle evaluator, not a target-specific
+shell exception, decides whether the current task phase requires a runtime:
+worker/reviewer/repair/arbiter queue states require one exact queued action and
+no process; fenced launching/running states require the matching action and
+exact process; CI, admission, Release Train, Human Gate, incident and terminal
+observation require no active action or process and may retain the exact
+exited/terminated shell. Contradictory shell facts, a live process without its
+action, an active action without its runtime, crossed identity, or more than
+three global active actions remain hard failures. Project/repository/card/
+session/branch/worktree/prompt/display/provider/profile/PR/head checks remain
+separate strict gates.
 
-The sole nonterminal native-shell exception is an exact `wb-core` Release
-Train readmission already persisted as `release_state_drift`: stock UI cleanup
-may leave its unchanged worker session in the paired `exited` / `terminated`
-form while the DCP task, old incident admission and durable readmission lease
-remain authoritative. Only that exact conjunction may resume the model-free
-readmission generation; it does not make the general incident/arbiter candidate
-eligible. Idle/terminated, exited/nonterminated, waiting/blocked, another
-incident code, another target/profile or any identity drift remains ineligible.
-The same exact open readmission lifecycle must remain visible to the stock SCM
-observer after that shell is archived: only an exact WBC target/task/session/
-project/worktree/branch/PR/head plus a compatible durable generation status and
-task state may refresh provider facts. This read-only exception closes when the
-generation becomes terminal, conflicted or failed; it does not observe other
-terminated sessions or weaken the existing preserved-review continuation.
+The same exact open `wb-core` readmission lifecycle must remain visible to the
+stock SCM observer after its shell is archived. This is now a provider-specific
+generation/marker/review/admission binding layered after the common lifecycle
+decision, not shell-liveness authority. It closes when the generation becomes
+terminal, conflicted or failed and cannot authorize a foreign/direct target,
+crossed generation or DCP merge/deploy.
 The first installed observer correction proved that the preserved repo-only
 generation still carries valid immutable v1 marker evidence while the native
 project is correctly registered against v2. Observer eligibility must use the
@@ -189,10 +196,11 @@ That fresh reviewer then approved exact readmission head `26044c696651ce5873748e
 once, but the admission candidate retained the older nonterminal-shell rule and
 recorded `admission_identity_drift` before a new FIFO row could drain. Migration
 0081 preserves that exact false incident and re-arms only the already-approved
-head with zero new model authority. An `exited` / `terminated` shell is
-admission-eligible only while the same open WBC readmission generation is
-exactly `reviewed` and its task, session, repository, scope, PR, branch, head,
-review action, review run and empty admission identity all match. If WBC main
+head with zero new model authority. For WBC readmission, admission eligibility
+additionally requires the same open generation to be exactly `reviewed` and
+its task, session, repository, scope, PR, branch, head, review action, review
+run and empty admission identity all match; native-shell liveness comes only
+from the common task-first evaluator. If WBC main
 advances again before admission, DCP may hand the exact reviewed head to Release
 Train while provider status is `BEHIND`; DCP still does not update or merge the
 branch. Actions must publish the next immutable readmission marker, after which
@@ -210,6 +218,14 @@ action, review, admission, generation or release fact. The shell may survive
 the one reviewed-to-admitted transition only when the task admission ID and
 generation admission ID are the same non-empty value. A missing, crossed or
 later-generation binding remains ineligible.
+
+Migration 0083 is the inactive, immutable task-first activation for the exact
+stopped schema-82 `wbc-canary-v1` identity. It proves the archived shell, task
+revision 22, action 73, review, admission sequence 32, generation 1 and all
+zero-active/global row counts before preserving FIFO sequence 32 and advancing
+only the task revision to 23. It creates no task, session, model action,
+ReviewRun, admission, generation or release row, preserves both predecessor
+incident packets, is restart-idempotent and fails atomically on any drift.
 
 I11 implements one model-free foundation only: the existing daemon and its
 existing SQLite may durably submit, read, list events for, restore, and display

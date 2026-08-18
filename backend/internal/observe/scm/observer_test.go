@@ -38,6 +38,7 @@ type fakeStore struct {
 	reviewRuns     map[domain.SessionID][]domain.ReviewRun
 	policyTasks    map[domain.SessionID]domain.DCPReviewLabPolicyTask
 	readmissions   map[string]domain.DCPWBCReadmissionGeneration
+	modelActions   []domain.DCPModelAction
 	checks         map[string][]domain.PullRequestCheck
 	writeErr       error
 
@@ -129,6 +130,43 @@ func (s *fakeStore) GetOpenDCPWBCReadmissionGenerationByTask(_ context.Context, 
 	defer s.mu.Unlock()
 	generation, ok := s.readmissions[taskID]
 	return generation, ok, nil
+}
+
+func (s *fakeStore) ListDCPModelActions(_ context.Context) ([]domain.DCPModelAction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.modelActions) != 0 {
+		return append([]domain.DCPModelAction(nil), s.modelActions...), nil
+	}
+	for sessionID, task := range s.policyTasks {
+		generation, ok := s.readmissions[task.TaskID]
+		if !ok || generation.ReviewActionID == "" {
+			continue
+		}
+		var status domain.DCPModelActionStatus
+		switch task.State {
+		case domain.DCPPolicyReviewQueued, domain.DCPPolicyRepairQueued:
+			status = domain.DCPActionQueued
+		case domain.DCPPolicyReviewRunning, domain.DCPPolicyRepairRunning:
+			status = domain.DCPActionRunning
+		default:
+			continue
+		}
+		kind := domain.DCPActionReviewer
+		if task.State == domain.DCPPolicyRepairQueued || task.State == domain.DCPPolicyRepairRunning {
+			kind = domain.DCPActionRepairWorker
+		}
+		action := domain.DCPModelAction{ID: generation.ReviewActionID, TaskID: task.TaskID, SessionID: sessionID, Kind: kind,
+			ExactHeadSHA: task.CurrentHeadSHA, Status: status}
+		if status == domain.DCPActionRunning {
+			action.Slot, action.LaunchID = 1, "exact-model-runtime"
+			if kind == domain.DCPActionReviewer {
+				action.ReviewRunID = "exact-review-run"
+			}
+		}
+		return []domain.DCPModelAction{action}, nil
+	}
+	return nil, nil
 }
 
 func (s *fakeStore) ListChecks(_ context.Context, prURL string) ([]domain.PullRequestCheck, error) {

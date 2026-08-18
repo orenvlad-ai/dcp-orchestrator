@@ -82,6 +82,7 @@ type preservedReviewStore interface {
 type preservedWBCReadmissionStore interface {
 	GetDCPReviewLabPolicyTaskBySession(ctx context.Context, sessionID domain.SessionID) (domain.DCPReviewLabPolicyTask, bool, error)
 	GetOpenDCPWBCReadmissionGenerationByTask(ctx context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error)
+	ListDCPModelActions(ctx context.Context) ([]domain.DCPModelAction, error)
 }
 
 // Lifecycle is the provider-neutral lifecycle notification sink.
@@ -648,6 +649,50 @@ func (o *Observer) preservedWBCReadmissionSessionEligible(ctx context.Context, s
 		generation.Repository != spec.Repository || generation.BaseBranch != spec.DefaultBranch || generation.Scope != spec.Profile ||
 		generation.HeadRef != branch || generation.SessionNumber != task.CardNumber || generation.PRURL != task.PRURL ||
 		generation.PRNumber != task.PRNumber || !validGitSHA(generation.NewHeadSHA) {
+		return false, nil
+	}
+	phase, mapped := domain.DCPTaskLifecyclePhaseForState(task.State)
+	if !mapped {
+		return false, nil
+	}
+	expectedKind := domain.DCPModelActionKind("")
+	switch task.State {
+	case domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning:
+		expectedKind = domain.DCPActionReviewer
+	case domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning:
+		expectedKind = domain.DCPActionRepairWorker
+	}
+	actions, err := store.ListDCPModelActions(ctx)
+	if err != nil {
+		return false, err
+	}
+	globalActive := 0
+	var lifecycleAction *domain.DCPModelAction
+	for i := range actions {
+		action := &actions[i]
+		if action.Status == domain.DCPActionClaimed || action.Status == domain.DCPActionRunning {
+			globalActive++
+		}
+		if action.TaskID != task.TaskID || action.SessionID != task.SessionID ||
+			(action.Status != domain.DCPActionQueued && action.Status != domain.DCPActionClaimed && action.Status != domain.DCPActionRunning) {
+			continue
+		}
+		if lifecycleAction != nil {
+			return false, nil
+		}
+		lifecycleAction = action
+	}
+	process := domain.DCPModelProcessNone
+	if task.State == domain.DCPPolicyReviewRunning || task.State == domain.DCPPolicyRepairRunning {
+		if lifecycleAction != nil && lifecycleAction.LaunchID != "" {
+			process = domain.DCPModelProcessExact
+		}
+	}
+	decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+		Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(sess), Action: lifecycleAction,
+		ExpectedActionKind: expectedKind, Process: process, GlobalActiveActions: globalActive,
+	})
+	if !decision.Eligible {
 		return false, nil
 	}
 

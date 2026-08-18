@@ -34,6 +34,7 @@ type fakeStore struct {
 	policyTask        *domain.DCPReviewLabPolicyTask
 	readmission       *domain.DCPWBCReadmissionGeneration
 	readmissions      []domain.DCPWBCReadmissionGeneration
+	activeAction      *domain.DCPModelAction
 }
 
 func (f *fakeStore) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
@@ -257,6 +258,18 @@ func (f *fakeStore) GetDCPReviewLabPolicyTaskBySession(_ context.Context, id dom
 		return domain.DCPReviewLabPolicyTask{}, false, nil
 	}
 	return *f.policyTask, true, nil
+}
+func (f *fakeStore) GetActiveDCPModelActionBySession(_ context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error) {
+	if f.activeAction == nil || f.activeAction.SessionID != id {
+		return domain.DCPModelAction{}, false, nil
+	}
+	return *f.activeAction, true, nil
+}
+func (f *fakeStore) ListDCPModelActions(context.Context) ([]domain.DCPModelAction, error) {
+	if f.activeAction == nil {
+		return nil, nil
+	}
+	return []domain.DCPModelAction{*f.activeAction}, nil
 }
 func (f *fakeStore) UpdateDCPReviewLabPolicyTaskCAS(_ context.Context, current, next domain.DCPReviewLabPolicyTask) (bool, error) {
 	if f.policyTask == nil || f.policyTask.TaskID != current.TaskID || f.policyTask.Revision != current.Revision || f.policyTask.State != current.State {
@@ -1436,8 +1449,8 @@ func TestWBCReadmissionCandidateAcceptsExactExitedStockSession(t *testing.T) {
 		TargetSHA: store.run.TargetSHA, Status: domain.DCPAdmissionIncident,
 	}
 
-	if _, ok, err := engine.candidateForFutureArbiterAdmission(context.Background(), *store.admission); err != nil || ok {
-		t.Fatalf("general incident candidate accepted exited stock shell: ok=%v err=%v", ok, err)
+	if _, ok, err := engine.candidateForFutureArbiterAdmission(context.Background(), *store.admission); err != nil || !ok {
+		t.Fatalf("common passive-incident lifecycle rejected exact archived shell: ok=%v err=%v", ok, err)
 	}
 	if _, ok, err := engine.candidateForWBCReadmissionAdmission(context.Background(), *store.admission); err != nil || !ok {
 		t.Fatalf("exact WBC readmission candidate rejected exited stock shell: ok=%v err=%v", ok, err)

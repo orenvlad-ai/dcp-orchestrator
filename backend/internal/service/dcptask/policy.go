@@ -39,6 +39,10 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 		}
 		switch action.Kind {
 		case domain.DCPActionInitialWorker, domain.DCPActionRepairWorker:
+			phase := domain.DCPTaskPhaseWorkerRunning
+			if action.Kind == domain.DCPActionRepairWorker {
+				phase = domain.DCPTaskPhaseRepairRunning
+			}
 			spec, exact := domain.DCPPolicyTargetForTask(task)
 			if !exact {
 				if failErr := s.failClaimedAction(ctx, task, action, "worker_target_invalid"); failErr != nil {
@@ -73,6 +77,23 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 			launchID := launched.Session.Metadata.RuntimeLaunchID
 			if launchID == "" {
 				return errors.New("DCP worker launched without an exact supervised generation")
+			}
+			actions, listErr := s.policyStore.ListDCPModelActions(ctx)
+			if listErr != nil {
+				return listErr
+			}
+			activeCount := 0
+			for _, candidate := range actions {
+				if candidate.Status == domain.DCPActionClaimed || candidate.Status == domain.DCPActionRunning {
+					activeCount++
+				}
+			}
+			decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+				Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(launched.Session), Action: &action,
+				ExpectedActionKind: action.Kind, Process: domain.DCPModelProcessExact, GlobalActiveActions: activeCount,
+			})
+			if !decision.Eligible {
+				return fmt.Errorf("DCP launched worker lifecycle drifted: %s", decision.Denial)
 			}
 			fresh, found, getErr := s.policyStore.GetDCPModelActionByID(ctx, action.ID)
 			if getErr != nil || !found {
@@ -281,6 +302,9 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 	}
 	switch task.State {
 	case domain.DCPPolicyCIWaiting:
+		if err := s.evaluatePolicyTaskLifecycle(ctx, task, domain.DCPTaskPhaseCIWaiting, "", nil, domain.DCPModelProcessNone); err != nil {
+			return true, false, err
+		}
 		ready, terminal, checkErr := s.exactPolicyNamedCI(ctx, pr, head)
 		if checkErr != nil {
 			if terminal {
@@ -338,11 +362,21 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 		if task.CurrentHeadSHA != head || task.PRURL != prURL {
 			return true, false, errors.New("queued review head drifted")
 		}
+		action, found, actionErr := s.policyStore.GetDCPModelActionByIdentity(ctx, task.TaskID, domain.DCPActionReviewer, head)
+		if actionErr != nil || !found {
+			return true, false, errors.Join(actionErr, errors.New("queued review action disappeared"))
+		}
+		if lifecycleErr := s.evaluatePolicyTaskLifecycle(ctx, task, domain.DCPTaskPhaseReviewQueued, domain.DCPActionReviewer, &action, domain.DCPModelProcessNone); lifecycleErr != nil {
+			return true, false, lifecycleErr
+		}
 		return true, false, nil
 	case domain.DCPPolicyReviewRunning:
 		action, ok, err := s.policyStore.GetActiveDCPModelActionBySession(ctx, id)
 		if err != nil || !ok || action.Kind != domain.DCPActionReviewer || action.Status != domain.DCPActionClaimed || action.ExactHeadSHA != head {
 			return true, false, errors.Join(err, errors.New("review action lease is not exact"))
+		}
+		if lifecycleErr := s.evaluatePolicyTaskLifecycle(ctx, task, domain.DCPTaskPhaseReviewRunning, domain.DCPActionReviewer, &action, domain.DCPModelProcessLaunching); lifecycleErr != nil {
+			return true, false, lifecycleErr
 		}
 		return true, true, nil
 	default:
@@ -376,6 +410,10 @@ func (s *Service) MarkPolicyReviewStarted(ctx context.Context, id domain.Session
 	task, found, err := s.policyStore.GetDCPReviewLabPolicyTaskBySession(ctx, id)
 	if err != nil || !found || task.State != domain.DCPPolicyReviewRunning || task.CurrentHeadSHA != action.ExactHeadSHA {
 		return errors.Join(err, errors.New("reviewer task projection drifted"))
+	}
+	action.Status, action.LaunchID, action.ReviewRunID = domain.DCPActionRunning, handleID, runID
+	if err := s.evaluatePolicyTaskLifecycle(ctx, task, domain.DCPTaskPhaseReviewRunning, domain.DCPActionReviewer, &action, domain.DCPModelProcessExact); err != nil {
+		return err
 	}
 	next := task
 	next.ReviewRunID = runID
@@ -483,6 +521,16 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	actions, err := s.policyStore.ListDCPModelActions(ctx)
+	if err != nil {
+		return err
+	}
+	globalActive := 0
+	for _, action := range actions {
+		if action.Status == domain.DCPActionClaimed || action.Status == domain.DCPActionRunning {
+			globalActive++
+		}
+	}
 	for _, task := range tasks {
 		session, ok, err := s.policyStore.GetSession(ctx, task.SessionID)
 		if err != nil || !ok || !exactPolicyNativeIdentity(task, session) {
@@ -506,7 +554,24 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 			}
 			continue
 		}
+		phase, expectedKind, lifecycleAction, lifecycleErr := policyLifecycleSnapshot(task, actions)
+		if lifecycleErr != nil {
+			return lifecycleErr
+		}
 		if task.State != domain.DCPPolicyWorkerRunning && task.State != domain.DCPPolicyRepairRunning && task.State != domain.DCPPolicyReviewRunning {
+			process := domain.DCPModelProcessNone
+			if phase == domain.DCPTaskPhaseArbiterRunning && lifecycleAction != nil && lifecycleAction.Status == domain.DCPActionRunning && lifecycleAction.LaunchID != "" {
+				process = domain.DCPModelProcessExact
+			} else if session.Metadata.RuntimeLaunchID != "" || (!session.IsTerminated && session.Activity.State != domain.ActivityIdle) {
+				process = domain.DCPModelProcessUnexpected
+			}
+			decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+				Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(session), Action: lifecycleAction,
+				ExpectedActionKind: expectedKind, Process: process, GlobalActiveActions: globalActive,
+			})
+			if !decision.Eligible {
+				return fmt.Errorf("DCP policy task %s lifecycle drifted: %s", task.TaskID, decision.Denial)
+			}
 			continue
 		}
 		action, ok, err := s.policyStore.GetActiveDCPModelActionBySession(ctx, task.SessionID)
@@ -543,6 +608,13 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 				next.Revision = task.Revision + 1
 				task = next
 			}
+			decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+				Task: task, Phase: domain.DCPTaskPhaseReviewRunning, NativeShell: domain.DCPNativeShellStateForSession(session),
+				Action: &action, ExpectedActionKind: domain.DCPActionReviewer, Process: domain.DCPModelProcessExact, GlobalActiveActions: globalActive,
+			})
+			if !decision.Eligible {
+				return fmt.Errorf("DCP policy reviewer %s lifecycle drifted: %s", task.TaskID, decision.Denial)
+			}
 			switch run.Status {
 			case domain.ReviewRunComplete:
 				_, err = s.HandleStructuredPolicyReview(ctx, task.SessionID, run)
@@ -561,6 +633,13 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 			continue
 		}
 		if session.Metadata.RuntimeLaunchID != "" {
+			decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+				Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(session), Action: &action,
+				ExpectedActionKind: expectedKind, Process: domain.DCPModelProcessExact, GlobalActiveActions: globalActive,
+			})
+			if !decision.Eligible {
+				return fmt.Errorf("DCP policy worker %s lifecycle drifted: %s", task.TaskID, decision.Denial)
+			}
 			alive, inspectErr := s.policyRuntime.DCPReviewLabPolicyActionAlive(ctx, task.SessionID, session.Metadata.RuntimeLaunchID)
 			if inspectErr != nil {
 				if incidentErr := s.failPolicyTask(ctx, task, "worker_restart_ambiguous", "exact supervised worker generation could not be inspected"); incidentErr != nil {
@@ -595,6 +674,13 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 			}
 			continue
 		}
+		decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+			Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(session), Action: &action,
+			ExpectedActionKind: expectedKind, Process: domain.DCPModelProcessExact, GlobalActiveActions: globalActive,
+		})
+		if !decision.Eligible {
+			return fmt.Errorf("DCP policy worker %s terminal lifecycle fact drifted: %s", task.TaskID, decision.Denial)
+		}
 		if session.Activity.State == domain.ActivityIdle {
 			if err := s.HandleWorkerProcessExit(ctx, task.SessionID, action.LaunchID, true); err != nil {
 				return err
@@ -606,6 +692,68 @@ func (s *Service) ReconcilePolicyStartup(ctx context.Context) error {
 		}
 	}
 	return s.DrainModelActions(ctx)
+}
+
+func policyLifecycleSnapshot(task domain.DCPReviewLabPolicyTask, actions []domain.DCPModelAction) (domain.DCPTaskLifecyclePhase, domain.DCPModelActionKind, *domain.DCPModelAction, error) {
+	phase, ok := domain.DCPTaskLifecyclePhaseForState(task.State)
+	if !ok {
+		return "", "", nil, fmt.Errorf("DCP policy task %s has unknown lifecycle state %q", task.TaskID, task.State)
+	}
+	expectedKind := domain.DCPModelActionKind("")
+	switch task.State {
+	case domain.DCPPolicyWorkerQueued, domain.DCPPolicyWorkerRunning:
+		expectedKind = domain.DCPActionInitialWorker
+	case domain.DCPPolicyReviewQueued, domain.DCPPolicyReviewRunning:
+		expectedKind = domain.DCPActionReviewer
+	case domain.DCPPolicyRepairQueued, domain.DCPPolicyRepairRunning:
+		expectedKind = domain.DCPActionRepairWorker
+	}
+	var selected *domain.DCPModelAction
+	for i := range actions {
+		action := &actions[i]
+		if action.TaskID != task.TaskID || action.SessionID != task.SessionID ||
+			(action.Status != domain.DCPActionQueued && action.Status != domain.DCPActionClaimed && action.Status != domain.DCPActionRunning) {
+			continue
+		}
+		if selected != nil {
+			return "", "", nil, fmt.Errorf("DCP policy task %s owns multiple queued/active actions", task.TaskID)
+		}
+		selected = action
+	}
+	if selected != nil && selected.Kind == domain.DCPActionArbiter && task.State == domain.DCPPolicyIncident {
+		expectedKind = domain.DCPActionArbiter
+		if selected.Status == domain.DCPActionQueued {
+			phase = domain.DCPTaskPhaseArbiterQueued
+		} else {
+			phase = domain.DCPTaskPhaseArbiterRunning
+		}
+	}
+	return phase, expectedKind, selected, nil
+}
+
+func (s *Service) evaluatePolicyTaskLifecycle(ctx context.Context, task domain.DCPReviewLabPolicyTask, phase domain.DCPTaskLifecyclePhase, expected domain.DCPModelActionKind, action *domain.DCPModelAction, process domain.DCPModelProcessState) error {
+	session, found, err := s.policyStore.GetSession(ctx, task.SessionID)
+	if err != nil || !found || !exactPolicyNativeIdentity(task, session) {
+		return errors.Join(err, errors.New("DCP policy lifecycle native identity drifted"))
+	}
+	actions, err := s.policyStore.ListDCPModelActions(ctx)
+	if err != nil {
+		return err
+	}
+	globalActive := 0
+	for _, candidate := range actions {
+		if candidate.Status == domain.DCPActionClaimed || candidate.Status == domain.DCPActionRunning {
+			globalActive++
+		}
+	}
+	decision := domain.EvaluateDCPTaskLifecycle(domain.DCPTaskLifecycleInput{
+		Task: task, Phase: phase, NativeShell: domain.DCPNativeShellStateForSession(session), Action: action,
+		ExpectedActionKind: expected, Process: process, GlobalActiveActions: globalActive,
+	})
+	if !decision.Eligible {
+		return fmt.Errorf("DCP policy task %s lifecycle drifted: %s", task.TaskID, decision.Denial)
+	}
+	return nil
 }
 
 func (s *Service) exactPolicyPR(ctx context.Context, task domain.DCPReviewLabPolicyTask, prURL, head string) (domain.PullRequest, error) {
@@ -710,13 +858,12 @@ func exactPolicyNativeIdentity(task domain.DCPReviewLabPolicyTask, session domai
 	if !base {
 		return false
 	}
-	// Stock Terminate is the supported UI archive operation. It preserves the
-	// native identity and history while marking the shell terminated/exited.
-	// Only an already-terminal policy task may own that exact archived shell;
-	// any nonterminal terminated session remains identity drift.
-	if session.IsTerminated && (!task.State.Terminal() || session.Activity.State != domain.ActivityExited) {
+	if domain.DCPNativeShellStateForSession(session) == domain.DCPNativeShellInvalid {
 		return false
 	}
+	// Liveness is evaluated centrally from durable task phase, action and exact
+	// process facts. This function remains identity-only so an archived shell
+	// cannot erase a nonterminal task.
 	if task.State == domain.DCPPolicyReserved {
 		seed := session.Metadata.Branch == "" && session.Metadata.WorkspacePath == "" && session.Metadata.Prompt == "" && session.Metadata.RuntimeLaunchID == ""
 		provisioned := session.Metadata.Branch == task.SourceBranch && session.Metadata.WorkspacePath == task.WorktreePath &&
