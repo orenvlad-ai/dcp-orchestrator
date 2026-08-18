@@ -535,6 +535,9 @@ func TestTerminatedWBCReadmissionEligibilityTracksOnlyExactOpenLifecycle(t *test
 		mutate func(*domain.DCPReviewLabPolicyTask, *domain.DCPWBCReadmissionGeneration)
 	}{
 		{name: "head pushed CI wait"},
+		{name: "legacy v1 repo-only marker", mutate: func(_ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.MarkerVersion = "wb-core.dcp-release-handoff/v1"
+		}},
 		{name: "review queued", mutate: func(task *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
 			task.State = domain.DCPPolicyReviewQueued
 			generation.Status, generation.ReviewActionID = domain.DCPWBCReadmissionReviewQueue, "review-action-1"
@@ -611,8 +614,8 @@ func TestTerminatedWBCReadmissionEligibilityTracksOnlyExactOpenLifecycle(t *test
 			task.Target, task.Profile, task.Repository, task.PolicyVersion = spec.Target, spec.Profile, spec.Repository, spec.PolicyVersion
 			generation.Repository, generation.Scope = spec.Repository, spec.Profile
 		}},
-		{name: "marker drift", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
-			generation.MarkerVersion = "wb-core.dcp-release-handoff/v1"
+		{name: "foreign marker", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
+			generation.MarkerVersion = "wb-core.dcp-release-handoff/foreign"
 		}},
 		{name: "missing lease", mutate: func(_ *domain.SessionRecord, _ *domain.DCPReviewLabPolicyTask, generation *domain.DCPWBCReadmissionGeneration) {
 			generation.LeaseID = ""

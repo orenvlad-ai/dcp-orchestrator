@@ -25,6 +25,11 @@ const DCPWBCRepoOnlyPolicyVersion = "dcp.wb-core.repo-only.release-train/v1"
 // Train may merge and deploy, and terminal success requires production proof.
 const DCPWBCLiveRuntimePolicyVersion = "dcp.wb-core.live-runtime.release-train/v1"
 
+const (
+	DCPWBCHandoffV1CompatibilityMarker = "wb-core.dcp-release-handoff/v1"
+	DCPWBCHandoffV2CompatibilityMarker = "wb-core.dcp-release-handoff/v2"
+)
+
 const DCPReviewLabPolicyAgentRules = "DCP synthetic PR profile v4. Work only in this exact public synthetic repository, current native worktree and current AO branch. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
 const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-browser-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
@@ -137,6 +142,25 @@ func (s DCPPolicyTargetSpec) UsesWBCReleaseTrain() bool {
 	return s.ReleaseAuthority == DCPReleaseWBCTrainOnly
 }
 
+// AcceptsWBCReadmissionMarker keeps observation aligned with the readmission
+// engine's versioned compatibility envelope. The project itself must always
+// register against v2, while an already-authorized repo-only generation may
+// retain immutable legacy v1 Actions evidence. Live-runtime never accepts v1.
+func (s DCPPolicyTargetSpec) AcceptsWBCReadmissionMarker(marker string) bool {
+	if !s.UsesWBCReleaseTrain() || s.Target != "wb-core" || s.Repository != "orenvlad-ai/wb-core" ||
+		s.CompatibilityMarker != DCPWBCHandoffV2CompatibilityMarker {
+		return false
+	}
+	switch s.Profile {
+	case "repo-only":
+		return marker == DCPWBCHandoffV1CompatibilityMarker || marker == DCPWBCHandoffV2CompatibilityMarker
+	case "live-runtime":
+		return marker == DCPWBCHandoffV2CompatibilityMarker
+	default:
+		return false
+	}
+}
+
 var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 	{
 		Target: "dcp-review-lab", Profile: "synthetic-pr", Repository: "orenvlad-ai/dcp-review-lab",
@@ -158,7 +182,7 @@ var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
 		SessionPrefix: "wb-core", PolicyVersion: DCPWBCRepoOnlyPolicyVersion,
 		AgentRules: DCPWBCRepoOnlyPolicyAgentRules, MinimumCardNumber: 1,
-		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: "wb-core.dcp-release-handoff/v2",
+		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: DCPWBCHandoffV2CompatibilityMarker,
 		CompatibilityFiles: [3]string{
 			"docs/architecture/11_github_release_train.md",
 			"apps/github_release_train.py",
@@ -171,7 +195,7 @@ var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
 		SessionPrefix: "wb-core", PolicyVersion: DCPWBCLiveRuntimePolicyVersion,
 		AgentRules: DCPWBCReleaseTrainPolicyAgentRules, MinimumCardNumber: 1,
-		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: "wb-core.dcp-release-handoff/v2",
+		ReleaseAuthority: DCPReleaseWBCTrainOnly, CompatibilityMarker: DCPWBCHandoffV2CompatibilityMarker,
 		CompatibilityFiles: [3]string{
 			"docs/architecture/11_github_release_train.md",
 			"apps/github_release_train.py",
