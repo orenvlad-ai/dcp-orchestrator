@@ -18,6 +18,8 @@ wbc_end_to_end_control_plane_commit='4f7775f375a612a38e96496f09908ab48e3598c5'
 wbc_end_to_end_operating_contract_revision='2026-08-18.2'
 task_first_lifecycle_control_plane_commit='5075235780b9c38d95faa9657a70265069d3a5c5'
 task_first_lifecycle_operating_contract_revision='2026-08-18.11'
+dcp_v2_control_plane_commit='8be08577673722edc9ae036dedea46c88ceac129'
+dcp_v2_operating_contract_revision='2026-08-20.3'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -70,10 +72,13 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$wbc_control_plane_commit/docs/DCP_WB_CORE_RELEASE_TRAIN_HANDOFF_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core Release Train handoff contract'
 	grep -Fq "dev-control-plane/blob/$wbc_end_to_end_control_plane_commit/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact wb-core end-to-end release/deploy contract'
 	grep -Fq "dev-control-plane/blob/$task_first_lifecycle_control_plane_commit/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact task-first native lifecycle contract'
+	grep -Fq "dev-control-plane/blob/$dcp_v2_control_plane_commit/docs/DCP_WBC_INTEGRATION_TWIN_DCP_V2_ARCHITECTURE_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact DCP v2 architecture contract'
+	grep -Fq "dev-control-plane/blob/$dcp_v2_control_plane_commit/docs/DCP_WBC_INTEGRATION_TWIN_STAGE3_4_COMBINED_EXECUTION_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact Stage 3/4 execution authority'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq "\`$wbc_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core operating contract revision mismatch'
 	grep -Fq "\`$wbc_end_to_end_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core end-to-end operating contract revision mismatch'
 	grep -Fq "\`$task_first_lifecycle_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md task-first lifecycle operating contract revision mismatch'
+	grep -Fq "\`$dcp_v2_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md DCP v2 operating contract revision mismatch'
 	grep -Fq 'DCP_AO_LAB_ROOT' AGENTS.md || fail 'AGENTS.md lacks explicit DCP lab root contract'
 	grep -Fq 'pro.devcontrol.dcp-orchestrator' AGENTS.md || fail 'AGENTS.md lacks DCP application identity'
 	grep -Fq 'Current implemented scope' AGENTS.md || fail 'AGENTS.md does not separate implemented and future scope'
@@ -204,7 +209,8 @@ source_gates() {
 	wbc_readmission_admission_recovery_migration='backend/internal/storage/sqlite/migrations/0081_dcp_wbc_readmission_admission_recovery_v1.sql'
 	wbc_readmission_waiting_recovery_migration='backend/internal/storage/sqlite/migrations/0082_dcp_wbc_readmission_waiting_recovery_v1.sql'
 	task_first_lifecycle_recovery_migration='backend/internal/storage/sqlite/migrations/0083_dcp_task_first_native_lifecycle_recovery_v1.sql'
-	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" "$wbc_readmission_live_runtime_migration" "$wbc_readmission_admission_recovery_migration" "$wbc_readmission_waiting_recovery_migration" "$task_first_lifecycle_recovery_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
+	dcp_v2_core_migration='backend/internal/storage/sqlite/migrations/0084_dcp_v2_core.sql'
+	printf '%s\n' "$terminal_merge_migration" "$admission_migration" "$recovered_incident_migration" "$arbiter_migration" "$arbiter_prelaunch_recovery_migration" "$arbiter_schema_recovery_migration" "$arbiter_successor_migration" "$arbiter_successor_validation_recovery_migration" "$fresh_worker_recovery_migration" "$fresh_worker_preflight_recovery_migration" "$model_free_rebase_migration" "$provider_base_correction_migration" "$cold_start_recovery_migration" "$cold_start_tool_path_recovery_migration" "$cold_start_auto_merge_recovery_migration" "$rebase_head_finalization_migration" "$rebase_head_finalization_audit_recovery_migration" "$rebase_head_finalization_provider_base_recovery_migration" "$happy_path_migration" "$provider_pending_recovery_migration" "$future_arbiter_migration" "$future_arbiter_schema_recovery_migration" "$future_arbiter_result_recovery_migration" "$future_repair_target_recovery_migration" "$future_repair_ci_recovery_migration" "$future_human_gate_recovery_migration" "$repo_only_target_migration" "$real_target_submit_recovery_migration" "$repo_only_target_forward_migration" "$wbc_release_handoff_migration" "$wbc_ci_truth_recovery_migration" "$wbc_readmission_live_runtime_migration" "$wbc_readmission_admission_recovery_migration" "$wbc_readmission_waiting_recovery_migration" "$task_first_lifecycle_recovery_migration" "$dcp_v2_core_migration" > "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"
 	trap 'rm -f "${TMPDIR:-/tmp}/dcp-authorized-migrations.$$"' EXIT
 	{
 		git diff --name-only "$i11_commit"..HEAD -- backend/internal/storage/sqlite/migrations
@@ -475,6 +481,33 @@ source_gates() {
 	grep -Fq 'set(&base.DiffBaseSHA, in.DiffBaseSHA)' backend/internal/lifecycle/manager.go || fail 'native provisioning still drops the durable task creation base SHA'
 	grep -Fq 'repairDCPReviewLabCard13CreationBase' backend/internal/storage/sqlite/db.go || fail 'exact live card-13 creation-base repair is absent'
 	grep -Fq 'AND 0 = (' backend/internal/storage/sqlite/db.go || fail 'card-13 base repair is not fenced to zero active model actions'
+	[[ -s "$dcp_v2_core_migration" ]] || fail 'DCP v2 Stage 4 additive migration is absent'
+	grep -Fq "control_plane_commit  TEXT NOT NULL CHECK (control_plane_commit = '$dcp_v2_control_plane_commit')" "$dcp_v2_core_migration" || fail 'DCP v2 source authority is not exact'
+	for v2_table in task revision command action admission incident external_event result; do
+		grep -Fq "CREATE TABLE dcp_v2_$v2_table" "$dcp_v2_core_migration" || fail "DCP v2 $v2_table table is absent"
+	done
+	grep -Fq 'adapter_activated     INTEGER NOT NULL CHECK (adapter_activated = 0)' "$dcp_v2_core_migration" || fail 'DCP v2 adapter is activated by Stage 4'
+	grep -Fq 'installed             INTEGER NOT NULL CHECK (installed = 0)' "$dcp_v2_core_migration" || fail 'DCP v2 Stage 4 claims installation'
+	grep -Fq 'idx_dcp_v2_command_one_active_per_task' "$dcp_v2_core_migration" || fail 'DCP v2 lacks one-active-command physical guard'
+	grep -Fq 'idx_dcp_v2_action_one_slot' "$dcp_v2_core_migration" || fail 'DCP v2 lacks physical global model slots'
+	grep -Fq 'idx_dcp_v2_action_one_repair' "$dcp_v2_core_migration" || fail 'DCP v2 lacks shared repair ceiling'
+	grep -Fq '0084 DCP v2 Stage 4 core is forward-only' "$dcp_v2_core_migration" || fail 'DCP v2 migration is not forward-only'
+	grep -Fq 'func (k DCPV2CommandKind) AllowsTransition' backend/internal/domain/dcp_v2.go || fail 'DCP v2 typed transition law is absent'
+	grep -Fq 'func (s *Store) TransitionDCPV2' backend/internal/storage/sqlite/store/dcp_v2_store.go || fail 'DCP v2 atomic state/command store is absent'
+	grep -Fq 'func (s *Store) RecoverDCPV2CommandLease' backend/internal/storage/sqlite/store/dcp_v2_store.go || fail 'DCP v2 crash lease recovery is absent'
+	grep -Fq "effect_fence = '' AND recovery_generation" backend/internal/storage/sqlite/queries/dcp_v2.sql || fail 'DCP v2 can retry a fenced external effect'
+	grep -Fq 'func (e *Engine) Startup' backend/internal/service/dcpv2/engine.go || fail 'DCP v2 startup drain is absent'
+	grep -Fq 'func (e *Engine) Event' backend/internal/service/dcpv2/engine.go || fail 'DCP v2 provider event drain is absent'
+	grep -Fq 'return e.Drain(ctx)' backend/internal/service/dcpv2/engine.go || fail 'startup/event paths do not share one drain'
+	! grep -ERq 'time\.(NewTicker|Tick|Sleep)|for[[:space:]]*\{[[:space:]]*$|go[[:space:]]+func' backend/internal/service/dcpv2 || fail 'DCP v2 introduced a scheduler, unbounded loop or background worker'
+	! grep -Rq 'internal/service/dcpv2' backend/internal/daemon || fail 'Stage 4 dormant DCP v2 source is wired into the daemon'
+	! sed -n '/type DCPV2Release interface/,/^}/p' backend/internal/ports/dcp_v2.go | grep -Eq 'Merge(PullRequest)?\(' || fail 'DCP v2 release port exposes direct merge authority'
+	! sed -n '/type DCPV2Deployment interface/,/^}/p' backend/internal/ports/dcp_v2.go | grep -Eq '(Install|Deploy|Restart|Redeploy)\(' || fail 'DCP v2 deployment port exposes mutation authority'
+	! grep -ERq 'orenvlad-ai/(wb-core|dcp-wbc-integration-lab)' backend/internal/domain/dcp_v2.go backend/internal/ports/dcp_v2.go backend/internal/service/dcpv2 backend/internal/storage/sqlite/store/dcp_v2_store.go || fail 'Stage 4 provider-neutral core special-cases a current target'
+	grep -Eq 'DCPV2[[:space:]]+\*DCPV2LifecycleProjection' backend/internal/domain/session.go || fail 'DCP v2 shared session projection is absent'
+	grep -Fq 'if (session.dcpV2) return dcpV2VisualStatus(session);' frontend/src/renderer/lib/session-presentation.ts || fail 'renderer does not prefer the DCP v2 shared projection'
+	grep -Fq 'dcpV2: session.dcpV2' frontend/src/renderer/hooks/useWorkspaceQuery.ts || fail 'DCP v2 projection is dropped at the API boundary'
+	grep -Fq 'getSessionAccessibilityStatus(session)' frontend/src/renderer/lib/session-presentation.test.ts || fail 'DCP v2 projection lacks accessibility proof'
 	grep -Fq 'getSessionVisualStatus(session)' frontend/src/renderer/components/SessionsBoard.tsx || fail 'native card does not use the shared policy status dot'
 	grep -Fq 'getSessionVisualStatus(session)' frontend/src/renderer/components/Sidebar.tsx || fail 'sidebar does not use the shared policy status dot'
 	grep -Fq 'session.dcpArbiterStatus === "human_gate"' frontend/src/renderer/lib/session-presentation.ts || fail 'terminal Human Gate does not override stale stock failure through the shared projection'
@@ -507,6 +540,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0081_dcp_wbc_readmission_admission_recovery_v1\.sql|wbc_readmission_admission_recovery_live_copy_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0082_dcp_wbc_readmission_waiting_recovery_v1\.sql|wbc_readmission_waiting_recovery_live_copy_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_task_lifecycle(_test)?\.go|backend/internal/storage/sqlite/(migrations/0083_dcp_task_first_native_lifecycle_recovery_v1\.sql|task_first_native_lifecycle_recovery_live_copy_test\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_v2(_test)?\.go|backend/internal/ports/dcp_v2\.go|backend/internal/service/dcpv2/engine(_test)?\.go|backend/internal/storage/sqlite/(dcp_v2_core_migration_test\.go|migrations/0084_dcp_v2_core\.sql|queries/dcp_v2\.sql|gen/dcp_v2\.sql\.go|store/dcp_v2_store(_test)?\.go))$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

@@ -119,6 +119,46 @@ export type PullRequestFacts = {
 	updatedAt: string;
 };
 
+export type DCPV2TaskState =
+	| "worker_queued"
+	| "worker_running"
+	| "checks_waiting"
+	| "review_queued"
+	| "review_running"
+	| "repair_queued"
+	| "repair_running"
+	| "arbiter_queued"
+	| "arbiter_running"
+	| "admission_waiting"
+	| "readmission"
+	| "release_waiting"
+	| "merge_observing"
+	| "release_verified"
+	| "deployment_waiting"
+	| "deployment_observing"
+	| "human_gate"
+	| "failed"
+	| "merged"
+	| "deployed";
+
+/** One provider-neutral projection shared by card, sidebar, details and a11y. */
+export type DCPV2LifecycleProjection = {
+	phase: DCPV2TaskState;
+	role?: string;
+	statusLabel: string;
+	detail?: string;
+	revisionId: string;
+	admissionId?: string;
+	resultId?: string;
+	modelActive: boolean;
+	workflowActive: boolean;
+	humanGate: boolean;
+	error: boolean;
+	merged: boolean;
+	deployed: boolean;
+	humanGateQuestion?: string;
+};
+
 export type WorkspaceSession = {
 	id: string;
 	terminalHandleId?: string;
@@ -135,6 +175,8 @@ export type WorkspaceSession = {
 	status: SessionStatus;
 	/** Stack-aware PR context derived by the daemon independently of runtime activity. */
 	scmStatus?: SessionStatus;
+	/** Dormant until a later reviewed DCP v2 target/session activation stage. */
+	dcpV2?: DCPV2LifecycleProjection;
 	/** Durable happy-path policy lifecycle projected through this same native session. */
 	dcpPolicyState?: DCPPolicyState;
 	dcpPolicyProfile?: "synthetic-pr" | "repo-only" | "live-runtime";

@@ -85,6 +85,7 @@ export type SessionVisualStatus = {
 	zone: AttentionZone;
 	displayStatus: SessionStatus;
 	statusLabelKey?: MessageKey;
+	statusLabel?: string;
 	statusClassName?: string;
 	detail?: string;
 	tone: "working" | "review" | "arbiter" | "ready" | "attention" | "merged" | "failed" | "idle";
@@ -118,6 +119,7 @@ function visualStatus(
 				| "policyPhase"
 				| "laneSection"
 				| "statusLabelKey"
+				| "statusLabel"
 				| "statusClassName"
 				| "detail"
 				| "active"
@@ -137,6 +139,97 @@ function visualStatus(
 		workflowActive,
 		active: workflowActive,
 	};
+}
+
+function dcpV2VisualStatus(session: WorkspaceSession): SessionVisualStatus {
+	const projection = session.dcpV2!;
+	const exactActivity = (status: SessionVisualStatus): SessionVisualStatus => ({
+		...status,
+		indicatorClassName: `${status.dotClassName}${status.modelActive ? " animate-status-pulse" : ""}`,
+		active: status.workflowActive,
+	});
+	const common = {
+		statusLabel: projection.statusLabel,
+		detail: projection.detail || projection.humanGateQuestion,
+		modelActive: projection.modelActive,
+		workflowActive: projection.workflowActive,
+	};
+	if (projection.humanGate) {
+		return exactActivity(visualStatus("attention", "bg-status-needs-you", {
+			...common,
+			policyPhase: "needs_you",
+			zone: "action",
+			displayStatus: "review_failed",
+			statusClassName: "text-status-needs-you",
+			modelActive: false,
+			workflowActive: false,
+		}));
+	}
+	if (projection.error) {
+		return exactActivity(visualStatus("failed", "bg-status-exited", {
+			...common,
+			policyPhase: "needs_you",
+			zone: "action",
+			displayStatus: "review_failed",
+			statusClassName: "text-status-exited",
+			modelActive: false,
+			workflowActive: false,
+		}));
+	}
+	if (projection.deployed || (projection.phase === "merged" && projection.merged)) {
+		return exactActivity(visualStatus("merged", "bg-status-merged", {
+			...common,
+			policyPhase: "merged",
+			zone: "merge",
+			displayStatus: "merged",
+			statusClassName: "text-status-merged",
+			modelActive: false,
+			workflowActive: false,
+		}));
+	}
+	if (projection.phase === "arbiter_queued" || projection.phase === "arbiter_running") {
+		return exactActivity(visualStatus("arbiter", "bg-status-arbiter", {
+			...common,
+			policyPhase: "arbiter",
+			laneSection: "arbiter",
+			zone: "pending",
+			displayStatus: "review_pending",
+			statusClassName: "text-status-arbiter",
+		}));
+	}
+	if (projection.phase === "review_queued" || projection.phase === "review_running") {
+		return exactActivity(visualStatus("review", "bg-status-in-review", {
+			...common,
+			policyPhase: "in_review",
+			laneSection: "in_review",
+			zone: "pending",
+			displayStatus: "review_pending",
+			statusClassName: "text-status-in-review",
+		}));
+	}
+	if (
+		projection.phase === "admission_waiting" ||
+		projection.phase === "release_waiting" ||
+		projection.phase === "merge_observing" ||
+		projection.phase === "release_verified" ||
+		projection.phase === "deployment_waiting" ||
+		projection.phase === "deployment_observing"
+	) {
+		return exactActivity(visualStatus("ready", "bg-status-ready", {
+			...common,
+			policyPhase: "ready_to_merge",
+			zone: "merge",
+			displayStatus: "mergeable",
+			statusClassName: "text-status-ready",
+		}));
+	}
+	return exactActivity(visualStatus("working", "bg-status-working", {
+		...common,
+		policyPhase: "working",
+		zone: "working",
+		displayStatus: "working",
+		statusClassName: "text-status-working",
+	}));
 }
 
 function policyVisualStatus(
@@ -327,6 +420,7 @@ function dcpArbiterDetail(session: WorkspaceSession): string | undefined {
 // workflow motion spans autonomous zero-model waits, while modelActive remains
 // a separate exact accounting fact.
 export function getSessionVisualStatus(session: WorkspaceSession): SessionVisualStatus {
+	if (session.dcpV2) return dcpV2VisualStatus(session);
 	const modelActive = session.dcpPolicyModelActive ?? session.dcpPolicyActionActive === true;
 	const workflowActive = session.dcpPolicyWorkflowActive ?? fallbackPolicyWorkflowActive(session);
 	if (session.dcpPolicyState) {
@@ -447,7 +541,7 @@ export function getSessionStatusViewForSession(
 	const view = getSessionStatusView(projection.displayStatus, t);
 	return {
 		...view,
-		label: projection.statusLabelKey ? t(projection.statusLabelKey) : view.label,
+		label: projection.statusLabel ?? (projection.statusLabelKey ? t(projection.statusLabelKey) : view.label),
 		className: projection.statusClassName ?? view.className,
 	};
 }
@@ -574,7 +668,7 @@ function stockAttentionZone(status: SessionStatus): AttentionZone {
 
 export function attentionZone(input: SessionStatus | WorkspaceSession): AttentionZone {
 	if (typeof input === "string") return stockAttentionZone(input);
-	return input.dcpPolicyState ? getSessionVisualStatus(input).zone : stockAttentionZone(input.status);
+	return input.dcpV2 || input.dcpPolicyState ? getSessionVisualStatus(input).zone : stockAttentionZone(input.status);
 }
 
 export function getAttentionZoneView(status: SessionStatus, t: TFunction = appI18n.t): AttentionZoneView {

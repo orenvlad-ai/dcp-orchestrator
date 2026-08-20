@@ -98,6 +98,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 						branch: session.branch || undefined,
 						status,
 						scmStatus,
+						dcpV2: session.dcpV2,
 						dcpPolicyState: session.dcpPolicyState,
 						dcpPolicyProfile: session.dcpPolicyProfile,
 						dcpPolicyReleasePhase: session.dcpPolicyReleasePhase,

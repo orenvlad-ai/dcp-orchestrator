@@ -24,6 +24,8 @@ repository:
 12. [`wb-core` CI truth and lifecycle UX v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/1ca282408bec53a1d696cb58d247e33285209ee9/docs/DCP_WB_CORE_CI_TRUTH_LIFECYCLE_UX_V1_CONTRACT.md)
 13. [`wb-core` end-to-end release and deploy v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/4f7775f375a612a38e96496f09908ab48e3598c5/docs/DCP_WB_CORE_END_TO_END_RELEASE_DEPLOY_V1_CONTRACT.md)
 14. [task-first native lifecycle v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/5075235780b9c38d95faa9657a70265069d3a5c5/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md)
+15. [WBC integration twin and DCP v2 architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_DCP_V2_ARCHITECTURE_CONTRACT.md)
+16. [Stage 3 terminal evidence and conditional Stage 4 source authority](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_STAGE3_4_COMBINED_EXECUTION_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -59,6 +61,22 @@ CI, review queue, admission, Release Train, Human Gate, incident and terminal
 observation remain passive and may retain the exact archived native shell.
 Action/process asymmetry remains fail-closed. This source and schema-83
 recovery remain inactive until a separate reviewed pin/install pass.
+
+Items 15-16 and the merged root/current authorities at exact
+`8be08577673722edc9ae036dedea46c88ceac129`, operating revision
+`2026-08-20.3`, activate only the Stage 4 provider-neutral source pass after
+the independently green Stage 3 qualification. The new Task -> immutable
+exact-head Revision -> durable Command -> bounded Action -> FIFO Admission ->
+verified Release/Deployment Result core is additive and dormant. Every
+authoritative transition persists its required next Command in the same SQLite
+transaction; startup and provider events enter one bounded drain with durable
+leases, effect fences and dedupe. There is no timer, watcher, heartbeat,
+unbounded poll, automatic retry, live target adapter or direct merge/deploy
+method. Schema 0084 creates empty v2 tables with `adapter_activated=0` and
+`installed=0`; it does not submit a task or mutate predecessor schema-83 facts.
+The session projection field remains nil until a separately authorized target
+adapter and Stage 5 pin/install pass. Stage 4 source completion is not install,
+activation, submission, canary, production authority or owner acceptance.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
