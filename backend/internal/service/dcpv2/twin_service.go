@@ -46,19 +46,23 @@ type tokenIdentity struct{}
 
 func (tokenIdentity) Token(kind, id string) string { return stableID(kind, id) }
 
+type v2RuntimePolicyProvisioner interface {
+	ProvisionV2RuntimePolicy(context.Context, dcptasksvc.PolicySubmitInput) (dcptasksvc.PolicySubmitResult, error)
+}
+
 // TwinService is the only activated Stage 5 target binding. It composes the
 // provider-neutral v2 engine with the exact GitHub/Release Train adapter and
 // the predecessor native-session service used only as a bounded model shell.
 type TwinService struct {
 	store   *sqlite.Store
-	legacy  *dcptasksvc.Service
+	legacy  v2RuntimePolicyProvisioner
 	adapter *TwinGitHubAdapter
 	engine  *Engine
 	active  bool
 	now     func() time.Time
 }
 
-func NewTwinService(store *sqlite.Store, legacy *dcptasksvc.Service, adapter *TwinGitHubAdapter, epoch string, now func() time.Time) (*TwinService, error) {
+func NewTwinService(store *sqlite.Store, legacy v2RuntimePolicyProvisioner, adapter *TwinGitHubAdapter, epoch string, now func() time.Time) (*TwinService, error) {
 	if store == nil || legacy == nil || adapter == nil || epoch == "" {
 		return nil, errors.New("DCP v2 twin service dependencies are incomplete")
 	}
@@ -89,6 +93,9 @@ func NewTwinService(store *sqlite.Store, legacy *dcptasksvc.Service, adapter *Tw
 func (s *TwinService) Startup(ctx context.Context) error {
 	if !s.active {
 		return nil
+	}
+	if recovered, err := s.recoverStage6NativeShell(ctx); err != nil || recovered {
+		return err
 	}
 	return s.engine.Startup(ctx)
 }
