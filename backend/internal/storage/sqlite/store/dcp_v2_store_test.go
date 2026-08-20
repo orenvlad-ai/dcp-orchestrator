@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,71 @@ func TestDCPV2Stage5ActivationRefusesExistingLifecycle(t *testing.T) {
 	}
 	if _, err := s.GetDCPV2Stage5Activation(ctx); !errors.Is(err, sqlitestore.ErrDCPV2NotFound) {
 		t.Fatalf("failed activation left a row: %v", err)
+	}
+}
+
+func TestDCPV2Stage5ActivationAtomicallyRegistersExactTwinProject(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	spec, ok := domain.DCPPolicyTarget("dcp-wbc-integration-lab", "live-runtime")
+	if !ok {
+		t.Fatal("missing exact twin spec")
+	}
+	project := domain.ProjectRecord{
+		ID: spec.Target, Path: filepath.Join(t.TempDir(), "targets", spec.Target), RepoOriginURL: spec.OriginURL,
+		DisplayName: spec.Target, RegisteredAt: now, Kind: domain.ProjectKindSingleRepo,
+		Config: domain.ProjectConfig{DefaultBranch: spec.DefaultBranch, SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules,
+			Worker:    domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}},
+			Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}}},
+	}
+	created, projectCreated, err := s.ActivateDCPV2Stage5WithProject(ctx, v2Stage5Activation(now), project)
+	if err != nil || !created || !projectCreated {
+		t.Fatalf("first activation: created=%t projectCreated=%t err=%v", created, projectCreated, err)
+	}
+	project.RegisteredAt = now.Add(time.Hour)
+	created, projectCreated, err = s.ActivateDCPV2Stage5WithProject(ctx, v2Stage5Activation(now.Add(time.Hour)), project)
+	if err != nil || created || projectCreated {
+		t.Fatalf("exact replay: created=%t projectCreated=%t err=%v", created, projectCreated, err)
+	}
+	stored, found, err := s.GetProject(ctx, project.ID)
+	if err != nil || !found || !stored.RegisteredAt.Equal(now) {
+		t.Fatalf("stored project: project=%+v found=%t err=%v", stored, found, err)
+	}
+}
+
+func TestDCPV2Stage5ActivationRollsBackOnProjectIdentityConflict(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	targetPath := filepath.Join(t.TempDir(), "targets", "dcp-wbc-integration-lab")
+	if err := s.UpsertProject(ctx, domain.ProjectRecord{ID: "foreign", Path: targetPath, RegisteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := domain.DCPPolicyTarget("dcp-wbc-integration-lab", "live-runtime")
+	project := domain.ProjectRecord{
+		ID: spec.Target, Path: targetPath, RepoOriginURL: spec.OriginURL, DisplayName: spec.Target,
+		RegisteredAt: now, Kind: domain.ProjectKindSingleRepo,
+		Config: domain.ProjectConfig{DefaultBranch: spec.DefaultBranch, SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules,
+			Worker:    domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}},
+			Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}}},
+	}
+	if _, _, err := s.ActivateDCPV2Stage5WithProject(ctx, v2Stage5Activation(now), project); !errors.Is(err, sqlitestore.ErrDCPV2IdentityConflict) {
+		t.Fatalf("conflicting activation err=%v, want identity conflict", err)
+	}
+	if _, err := s.GetDCPV2Stage5Activation(ctx); !errors.Is(err, sqlitestore.ErrDCPV2NotFound) {
+		t.Fatalf("failed atomic activation left an authority row: %v", err)
+	}
+	if _, found, err := s.GetProject(ctx, spec.Target); err != nil || found {
+		t.Fatalf("failed atomic activation left the twin project: found=%t err=%v", found, err)
 	}
 }
 

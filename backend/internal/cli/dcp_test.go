@@ -45,6 +45,7 @@ func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T
 	t.Setenv("AO_DATA_DIR", dataDir)
 	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "running.json"))
 	now := time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC)
+	targetPath := filepath.Join(t.TempDir(), "targets", "dcp-wbc-integration-lab")
 	deps := Deps{In: bytes.NewReader(nil), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }}
 
 	invalid := NewRootCommand(deps)
@@ -62,7 +63,7 @@ func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T
 		cmd := NewRootCommand(deps)
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
-		cmd.SetArgs([]string{"dcp", "stage5-activate", "--source-commit", strings.Repeat("a", 40), "--source-tree", strings.Repeat("b", 40), "--install-receipt-sha", strings.Repeat("c", 64), "--json"})
+		cmd.SetArgs([]string{"dcp", "stage5-activate", "--source-commit", strings.Repeat("a", 40), "--source-tree", strings.Repeat("b", 40), "--install-receipt-sha", strings.Repeat("c", 64), "--target-path", targetPath, "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("activation attempt %d: %v\n%s", i+1, err, out.String())
 		}
@@ -70,7 +71,7 @@ func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T
 		if err := json.Unmarshal(out.Bytes(), &response); err != nil {
 			t.Fatalf("decode activation attempt %d: %v\n%s", i+1, err, out.String())
 		}
-		if response.Created != wantCreated || response.Activation.TargetPolicyDigest != domain.DCPWBCIntegrationTwinPolicyDigest() {
+		if response.Created != wantCreated || response.ProjectCreated != wantCreated || response.ProjectID != "dcp-wbc-integration-lab" || response.ProjectPath != targetPath || response.Activation.TargetPolicyDigest != domain.DCPWBCIntegrationTwinPolicyDigest() {
 			t.Fatalf("activation attempt %d response=%+v", i+1, response)
 		}
 	}
@@ -82,5 +83,9 @@ func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T
 	activation, err := store.GetDCPV2Stage5Activation(t.Context())
 	if err != nil || !activation.ActivatedAt.Equal(now) {
 		t.Fatalf("read activation: activation=%+v err=%v", activation, err)
+	}
+	project, found, err := store.GetProject(t.Context(), "dcp-wbc-integration-lab")
+	if err != nil || !found || project.Path != targetPath || project.RegisteredAt != activation.ActivatedAt {
+		t.Fatalf("read twin project: project=%+v found=%t err=%v", project, found, err)
 	}
 }
