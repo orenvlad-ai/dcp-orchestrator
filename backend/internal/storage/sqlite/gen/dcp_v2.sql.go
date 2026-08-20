@@ -36,6 +36,24 @@ func (q *Queries) ApplyDCPV2ExternalEvent(ctx context.Context, arg ApplyDCPV2Ext
 	return result.RowsAffected()
 }
 
+const countDCPV2LifecycleRows = `-- name: CountDCPV2LifecycleRows :one
+SELECT (SELECT count(*) FROM dcp_v2_task) +
+       (SELECT count(*) FROM dcp_v2_revision) +
+       (SELECT count(*) FROM dcp_v2_command) +
+       (SELECT count(*) FROM dcp_v2_action) +
+       (SELECT count(*) FROM dcp_v2_admission) +
+       (SELECT count(*) FROM dcp_v2_incident) +
+       (SELECT count(*) FROM dcp_v2_external_event) +
+       (SELECT count(*) FROM dcp_v2_result)
+`
+
+func (q *Queries) CountDCPV2LifecycleRows(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countDCPV2LifecycleRows)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const dispatchDCPV2Admission = `-- name: DispatchDCPV2Admission :execrows
 UPDATE dcp_v2_admission SET status = 'dispatched', updated_at = ?
 WHERE admission_id = ? AND status = 'leased' AND lease_owner = ? AND lease_epoch = ? AND lease_token = ?
@@ -466,6 +484,39 @@ func (q *Queries) GetDCPV2Revision(ctx context.Context, revisionID string) (DcpV
 	return i, err
 }
 
+const getDCPV2Stage5Activation = `-- name: GetDCPV2Stage5Activation :one
+SELECT activation_id, authority_commit, source_commit, source_tree, install_receipt_sha, target_spec_version, target_policy_digest, repository, repository_id, owner_id, base_ref, required_check, issuer_kind, issuer_actor, issuer_event, issuer_event_type, workflow_id, environment, service, adapter, activated_at FROM dcp_v2_stage5_activation WHERE activation_id = ?
+`
+
+func (q *Queries) GetDCPV2Stage5Activation(ctx context.Context, activationID string) (DcpV2Stage5Activation, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2Stage5Activation, activationID)
+	var i DcpV2Stage5Activation
+	err := row.Scan(
+		&i.ActivationID,
+		&i.AuthorityCommit,
+		&i.SourceCommit,
+		&i.SourceTree,
+		&i.InstallReceiptSha,
+		&i.TargetSpecVersion,
+		&i.TargetPolicyDigest,
+		&i.Repository,
+		&i.RepositoryID,
+		&i.OwnerID,
+		&i.BaseRef,
+		&i.RequiredCheck,
+		&i.IssuerKind,
+		&i.IssuerActor,
+		&i.IssuerEvent,
+		&i.IssuerEventType,
+		&i.WorkflowID,
+		&i.Environment,
+		&i.Service,
+		&i.Adapter,
+		&i.ActivatedAt,
+	)
+	return i, err
+}
+
 const getDCPV2Task = `-- name: GetDCPV2Task :one
 SELECT task_id, target_spec_version, repository, repository_id, owner_id, base_ref, profile, request_digest, scope_digest, policy_digest, initial_worker_budget, repair_budget, repair_used, max_readmissions, readmission_count, current_revision_id, state, state_revision, terminal_result_id, human_gate_question, error_code, created_at, updated_at FROM dcp_v2_task WHERE task_id = ?
 `
@@ -881,6 +932,67 @@ func (q *Queries) InsertDCPV2Revision(ctx context.Context, arg InsertDCPV2Revisi
 		arg.PRNumber,
 		arg.EvidenceDigest,
 		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertDCPV2Stage5Activation = `-- name: InsertDCPV2Stage5Activation :exec
+INSERT INTO dcp_v2_stage5_activation (
+    activation_id, authority_commit, source_commit, source_tree,
+    install_receipt_sha, target_spec_version, target_policy_digest,
+    repository, repository_id, owner_id, base_ref, required_check,
+    issuer_kind, issuer_actor, issuer_event, issuer_event_type, workflow_id,
+    environment, service, adapter, activated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDCPV2Stage5ActivationParams struct {
+	ActivationID       string
+	AuthorityCommit    string
+	SourceCommit       string
+	SourceTree         string
+	InstallReceiptSha  string
+	TargetSpecVersion  string
+	TargetPolicyDigest string
+	Repository         string
+	RepositoryID       int64
+	OwnerID            int64
+	BaseRef            string
+	RequiredCheck      string
+	IssuerKind         string
+	IssuerActor        string
+	IssuerEvent        string
+	IssuerEventType    string
+	WorkflowID         int64
+	Environment        string
+	Service            string
+	Adapter            string
+	ActivatedAt        time.Time
+}
+
+func (q *Queries) InsertDCPV2Stage5Activation(ctx context.Context, arg InsertDCPV2Stage5ActivationParams) error {
+	_, err := q.db.ExecContext(ctx, insertDCPV2Stage5Activation,
+		arg.ActivationID,
+		arg.AuthorityCommit,
+		arg.SourceCommit,
+		arg.SourceTree,
+		arg.InstallReceiptSha,
+		arg.TargetSpecVersion,
+		arg.TargetPolicyDigest,
+		arg.Repository,
+		arg.RepositoryID,
+		arg.OwnerID,
+		arg.BaseRef,
+		arg.RequiredCheck,
+		arg.IssuerKind,
+		arg.IssuerActor,
+		arg.IssuerEvent,
+		arg.IssuerEventType,
+		arg.WorkflowID,
+		arg.Environment,
+		arg.Service,
+		arg.Adapter,
+		arg.ActivatedAt,
 	)
 	return err
 }

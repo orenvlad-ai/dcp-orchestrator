@@ -3,7 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 func TestDCPPolicySubmitResponsePreservesImmutablePolicyIdentity(t *testing.T) {
@@ -30,5 +37,50 @@ func TestDCPPolicySubmitResponsePreservesImmutablePolicyIdentity(t *testing.T) {
 	if !ok || task["taskId"] != "price-arch-v1" || task["target"] != "wb-price-extension" ||
 		task["profile"] != "repo-only" || task["repository"] != "orenvlad-ai/wb-price-extension" {
 		t.Fatalf("CLI JSON drifted from the immutable server tuple: %s", output.String())
+	}
+}
+
+func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("AO_DATA_DIR", dataDir)
+	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "running.json"))
+	now := time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC)
+	deps := Deps{In: bytes.NewReader(nil), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }}
+
+	invalid := NewRootCommand(deps)
+	invalid.SetArgs([]string{"dcp", "stage5-activate", "--source-commit", "bad", "--source-tree", strings.Repeat("b", 40), "--install-receipt-sha", strings.Repeat("c", 64)})
+	if err := invalid.Execute(); err == nil {
+		t.Fatal("invalid source identity unexpectedly succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "ao.db")); !os.IsNotExist(err) {
+		t.Fatalf("invalid input opened the database: %v", err)
+	}
+
+	for i, wantCreated := range []bool{true, false} {
+		var out bytes.Buffer
+		deps.Out = &out
+		cmd := NewRootCommand(deps)
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"dcp", "stage5-activate", "--source-commit", strings.Repeat("a", 40), "--source-tree", strings.Repeat("b", 40), "--install-receipt-sha", strings.Repeat("c", 64), "--json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("activation attempt %d: %v\n%s", i+1, err, out.String())
+		}
+		var response dcpV2Stage5ActivateResponse
+		if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+			t.Fatalf("decode activation attempt %d: %v\n%s", i+1, err, out.String())
+		}
+		if response.Created != wantCreated || response.Activation.TargetPolicyDigest != domain.DCPWBCIntegrationTwinPolicyDigest() {
+			t.Fatalf("activation attempt %d response=%+v", i+1, response)
+		}
+	}
+	store, err := sqlite.OpenReadOnly(t.Context(), dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	activation, err := store.GetDCPV2Stage5Activation(t.Context())
+	if err != nil || !activation.ActivatedAt.Equal(now) {
+		t.Fatalf("read activation: activation=%+v err=%v", activation, err)
 	}
 }

@@ -54,6 +54,7 @@ type TwinService struct {
 	legacy  *dcptasksvc.Service
 	adapter *TwinGitHubAdapter
 	engine  *Engine
+	active  bool
 	now     func() time.Time
 }
 
@@ -64,19 +65,38 @@ func NewTwinService(store *sqlite.Store, legacy *dcptasksvc.Service, adapter *Tw
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	active := false
+	activation, activationErr := store.GetDCPV2Stage5Activation(context.Background())
+	switch {
+	case activationErr == nil:
+		if err := validateTwinActivation(activation); err != nil {
+			return nil, fmt.Errorf("DCP v2 twin activation identity: %w", err)
+		}
+		active = true
+	case errors.Is(activationErr, sqlitestore.ErrDCPV2NotFound):
+		// Source/package tests and pre-install builds keep the adapter dormant.
+	default:
+		return nil, fmt.Errorf("read DCP v2 twin activation: %w", activationErr)
+	}
 	processor := &twinProcessor{store: store, adapter: adapter, now: now}
 	engine, err := New(store, processor, tokenIdentity{}, "dcp-v2-daemon", epoch, 32, now)
 	if err != nil {
 		return nil, err
 	}
-	return &TwinService{store: store, legacy: legacy, adapter: adapter, engine: engine, now: now}, nil
+	return &TwinService{store: store, legacy: legacy, adapter: adapter, engine: engine, active: active, now: now}, nil
 }
 
 func (s *TwinService) Startup(ctx context.Context) error {
+	if !s.active {
+		return nil
+	}
 	return s.engine.Startup(ctx)
 }
 
 func (s *TwinService) SubmitTwin(ctx context.Context, in TwinSubmitInput) (TwinSubmitResult, error) {
+	if !s.active {
+		return TwinSubmitResult{}, apierr.Invalid("DCP_V2_NOT_ACTIVATED", "the reviewed stopped Stage 5 activation is absent", nil)
+	}
 	if in.TaskID != TwinCanaryTaskID {
 		return TwinSubmitResult{}, apierr.Invalid("DCP_V2_TASK_ID_INVALID", "only the exact authorized twin canary identity is accepted", nil)
 	}
@@ -91,7 +111,7 @@ func (s *TwinService) SubmitTwin(ctx context.Context, in TwinSubmitInput) (TwinS
 	requestDigest := digestCanonical(map[string]string{"taskId": in.TaskID, "prompt": in.Prompt})
 	scopeDigest := digestCanonical(map[string]any{"repository": TwinRepository, "repositoryId": TwinRepositoryID,
 		"ownerId": TwinOwnerID, "base": TwinBase, "profile": TwinProfile})
-	policyDigest := digestCanonical(map[string]string{"targetSpec": TwinTargetSpec, "agentRules": domain.DCPWBCIntegrationTwinPolicyAgentRules})
+	policyDigest := domain.DCPWBCIntegrationTwinPolicyDigest()
 	revision := domain.DCPV2Revision{RevisionID: stableID(in.TaskID, "revision", "1", baseSHA), TaskID: in.TaskID,
 		Sequence: 1, Kind: domain.DCPV2RevisionWorkInput, Repository: TwinRepository, BaseRef: TwinBase,
 		BaseSHA: baseSHA, HeadRef: TwinBase, HeadSHA: baseSHA, EvidenceDigest: digestCanonical(map[string]string{"main": baseSHA}), CreatedAt: now}
@@ -123,7 +143,7 @@ func (s *TwinService) SubmitTwin(ctx context.Context, in TwinSubmitInput) (TwinS
 		return TwinSubmitResult{}, apierr.Internal("DCP_V2_NATIVE_READ_FAILED", "the native runtime projection could not be read")
 	}
 	if !found {
-		legacyResult, submitErr := s.legacy.SubmitPolicy(ctx, dcptasksvc.PolicySubmitInput{TaskID: in.TaskID,
+		legacyResult, submitErr := s.legacy.ProvisionV2RuntimePolicy(ctx, dcptasksvc.PolicySubmitInput{TaskID: in.TaskID,
 			Target: TwinTarget, Profile: TwinProfile, Repository: TwinRepository, Prompt: in.Prompt})
 		if submitErr != nil {
 			return TwinSubmitResult{}, submitErr
@@ -138,6 +158,9 @@ func (s *TwinService) SubmitTwin(ctx context.Context, in TwinSubmitInput) (TwinS
 }
 
 func (s *TwinService) PrepareLegacyReview(ctx context.Context, task domain.DCPReviewLabPolicyTask, _ domain.DCPModelAction) error {
+	if !s.active {
+		return errors.New("DCP v2 twin is not activated")
+	}
 	if task.TaskID != TwinCanaryTaskID {
 		return nil
 	}
@@ -169,6 +192,9 @@ func (s *TwinService) PrepareLegacyReview(ctx context.Context, task domain.DCPRe
 }
 
 func (s *TwinService) StartLegacyAction(ctx context.Context, task domain.DCPReviewLabPolicyTask, legacy domain.DCPModelAction) error {
+	if !s.active {
+		return errors.New("DCP v2 twin is not activated")
+	}
 	if task.TaskID != TwinCanaryTaskID {
 		return nil
 	}
@@ -187,6 +213,9 @@ func (s *TwinService) StartLegacyAction(ctx context.Context, task domain.DCPRevi
 }
 
 func (s *TwinService) CompleteLegacyWorker(ctx context.Context, task domain.DCPReviewLabPolicyTask, legacy domain.DCPModelAction, success bool) error {
+	if !s.active {
+		return errors.New("DCP v2 twin is not activated")
+	}
 	if task.TaskID != TwinCanaryTaskID {
 		return nil
 	}
@@ -211,6 +240,9 @@ func (s *TwinService) CompleteLegacyWorker(ctx context.Context, task domain.DCPR
 }
 
 func (s *TwinService) CompleteLegacyReview(ctx context.Context, task domain.DCPReviewLabPolicyTask, legacy domain.DCPModelAction, run domain.ReviewRun) error {
+	if !s.active {
+		return errors.New("DCP v2 twin is not activated")
+	}
 	if task.TaskID != TwinCanaryTaskID {
 		return nil
 	}
@@ -229,6 +261,9 @@ func (s *TwinService) CompleteLegacyReview(ctx context.Context, task domain.DCPR
 }
 
 func (s *TwinService) WakeRelease(ctx context.Context, taskID, deliveryID string, runID int64, payloadDigest string) (TwinSnapshot, error) {
+	if !s.active {
+		return TwinSnapshot{}, apierr.Invalid("DCP_V2_NOT_ACTIVATED", "the reviewed stopped Stage 5 activation is absent", nil)
+	}
 	if taskID != TwinCanaryTaskID || deliveryID == "" || runID < 1 || len(payloadDigest) != 64 {
 		return TwinSnapshot{}, apierr.Invalid("DCP_V2_EVENT_INVALID", "release event identity is incomplete", nil)
 	}
@@ -251,6 +286,9 @@ func (s *TwinService) WakeRelease(ctx context.Context, taskID, deliveryID string
 }
 
 func (s *TwinService) Snapshot(ctx context.Context, taskID string) (TwinSnapshot, error) {
+	if !s.active {
+		return TwinSnapshot{}, apierr.Invalid("DCP_V2_NOT_ACTIVATED", "the reviewed stopped Stage 5 activation is absent", nil)
+	}
 	task, err := s.store.GetDCPV2Task(ctx, taskID)
 	if err != nil {
 		return TwinSnapshot{}, err
@@ -290,6 +328,25 @@ func (s *TwinService) Snapshot(ctx context.Context, taskID string) (TwinSnapshot
 	projection := domain.ProjectDCPV2Lifecycle(task, command, action, admission, result)
 	return TwinSnapshot{Task: task, Native: native, Revisions: revisions, Commands: commands, Actions: actions,
 		Admissions: admissions, Results: results, Incidents: incidents, Events: events, Projection: projection}, nil
+}
+
+func validateTwinActivation(a domain.DCPV2Stage5Activation) error {
+	if a.ActivationID != "dcp-v2-twin-stage5" || a.AuthorityCommit != "4143982eb054a40537d963356c209bfe8447ba31" ||
+		a.TargetSpecVersion != TwinTargetSpec || a.TargetPolicyDigest != domain.DCPWBCIntegrationTwinPolicyDigest() ||
+		a.Repository != TwinRepository || a.RepositoryID != TwinRepositoryID || a.OwnerID != TwinOwnerID ||
+		a.BaseRef != TwinBase || a.RequiredCheck != TwinRequiredCheck || a.IssuerKind != TwinIssuerKind ||
+		a.IssuerActor != TwinIssuerActor || a.IssuerEvent != TwinIssuerEvent || a.IssuerEventType != TwinDispatchEvent ||
+		a.WorkflowID != TwinWorkflowID || a.Environment != TwinEnvironment || a.Service != TwinServiceName ||
+		a.Adapter != TwinAdapterVersion || !validV2SHA(a.SourceCommit) || !validV2SHA(a.SourceTree) ||
+		len(a.InstallReceiptSHA) != 64 || a.ActivatedAt.IsZero() {
+		return errors.New("immutable activation tuple is not exact")
+	}
+	for _, r := range a.InstallReceiptSHA {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return errors.New("install receipt identity is malformed")
+		}
+	}
+	return nil
 }
 
 func (s *TwinService) armQueuedAction(ctx context.Context, taskID string) error {

@@ -36,6 +36,7 @@ const (
 	TwinIssuerActor          = "orenvlad-ai"
 	TwinIssuerEvent          = "repository_dispatch"
 	TwinDispatchEvent        = "dcp-admission-v2"
+	TwinWorkflowID     int64 = 338377713
 )
 
 type ghRunner func(context.Context, []byte, ...string) ([]byte, error)

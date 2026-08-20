@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -39,6 +42,20 @@ const DCPWBCReleaseTrainPolicyAgentRules = "DCP wb-core Release Train profiles v
 const DCPWBCIntegrationTwinPolicyVersion = "dcp.wbc-integration-twin/v2"
 
 const DCPWBCIntegrationTwinPolicyAgentRules = "DCP v2 integration-twin task. Work only in exact public orenvlad-ai/dcp-wbc-integration-lab, the current native worktree and the current AO branch. Read and obey repository AGENTS.md. Make only the tiny inert task requested by the prompt. Do not access SSH, Selectel, secrets, runtime, deployment, business data, wb-core, production, or Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, services, repositories, or pull requests. Run the repository baseline, create one commit lineage, push the current branch, open exactly one ready PR targeting main, then stop. A bounded findings repair may change only the same task on the same branch and PR, run baseline, push the fresh head, then stop. Never merge, deploy, dispatch Release Train, synchronize or rebase an admitted head, or manually review. Only the DCP v2 daemon may review and admit; only the repository Release Train may merge, build, install, start and prove deployment."
+
+// DCPWBCIntegrationTwinPolicyDigest is the canonical installed-policy identity
+// shared by stopped activation, preflight and task creation.
+func DCPWBCIntegrationTwinPolicyDigest() string {
+	payload, err := json.Marshal(map[string]string{
+		"agentRules": DCPWBCIntegrationTwinPolicyAgentRules,
+		"targetSpec": "dcp-wbc-integration-lab/v2",
+	})
+	if err != nil {
+		panic("marshal fixed DCP v2 twin policy: " + err.Error())
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
 
 // Retain the old exported name as a source-compatible alias. Both wb-core
 // profiles intentionally share one exact native project configuration.

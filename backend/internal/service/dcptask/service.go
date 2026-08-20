@@ -216,12 +216,26 @@ type policyPayload struct {
 // queue drain. Equal replay returns the same identity; conflicting replay is
 // rejected by the atomic store transaction.
 func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (PolicySubmitResult, error) {
+	return s.submitPolicy(ctx, in, false)
+}
+
+// ProvisionV2RuntimePolicy is the one in-process entry used after the DCP v2
+// Task/Revision/Command/Action authority already exists. The legacy HTTP/CLI
+// policy submit surface can never reserve the twin runtime shell directly.
+func (s *Service) ProvisionV2RuntimePolicy(ctx context.Context, in PolicySubmitInput) (PolicySubmitResult, error) {
+	return s.submitPolicy(ctx, in, true)
+}
+
+func (s *Service) submitPolicy(ctx context.Context, in PolicySubmitInput, v2Runtime bool) (PolicySubmitResult, error) {
 	if s == nil || s.policyStore == nil || s.policyRepository == nil || s.policyRuntime == nil || s.policyWorktreeRoot == "." || !filepath.IsAbs(s.policyWorktreeRoot) {
 		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_UNAVAILABLE", "DCP review-lab policy is unavailable")
 	}
 	spec, err := validatePolicySubmit(in)
 	if err != nil {
 		return PolicySubmitResult{}, err
+	}
+	if spec.UsesDCPV2TwinRelease() != v2Runtime {
+		return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_V2_AUTHORITY_INVALID", "the DCP v2 twin runtime shell must be provisioned only from its durable v2 Task", nil)
 	}
 	payloadBytes, err := json.Marshal(policyPayload{
 		SchemaVersion: spec.PolicyVersion, TaskID: in.TaskID, Target: in.Target,

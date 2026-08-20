@@ -20,6 +20,64 @@ const (
 
 func v2Digest(letter string) string { return strings.Repeat(letter, 64) }
 
+func v2Stage5Activation(now time.Time) domain.DCPV2Stage5Activation {
+	return domain.DCPV2Stage5Activation{
+		ActivationID: "dcp-v2-twin-stage5", AuthorityCommit: "4143982eb054a40537d963356c209bfe8447ba31",
+		SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40),
+		InstallReceiptSHA: strings.Repeat("c", 64), TargetSpecVersion: "dcp-wbc-integration-lab/v2",
+		TargetPolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(),
+		Repository:         "orenvlad-ai/dcp-wbc-integration-lab", RepositoryID: 1340359100, OwnerID: 237411244,
+		BaseRef: "main", RequiredCheck: "baseline", IssuerKind: "dcp/v2", IssuerActor: "orenvlad-ai",
+		IssuerEvent: "repository_dispatch", IssuerEventType: "dcp-admission-v2", WorkflowID: 338377713,
+		Environment: "dcp-wbc-integration-lab-selectel", Service: "dcp-wbc-integration-lab",
+		Adapter: "selectel-systemd/v1", ActivatedAt: now.UTC(),
+	}
+}
+
+func TestDCPV2Stage5ActivationIsAtomicImmutableAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	activation := v2Stage5Activation(now)
+	created, err := s.ActivateDCPV2Stage5(ctx, activation)
+	if err != nil || !created {
+		t.Fatalf("first activation: created=%v err=%v", created, err)
+	}
+	activation.ActivatedAt = now.Add(time.Hour)
+	created, err = s.ActivateDCPV2Stage5(ctx, activation)
+	if err != nil || created {
+		t.Fatalf("exact replay: created=%v err=%v", created, err)
+	}
+	stored, err := s.GetDCPV2Stage5Activation(ctx)
+	if err != nil || !stored.ActivatedAt.Equal(now) {
+		t.Fatalf("stored activation drifted: activation=%+v err=%v", stored, err)
+	}
+	activation.SourceTree = strings.Repeat("d", 40)
+	if _, err := s.ActivateDCPV2Stage5(ctx, activation); !errors.Is(err, sqlitestore.ErrDCPV2IdentityConflict) {
+		t.Fatalf("conflicting replay err=%v, want identity conflict", err)
+	}
+}
+
+func TestDCPV2Stage5ActivationRefusesExistingLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, _, _, now := createV2Fixture(t, s, "activation-conflict")
+	if _, err := s.ActivateDCPV2Stage5(ctx, v2Stage5Activation(now)); !errors.Is(err, sqlitestore.ErrDCPV2ProtocolViolation) {
+		t.Fatalf("activation with lifecycle rows err=%v, want protocol violation", err)
+	}
+	if _, err := s.GetDCPV2Stage5Activation(ctx); !errors.Is(err, sqlitestore.ErrDCPV2NotFound) {
+		t.Fatalf("failed activation left a row: %v", err)
+	}
+}
+
 func actionForV2Command(command domain.DCPV2Command, now time.Time) domain.DCPV2Action {
 	return domain.DCPV2Action{
 		ActionID: command.CommandID + "-action", CommandID: command.CommandID, TaskID: command.TaskID, RevisionID: command.RevisionID,
