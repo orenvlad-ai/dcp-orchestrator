@@ -83,6 +83,20 @@ binds a future v2 Task to its native runtime shell. The adapter has no merge, de
 install method; Stage 4 source completion alone was not install,
 activation, submission, canary, production authority or owner acceptance.
 
+Item 18 and the merged root/current authority at exact
+`9be4575e9eed39ae5bea9f1665f71fd4f64cd89b`, operating revision
+`2026-08-20.10`, authorize only the one post-submit Stage 6 native-shell
+correction in
+[`DCP_WBC_INTEGRATION_TWIN_STAGE6_POST_SUBMIT_NATIVE_SHELL_CORRECTION_CONTRACT.md`](https://github.com/orenvlad-ai/dev-control-plane/blob/9be4575e9eed39ae5bea9f1665f71fd4f64cd89b/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_POST_SUBMIT_NATIVE_SHELL_CORRECTION_CONTRACT.md).
+Migration 0085 may extend the predecessor native policy-task table only for
+the already-durable exact `dcp-v2-twin-canary-v1` Task and exact twin tuple.
+Startup may reserve its missing native card/session and initial worker once
+only when the exact Task, Revision, leased Command, launching Action, empty
+native state and immutable Stage 5 activation all match. The stopped recovery
+preflight applies no model, GitHub, Release Train or deployment effect. It
+does not authorize a second submit, replacement identity, broader target,
+credential change, direct merge/deploy, WBC mutation or Stage 7.
+
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
 profile `repo-only`, and repository `orenvlad-ai/wb-browser-extension`. Exact

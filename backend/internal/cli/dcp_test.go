@@ -89,3 +89,53 @@ func TestDCPV2Stage5ActivateValidatesBeforeOpeningAndReplaysExactly(t *testing.T
 		t.Fatalf("read twin project: project=%+v found=%t err=%v", project, found, err)
 	}
 }
+
+func TestDCPV2Stage6RecoveryPreflightValidatesBeforeOpening(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("AO_DATA_DIR", dataDir)
+	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "running.json"))
+	cmd := NewRootCommand(Deps{In: bytes.NewReader(nil), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"dcp", "stage6-recovery-preflight", "--source-commit", strings.Repeat("A", 40),
+		"--source-tree", strings.Repeat("b", 40), "--install-receipt-sha", strings.Repeat("c", 64), "--json"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("uppercase source identity unexpectedly succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "ao.db")); !os.IsNotExist(err) {
+		t.Fatalf("invalid Stage 6 input opened the database: %v", err)
+	}
+}
+
+func TestDCPV2Stage6RecoveryResponseUsesOnlyCanonicalLowerCamelFields(t *testing.T) {
+	response := dcpV2Stage6RecoveryResponse{
+		SchemaVersion: "dcp.v2.stage6-native-shell-recovery/v1", InstalledSourceCommit: strings.Repeat("a", 40),
+		InstalledSourceTree: strings.Repeat("b", 40), InstallReceiptSHA: strings.Repeat("c", 64),
+		Stage5ActivationID: "dcp-v2-twin-stage5", Stage5SourceCommit: dcpV2Stage5SourceCommit,
+		Stage5SourceTree: dcpV2Stage5SourceTree, Stage5ReceiptSHA: dcpV2Stage5ReceiptSHA,
+		TaskID: "dcp-v2-twin-canary-v1", RevisionID: "revision", CommandID: "command", ActionID: "action",
+		BaseSHA: strings.Repeat("d", 40), Ready: true,
+	}
+	var out bytes.Buffer
+	if err := writeJSON(&out, response); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(out.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"schemaVersion", "installedSourceCommit", "installedSourceTree", "installReceiptSha",
+		"stage5ActivationId", "stage5SourceCommit", "stage5SourceTree", "stage5ReceiptSha", "taskId",
+		"revisionId", "commandId", "actionId", "baseSha", "ready"}
+	if len(fields) != len(want) {
+		t.Fatalf("response fields=%v", fields)
+	}
+	for _, name := range want {
+		if _, ok := fields[name]; !ok {
+			t.Fatalf("canonical lower-camel field %q is absent: %s", name, out.String())
+		}
+	}
+	for name := range fields {
+		if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
+			t.Fatalf("uppercase response field %q is forbidden", name)
+		}
+	}
+}
