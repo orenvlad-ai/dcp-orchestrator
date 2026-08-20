@@ -510,7 +510,11 @@ source_gates() {
 	grep -Eq 'TwinRepositoryID[[:space:]]+int64 = 1340359100' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 twin adapter repository id is absent'
 	grep -Eq 'TwinTargetSpec[[:space:]]+= "dcp-wbc-integration-lab/v2"' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 twin target spec is absent'
 	grep -Eq 'TwinIssuerKind[[:space:]]+= "dcp/v2"' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 DCP issuer is absent'
-	! grep -Eiq 'ssh|systemctl|launchctl|/opt/' backend/internal/service/dcpv2/twin_adapter.go backend/internal/service/dcpv2/twin_processor.go backend/internal/service/dcpv2/twin_service.go || fail 'DCP v2 adapter gained direct host/install authority'
+	# The immutable repository proof calls its post-job evidence target
+	# "forced-ssh-probe". That protocol label is observation-only; remove only
+	# that exact token before checking that no direct host/install primitive was
+	# introduced into the activated adapter.
+	! sed 's/forced-ssh-probe/forced-proof/g' backend/internal/service/dcpv2/twin_adapter.go backend/internal/service/dcpv2/twin_processor.go backend/internal/service/dcpv2/twin_service.go | grep -Eiq 'ssh|systemctl|launchctl|/opt/' || fail 'DCP v2 adapter gained direct host/install authority'
 	grep -Eq 'DCPV2[[:space:]]+\*DCPV2LifecycleProjection' backend/internal/domain/session.go || fail 'DCP v2 shared session projection is absent'
 	grep -Fq 'if (session.dcpV2) return dcpV2VisualStatus(session);' frontend/src/renderer/lib/session-presentation.ts || fail 'renderer does not prefer the DCP v2 shared projection'
 	grep -Fq 'dcpV2: session.dcpV2' frontend/src/renderer/hooks/useWorkspaceQuery.ts || fail 'DCP v2 projection is dropped at the API boundary'

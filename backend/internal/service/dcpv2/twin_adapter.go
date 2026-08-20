@@ -423,16 +423,19 @@ func (a *TwinGitHubAdapter) observeProof(ctx context.Context, task domain.DCPV2T
 		proof.AdmissionSequence != admission.Sequence || proof.AdmissionDigest != admission.ManifestDigest ||
 		proof.Repository != TwinRepository || proof.RepositoryID != TwinRepositoryID || proof.Base != TwinBase ||
 		proof.PRNumber != admission.PRNumber || proof.AdmittedHead != admission.HeadSHA ||
-		proof.MergeSHA == "" || proof.DeployedSHA != proof.MergeSHA || proof.ArtifactDigest == "" ||
+		proof.CheckRunID != manifest.CheckRunID || proof.ReviewID != manifest.ReviewID || proof.ReviewDigest != manifest.ReviewDigest ||
+		!validV2SHA(proof.MergeSHA) || proof.DeployedSHA != proof.MergeSHA || !validV2Digest(proof.ArtifactDigest) ||
 		proof.Environment != TwinEnvironment || proof.Service != TwinServiceName || proof.DispatchActor != TwinIssuerActor ||
 		proof.MergeActor != "github-actions[bot]" || proof.RunID != strconv.FormatInt(active[0].Run.ID, 10) {
 		return twinProof{}, errors.New("DCP v2 deployment proof identity drifted")
 	}
-	if len(proof.Probes) != 3 {
+	wantProbes := [][2]string{{"healthz", "loopback"}, {"provenance", "loopback"}, {"post_job_readback", "forced-ssh-probe"}}
+	if len(proof.Probes) != len(wantProbes) {
 		return twinProof{}, errors.New("DCP v2 deployment proof probe cardinality drifted")
 	}
-	for _, probe := range proof.Probes {
-		if probe.Result != "success" || len(probe.EvidenceDigest) != 64 {
+	for i, probe := range proof.Probes {
+		if probe.Name != wantProbes[i][0] || probe.Target != wantProbes[i][1] || probe.Result != "success" ||
+			!validV2Digest(probe.EvidenceDigest) {
 			return twinProof{}, errors.New("DCP v2 deployment proof contains an unsuccessful probe")
 		}
 	}
@@ -539,6 +542,14 @@ func digestWithoutField(value any, field string) string {
 
 func validV2SHA(value string) bool {
 	if len(value) != 40 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validV2Digest(value string) bool {
+	if len(value) != 64 {
 		return false
 	}
 	_, err := hex.DecodeString(value)

@@ -121,6 +121,13 @@ func TestTwinAdapterVerifiesImmutableReleaseAndDeploymentProof(t *testing.T) {
 		deployment.ProbeDigest != strings.Repeat("c", 64) || !deployment.Succeeded {
 		t.Fatalf("release=%+v deployment=%+v", release, deployment)
 	}
+	proof.ReviewID++
+	proof.ProofDigest = digestWithoutField(proof, "proof_digest")
+	proofJSON, _ = json.Marshal(proof)
+	archive = proofArchive(t, manifestJSON, proofJSON)
+	if _, err := adapter.ObserveRelease(context.Background(), task, revision, admission); err == nil {
+		t.Fatal("proof with a foreign review identity was accepted")
+	}
 }
 
 func twinManifestFixture(now time.Time) (domain.DCPV2Task, domain.DCPV2Revision, domain.DCPV2Admission) {
