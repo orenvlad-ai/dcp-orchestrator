@@ -711,6 +711,35 @@ describe("SessionInspector Activity section", () => {
 		expect(within(row).queryByText("Working")).not.toBeInTheDocument();
 	});
 
+	it("uses the exact DCP v2 projection in the details timeline", () => {
+		renderWithQuery(
+			<SessionInspector
+				session={session([pr(41, "open")], {
+					status: "exited",
+					dcpV2: {
+						phase: "deployment_waiting",
+						statusLabel: "Merged; waiting for verified deployment",
+						detail: "Artifact proof is pending",
+						revisionId: "revision-3",
+						modelActive: false,
+						workflowActive: true,
+						humanGate: false,
+						error: false,
+						merged: true,
+						deployed: false,
+					},
+					activity: { state: "exited", lastActivityAt: "2026-08-20T12:00:00Z" },
+				})}
+			/>,
+		);
+
+		const row = activitySection()
+			.getByText("Merged; waiting for verified deployment")
+			.closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+		expect(within(row).getByText("Artifact proof is pending")).toBeInTheDocument();
+		expect(row.querySelector("span[aria-hidden='true'].rounded-full")).not.toHaveClass("animate-status-pulse");
+	});
+
 	it("keeps Human Gate and technical incident details steady", () => {
 		const gate = renderWithQuery(
 			<SessionInspector

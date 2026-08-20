@@ -3505,6 +3505,8 @@ components:
           type: string
         dcpPolicyWorkflowActive:
           type: boolean
+        dcpV2:
+          $ref: '#/components/schemas/DomainDCPV2LifecycleProjection'
         displayName:
           type: string
         harness:
@@ -4039,6 +4041,68 @@ components:
       - repairCount
       - createdAt
       - updatedAt
+      type: object
+    DomainDCPV2LifecycleProjection:
+      properties:
+        admissionId:
+          type: string
+        deployed:
+          type: boolean
+        detail:
+          type: string
+        error:
+          type: boolean
+        humanGate:
+          type: boolean
+        humanGateQuestion:
+          type: string
+        merged:
+          type: boolean
+        modelActive:
+          type: boolean
+        phase:
+          enum:
+          - worker_queued
+          - worker_running
+          - checks_waiting
+          - review_queued
+          - review_running
+          - repair_queued
+          - repair_running
+          - arbiter_queued
+          - arbiter_running
+          - admission_waiting
+          - readmission
+          - release_waiting
+          - merge_observing
+          - release_verified
+          - deployment_waiting
+          - deployment_observing
+          - human_gate
+          - failed
+          - merged
+          - deployed
+          type: string
+        resultId:
+          type: string
+        revisionId:
+          type: string
+        role:
+          type: string
+        statusLabel:
+          type: string
+        workflowActive:
+          type: boolean
+      required:
+      - phase
+      - statusLabel
+      - revisionId
+      - modelActive
+      - workflowActive
+      - humanGate
+      - error
+      - merged
+      - deployed
       type: object
     DomainReviewerConfig:
       properties:

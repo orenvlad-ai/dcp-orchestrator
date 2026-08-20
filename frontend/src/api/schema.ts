@@ -1172,6 +1172,7 @@ export interface components {
             /** @enum {string} */
             dcpPolicyState?: "reserved" | "worker_queued" | "worker_running" | "ci_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "admission_waiting" | "release_waiting" | "merged" | "failed" | "incident";
             dcpPolicyWorkflowActive?: boolean;
+            dcpV2?: components["schemas"]["DomainDCPV2LifecycleProjection"];
             displayName?: string;
             harness?: string;
             id: string;
@@ -1364,6 +1365,23 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
             worktreePath: string;
+        };
+        DomainDCPV2LifecycleProjection: {
+            admissionId?: string;
+            deployed: boolean;
+            detail?: string;
+            error: boolean;
+            humanGate: boolean;
+            humanGateQuestion?: string;
+            merged: boolean;
+            modelActive: boolean;
+            /** @enum {string} */
+            phase: "worker_queued" | "worker_running" | "checks_waiting" | "review_queued" | "review_running" | "repair_queued" | "repair_running" | "arbiter_queued" | "arbiter_running" | "admission_waiting" | "readmission" | "release_waiting" | "merge_observing" | "release_verified" | "deployment_waiting" | "deployment_observing" | "human_gate" | "failed" | "merged" | "deployed";
+            resultId?: string;
+            revisionId: string;
+            role?: string;
+            statusLabel: string;
+            workflowActive: boolean;
         };
         DomainReviewerConfig: {
             harness: string;

@@ -945,6 +945,180 @@ type DcpTaskFirstNativeLifecycleRecoveryV1 struct {
 	CreatedAt             time.Time
 }
 
+type DcpV2Action struct {
+	Sequence      int64
+	ActionID      string
+	CommandID     string
+	TaskID        string
+	RevisionID    string
+	Role          string
+	Model         string
+	Reasoning     string
+	TokenBudget   int64
+	TimeBudgetSec int64
+	InputDigest   string
+	Attempt       int64
+	Status        string
+	Slot          int64
+	LaunchFence   string
+	RuntimeID     string
+	ResultDigest  string
+	ErrorCode     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type DcpV2Admission struct {
+	Sequence           int64
+	AdmissionID        string
+	LineKey            string
+	TaskID             string
+	RevisionID         string
+	PRNumber           int64
+	HeadSha            string
+	BaseSha            string
+	MainSha            string
+	RequiredCheckID    string
+	ReviewID           string
+	ManifestDigest     string
+	Status             string
+	LeaseOwner         string
+	LeaseEpoch         string
+	LeaseToken         string
+	DispatchFence      string
+	RecoveryGeneration int64
+	ResultID           string
+	ErrorCode          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type DcpV2Command struct {
+	Sequence           int64
+	CommandID          string
+	TaskID             string
+	RevisionID         string
+	Kind               string
+	PayloadJson        string
+	PayloadDigest      string
+	PrerequisiteDigest string
+	IdempotencyKey     string
+	Status             string
+	LeaseOwner         string
+	LeaseEpoch         string
+	LeaseToken         string
+	EffectFence        string
+	RecoveryGeneration int64
+	ResultDigest       string
+	ErrorCode          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type DcpV2CoreAuthority struct {
+	AuthorityID         string
+	ControlPlaneCommit  string
+	ArchitectureVersion string
+	Stage               int64
+	AdapterActivated    int64
+	Installed           int64
+	CreatedAt           time.Time
+}
+
+type DcpV2ExternalEvent struct {
+	DeliveryID         string
+	Provider           string
+	TaskID             string
+	RevisionID         string
+	Kind               string
+	ProviderSequence   int64
+	PayloadDigest      string
+	PrerequisiteDigest string
+	Status             string
+	CommandID          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type DcpV2Incident struct {
+	IncidentID     string
+	TaskID         string
+	RevisionID     string
+	CauseCommandID string
+	Kind           string
+	EvidenceDigest string
+	Disposition    string
+	OwnerQuestion  string
+	CreatedAt      time.Time
+}
+
+type DcpV2Result struct {
+	ResultID       string
+	TaskID         string
+	RevisionID     string
+	AdmissionID    sql.NullString
+	CommandID      string
+	Kind           string
+	Provider       string
+	ProofID        string
+	RunID          string
+	Actor          string
+	ManifestDigest string
+	ProofDigest    string
+	MergeSha       string
+	ArtifactDigest string
+	DeployedSha    string
+	Environment    string
+	Service        string
+	ProbeDigest    string
+	Verified       int64
+	ErrorCode      string
+	CreatedAt      time.Time
+}
+
+type DcpV2Revision struct {
+	RevisionID            string
+	TaskID                string
+	Sequence              int64
+	Kind                  string
+	Repository            string
+	BaseRef               string
+	BaseSha               string
+	HeadRef               string
+	HeadSha               string
+	PredecessorRevisionID string
+	CauseCommandID        string
+	PRNumber              int64
+	EvidenceDigest        string
+	CreatedAt             time.Time
+}
+
+type DcpV2Task struct {
+	TaskID              string
+	TargetSpecVersion   string
+	Repository          string
+	RepositoryID        int64
+	OwnerID             int64
+	BaseRef             string
+	Profile             string
+	RequestDigest       string
+	ScopeDigest         string
+	PolicyDigest        string
+	InitialWorkerBudget int64
+	RepairBudget        int64
+	RepairUsed          int64
+	MaxReadmissions     int64
+	ReadmissionCount    int64
+	CurrentRevisionID   string
+	State               string
+	StateRevision       int64
+	TerminalResultID    string
+	HumanGateQuestion   string
+	ErrorCode           string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type DcpWbCoreReleaseHandoffV1 struct {
 	AuthorityID          string
 	ContractCommit       string

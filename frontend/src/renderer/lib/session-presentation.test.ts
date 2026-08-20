@@ -41,6 +41,99 @@ const openPr: WorkspaceSession["prs"][number] = {
 };
 
 describe("session presentation", () => {
+	it("uses the DCP v2 projection as the shared board/sidebar/details/a11y truth", () => {
+		const session = sessionWith({
+			status: "exited",
+			activity: { state: "exited", lastActivityAt: "" },
+			dcpPolicyState: "failed",
+			dcpV2: {
+				phase: "review_running",
+				role: "reviewer",
+				statusLabel: "Review running",
+				detail: "Fresh exact-head review r2",
+				revisionId: "r2",
+				modelActive: true,
+				workflowActive: true,
+				humanGate: false,
+				error: false,
+				merged: false,
+				deployed: false,
+			},
+		});
+		const visual = getSessionVisualStatus(session);
+		expect(visual).toMatchObject({
+			policyPhase: "in_review",
+			laneSection: "in_review",
+			zone: "pending",
+			statusLabel: "Review running",
+			modelActive: true,
+			workflowActive: true,
+			indicatorClassName: "bg-status-in-review animate-status-pulse",
+		});
+		expect(getSessionStatusViewForSession(session).label).toBe("Review running");
+		expect(getSessionAccessibilityStatus(session)).toBe("Review running. Fresh exact-head review r2");
+		expect(attentionZone(session)).toBe("pending");
+	});
+
+	it("keeps merged distinct from deployed in DCP v2", () => {
+		const waiting = sessionWith({
+			dcpV2: {
+				phase: "deployment_waiting",
+				statusLabel: "Merged; waiting for verified deployment",
+				revisionId: "r3",
+				resultId: "release-result",
+				modelActive: false,
+				workflowActive: true,
+				humanGate: false,
+				error: false,
+				merged: true,
+				deployed: false,
+			},
+		});
+		expect(getSessionVisualStatus(waiting)).toMatchObject({
+			policyPhase: "ready_to_merge",
+			displayStatus: "mergeable",
+			statusLabel: "Merged; waiting for verified deployment",
+			workflowActive: true,
+			indicatorClassName: "bg-status-ready",
+		});
+		const deployed = sessionWith({
+			...waiting,
+			dcpV2: { ...waiting.dcpV2!, phase: "deployed", statusLabel: "Deployed", workflowActive: false, deployed: true },
+		});
+		expect(getSessionVisualStatus(deployed)).toMatchObject({
+			policyPhase: "merged",
+			displayStatus: "merged",
+			statusLabel: "Deployed",
+			workflowActive: false,
+		});
+	});
+
+	it("renders DCP v2 Human Gate as steady accessible truth", () => {
+		const session = sessionWith({
+			dcpV2: {
+				phase: "human_gate",
+				statusLabel: "Needs your decision",
+				detail: "Choose the exact repository intent",
+				revisionId: "r4",
+				modelActive: true,
+				workflowActive: true,
+				humanGate: true,
+				error: false,
+				merged: false,
+				deployed: false,
+			},
+		});
+		expect(getSessionVisualStatus(session)).toMatchObject({
+			policyPhase: "needs_you",
+			zone: "action",
+			modelActive: false,
+			workflowActive: false,
+			indicatorClassName: "bg-status-needs-you",
+		});
+		expect(getSessionAccessibilityStatus(session)).toBe("Needs your decision. Choose the exact repository intent");
+	});
+
 	it.each([
 		["active", "Working", true, "bg-status-working animate-status-pulse"],
 		["idle", "Idle", false, "bg-status-idle"],

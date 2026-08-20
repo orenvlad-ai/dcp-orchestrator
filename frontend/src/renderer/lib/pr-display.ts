@@ -145,7 +145,7 @@ function reconcileSummaryLifecycle(
 	fact: PullRequestFacts,
 	summary: SessionPRSummary,
 ): SessionPRSummary {
-	const state = session.dcpPolicyState === "merged" ? "merged" : fact.state;
+	const state = session.dcpV2?.merged || session.dcpPolicyState === "merged" ? "merged" : fact.state;
 	if (state !== "merged" && state !== "closed") return summary;
 	if (summary.state === state) return summary;
 	return {
@@ -162,7 +162,7 @@ function reconcilePolicyTerminalLifecycle(
 ): SessionPRSummary {
 	// A happy-path policy task owns one exact PR. Once its durable task is
 	// merged, a lagging per-session provider summary cannot reopen it visually.
-	if (session.dcpPolicyState !== "merged" || summary.state === "merged") return summary;
+	if ((!session.dcpV2?.merged && session.dcpPolicyState !== "merged") || summary.state === "merged") return summary;
 	return {
 		...summary,
 		state: "merged",

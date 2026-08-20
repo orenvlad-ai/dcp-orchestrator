@@ -99,6 +99,7 @@ var shippedMigrations = map[int64]string{
 	81: "0081_dcp_wbc_readmission_admission_recovery_v1.sql",
 	82: "0082_dcp_wbc_readmission_waiting_recovery_v1.sql",
 	83: "0083_dcp_task_first_native_lifecycle_recovery_v1.sql",
+	84: "0084_dcp_v2_core.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

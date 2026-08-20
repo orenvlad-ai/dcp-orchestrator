@@ -652,12 +652,12 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 	// Current activity is a live reading, not a historical event. Keep it above
 	// the optional reverse-chronological history and do not imply that its last
 	// hook time is when the state transition occurred.
-	const policyVisual = session.dcpPolicyState ? getSessionVisualStatus(session) : undefined;
+	const policyVisual = session.dcpV2 || session.dcpPolicyState ? getSessionVisualStatus(session) : undefined;
 	const activityView = policyVisual
 		? {
 				label: getSessionStatusViewForSession(session).label,
 				tone: policyTimelineTone(policyVisual.tone),
-				breathe: policyVisual.workflowActive,
+				breathe: session.dcpV2 ? policyVisual.modelActive : policyVisual.workflowActive,
 			}
 		: getAgentActivityView(session.activity);
 	const current = {
