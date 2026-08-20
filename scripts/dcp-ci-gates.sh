@@ -490,6 +490,9 @@ source_gates() {
 	done
 	grep -Fq 'adapter_activated     INTEGER NOT NULL CHECK (adapter_activated = 0)' "$dcp_v2_core_migration" || fail 'DCP v2 adapter is activated by Stage 4'
 	grep -Fq 'installed             INTEGER NOT NULL CHECK (installed = 0)' "$dcp_v2_core_migration" || fail 'DCP v2 Stage 4 claims installation'
+	grep -Fq 'CREATE TABLE dcp_v2_stage5_activation' "$dcp_v2_core_migration" || fail 'DCP v2 Stage 5 immutable activation record is absent'
+	grep -Fq "authority_commit     TEXT NOT NULL CHECK (authority_commit = '4143982eb054a40537d963356c209bfe8447ba31')" "$dcp_v2_core_migration" || fail 'DCP v2 Stage 5 activation authority is not exact'
+	grep -Fq 'dcp_v2_stage5_activation_no_update' "$dcp_v2_core_migration" || fail 'DCP v2 Stage 5 activation is mutable'
 	grep -Fq 'idx_dcp_v2_command_one_active_per_task' "$dcp_v2_core_migration" || fail 'DCP v2 lacks one-active-command physical guard'
 	grep -Fq 'idx_dcp_v2_action_one_slot' "$dcp_v2_core_migration" || fail 'DCP v2 lacks physical global model slots'
 	grep -Fq 'idx_dcp_v2_action_one_repair' "$dcp_v2_core_migration" || fail 'DCP v2 lacks shared repair ceiling'

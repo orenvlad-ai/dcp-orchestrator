@@ -15,6 +15,33 @@ INSERT INTO dcp_v2_core_authority VALUES (
     'dcp.wbc-integration-twin/v2', 4, 0, 0, CURRENT_TIMESTAMP
 );
 
+-- Stage 5 may insert exactly one separately authorized installation fact only
+-- after the exact source lock, issuer handoff and deterministic stopped install
+-- are proven. The Stage 4 row above remains immutable and source-truthful.
+CREATE TABLE dcp_v2_stage5_activation (
+    activation_id        TEXT PRIMARY KEY CHECK (activation_id = 'dcp-v2-twin-stage5'),
+    authority_commit     TEXT NOT NULL CHECK (authority_commit = '4143982eb054a40537d963356c209bfe8447ba31'),
+    source_commit        TEXT NOT NULL CHECK (length(source_commit) = 40),
+    source_tree          TEXT NOT NULL CHECK (length(source_tree) = 40),
+    install_receipt_sha  TEXT NOT NULL UNIQUE CHECK (length(install_receipt_sha) = 64),
+    target_spec_version  TEXT NOT NULL CHECK (target_spec_version = 'dcp-wbc-integration-lab/v2'),
+    target_policy_digest TEXT NOT NULL CHECK (length(target_policy_digest) = 64),
+    repository           TEXT NOT NULL CHECK (repository = 'orenvlad-ai/dcp-wbc-integration-lab'),
+    repository_id        INTEGER NOT NULL CHECK (repository_id = 1340359100),
+    owner_id             INTEGER NOT NULL CHECK (owner_id = 237411244),
+    base_ref             TEXT NOT NULL CHECK (base_ref = 'main'),
+    required_check       TEXT NOT NULL CHECK (required_check = 'baseline'),
+    issuer_kind          TEXT NOT NULL CHECK (issuer_kind = 'dcp/v2'),
+    issuer_actor         TEXT NOT NULL CHECK (issuer_actor = 'orenvlad-ai'),
+    issuer_event         TEXT NOT NULL CHECK (issuer_event = 'repository_dispatch'),
+    issuer_event_type    TEXT NOT NULL CHECK (issuer_event_type = 'dcp-admission-v2'),
+    workflow_id          INTEGER NOT NULL CHECK (workflow_id = 338377713),
+    environment          TEXT NOT NULL CHECK (environment = 'dcp-wbc-integration-lab-selectel'),
+    service              TEXT NOT NULL CHECK (service = 'dcp-wbc-integration-lab'),
+    adapter              TEXT NOT NULL CHECK (adapter = 'selectel-systemd/v1'),
+    activated_at         TIMESTAMP NOT NULL
+);
+
 CREATE TABLE dcp_v2_task (
     task_id                 TEXT PRIMARY KEY CHECK (length(task_id) BETWEEN 1 AND 64),
     target_spec_version     TEXT NOT NULL CHECK (length(target_spec_version) > 0),
@@ -260,6 +287,14 @@ BEGIN SELECT RAISE(ABORT, 'DCP v2 Stage 4 authority is immutable'); END;
 -- +goose StatementBegin
 CREATE TRIGGER dcp_v2_core_authority_no_delete BEFORE DELETE ON dcp_v2_core_authority
 BEGIN SELECT RAISE(ABORT, 'DCP v2 Stage 4 authority cannot be deleted'); END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER dcp_v2_stage5_activation_no_update BEFORE UPDATE ON dcp_v2_stage5_activation
+BEGIN SELECT RAISE(ABORT, 'DCP v2 Stage 5 activation is immutable'); END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER dcp_v2_stage5_activation_no_delete BEFORE DELETE ON dcp_v2_stage5_activation
+BEGIN SELECT RAISE(ABORT, 'DCP v2 Stage 5 activation cannot be deleted'); END;
 -- +goose StatementEnd
 -- +goose StatementBegin
 CREATE TRIGGER dcp_v2_task_guard BEFORE UPDATE ON dcp_v2_task
