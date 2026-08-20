@@ -1779,7 +1779,10 @@ func (e *Engine) eligibleSession(ctx context.Context, id domain.SessionID) (bool
 		return false, err
 	}
 	spec, exact := domain.DCPPolicyTargetForTask(task)
-	return exact && task.CardNumber >= spec.MinimumCardNumber && task.SessionID == id, nil
+	// The v2 twin owns its separate durable Admission and exposes only the
+	// repository-dispatch Release Train seam. It must never fall through to the
+	// predecessor terminal merger's direct-merge or WBC label paths.
+	return exact && !spec.UsesDCPV2TwinRelease() && task.CardNumber >= spec.MinimumCardNumber && task.SessionID == id, nil
 }
 
 func validPolicyTaskIdentity(task domain.DCPReviewLabPolicyTask, session domain.SessionRecord, dataDir string) bool {

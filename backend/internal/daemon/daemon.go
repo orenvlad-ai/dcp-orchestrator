@@ -36,6 +36,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 	dcptasksvc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcptask"
+	dcpv2svc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 	devimportsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/devimport"
 	notificationsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/notification"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
@@ -294,6 +295,11 @@ func Run() error {
 			return terminalMerger.Try(reconcileCtx, id)
 		})
 	}
+	dcpV2Twin, err := dcpv2svc.NewTwinService(store, dcpTaskSvc, dcpv2svc.NewTwinGitHubAdapter(), fmt.Sprintf("pid-%d", os.Getpid()), nil)
+	if err != nil {
+		return fmt.Errorf("wire DCP v2 integration twin: %w", err)
+	}
+	dcpTaskSvc.SetPolicyV2Bridge(dcpV2Twin)
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
@@ -388,6 +394,7 @@ func Run() error {
 		PreviewServer:       managedPreview,
 		SessionCapabilities: browserAuthority,
 		DCPTasks:            dcpTaskSvc,
+		DCPV2Twin:           dcpV2Twin,
 		DCPArbiter:          terminalMerger,
 	})
 	if err != nil {
@@ -443,6 +450,9 @@ func Run() error {
 	}
 	if reconcileErr := dcpTaskSvc.ReconcilePolicyStartup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
 		log.Error("reconcile DCP policy tasks on boot failed closed", "err", reconcileErr)
+	}
+	if reconcileErr := dcpV2Twin.Startup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+		log.Error("reconcile DCP v2 integration twin on boot failed closed", "err", reconcileErr)
 	}
 	if terminalMerger != nil {
 		if reconcileErr := terminalMerger.ReconcileStartup(ctx); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {

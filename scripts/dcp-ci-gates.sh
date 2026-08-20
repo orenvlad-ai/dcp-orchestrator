@@ -19,7 +19,8 @@ wbc_end_to_end_operating_contract_revision='2026-08-18.2'
 task_first_lifecycle_control_plane_commit='5075235780b9c38d95faa9657a70265069d3a5c5'
 task_first_lifecycle_operating_contract_revision='2026-08-18.11'
 dcp_v2_control_plane_commit='8be08577673722edc9ae036dedea46c88ceac129'
-dcp_v2_operating_contract_revision='2026-08-20.3'
+dcp_v2_stage5_control_plane_commit='4143982eb054a40537d963356c209bfe8447ba31'
+dcp_v2_operating_contract_revision='2026-08-20.5'
 
 fail() {
 	printf 'DCP CI gate: %s\n' "$*" >&2
@@ -74,6 +75,7 @@ source_gates() {
 	grep -Fq "dev-control-plane/blob/$task_first_lifecycle_control_plane_commit/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact task-first native lifecycle contract'
 	grep -Fq "dev-control-plane/blob/$dcp_v2_control_plane_commit/docs/DCP_WBC_INTEGRATION_TWIN_DCP_V2_ARCHITECTURE_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact DCP v2 architecture contract'
 	grep -Fq "dev-control-plane/blob/$dcp_v2_control_plane_commit/docs/DCP_WBC_INTEGRATION_TWIN_STAGE3_4_COMBINED_EXECUTION_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact Stage 3/4 execution authority'
+	grep -Fq "dev-control-plane/blob/$dcp_v2_stage5_control_plane_commit/docs/DCP_WBC_INTEGRATION_TWIN_STAGE5_INSTALL_ACTIVATION_CONTRACT.md" AGENTS.md || fail 'AGENTS.md lacks exact Stage 5 adapter/install authority'
 	grep -Fq "current operating contract revision \`$operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md operating contract revision mismatch'
 	grep -Fq "\`$wbc_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core operating contract revision mismatch'
 	grep -Fq "\`$wbc_end_to_end_operating_contract_revision\`" AGENTS.md || fail 'AGENTS.md wb-core end-to-end operating contract revision mismatch'
@@ -500,10 +502,15 @@ source_gates() {
 	grep -Fq 'func (e *Engine) Event' backend/internal/service/dcpv2/engine.go || fail 'DCP v2 provider event drain is absent'
 	grep -Fq 'return e.Drain(ctx)' backend/internal/service/dcpv2/engine.go || fail 'startup/event paths do not share one drain'
 	! grep -ERq 'time\.(NewTicker|Tick|Sleep)|for[[:space:]]*\{[[:space:]]*$|go[[:space:]]+func' backend/internal/service/dcpv2 || fail 'DCP v2 introduced a scheduler, unbounded loop or background worker'
-	! grep -Rq 'internal/service/dcpv2' backend/internal/daemon || fail 'Stage 4 dormant DCP v2 source is wired into the daemon'
+	grep -Fq 'NewTwinService' backend/internal/daemon/daemon.go || fail 'Stage 5 DCP v2 twin adapter is not wired into the daemon'
 	! sed -n '/type DCPV2Release interface/,/^}/p' backend/internal/ports/dcp_v2.go | grep -Eq 'Merge(PullRequest)?\(' || fail 'DCP v2 release port exposes direct merge authority'
 	! sed -n '/type DCPV2Deployment interface/,/^}/p' backend/internal/ports/dcp_v2.go | grep -Eq '(Install|Deploy|Restart|Redeploy)\(' || fail 'DCP v2 deployment port exposes mutation authority'
-	! grep -ERq 'orenvlad-ai/(wb-core|dcp-wbc-integration-lab)' backend/internal/domain/dcp_v2.go backend/internal/ports/dcp_v2.go backend/internal/service/dcpv2 backend/internal/storage/sqlite/store/dcp_v2_store.go || fail 'Stage 4 provider-neutral core special-cases a current target'
+	! grep -ERq 'orenvlad-ai/(wb-core|dcp-wbc-integration-lab)' backend/internal/domain/dcp_v2.go backend/internal/ports/dcp_v2.go backend/internal/service/dcpv2/engine.go backend/internal/storage/sqlite/store/dcp_v2_store.go || fail 'provider-neutral DCP v2 core special-cases a current target'
+	grep -Eq 'TwinRepository[[:space:]]+= "orenvlad-ai/dcp-wbc-integration-lab"' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 twin adapter repository identity is absent'
+	grep -Eq 'TwinRepositoryID[[:space:]]+int64 = 1340359100' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 twin adapter repository id is absent'
+	grep -Eq 'TwinTargetSpec[[:space:]]+= "dcp-wbc-integration-lab/v2"' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 twin target spec is absent'
+	grep -Eq 'TwinIssuerKind[[:space:]]+= "dcp/v2"' backend/internal/service/dcpv2/twin_adapter.go || fail 'Stage 5 DCP issuer is absent'
+	! grep -Eiq 'ssh|systemctl|launchctl|/opt/' backend/internal/service/dcpv2/twin_adapter.go backend/internal/service/dcpv2/twin_processor.go backend/internal/service/dcpv2/twin_service.go || fail 'DCP v2 adapter gained direct host/install authority'
 	grep -Eq 'DCPV2[[:space:]]+\*DCPV2LifecycleProjection' backend/internal/domain/session.go || fail 'DCP v2 shared session projection is absent'
 	grep -Fq 'if (session.dcpV2) return dcpV2VisualStatus(session);' frontend/src/renderer/lib/session-presentation.ts || fail 'renderer does not prefer the DCP v2 shared projection'
 	grep -Fq 'dcpV2: session.dcpV2' frontend/src/renderer/hooks/useWorkspaceQuery.ts || fail 'DCP v2 projection is dropped at the API boundary'
@@ -541,6 +548,7 @@ unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(frontend/src
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^backend/internal/storage/sqlite/(migrations/0082_dcp_wbc_readmission_waiting_recovery_v1\.sql|wbc_readmission_waiting_recovery_live_copy_test\.go)$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_task_lifecycle(_test)?\.go|backend/internal/storage/sqlite/(migrations/0083_dcp_task_first_native_lifecycle_recovery_v1\.sql|task_first_native_lifecycle_recovery_live_copy_test\.go))$' || true)"
 	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/domain/dcp_v2(_test)?\.go|backend/internal/ports/dcp_v2\.go|backend/internal/service/dcpv2/engine(_test)?\.go|backend/internal/storage/sqlite/(dcp_v2_core_migration_test\.go|migrations/0084_dcp_v2_core\.sql|queries/dcp_v2\.sql|gen/dcp_v2\.sql\.go|store/dcp_v2_store(_test)?\.go))$' || true)"
+	unexpected_paths="$(printf '%s\n' "$unexpected_paths" | grep -Ev '^(backend/internal/service/dcpv2/twin_(adapter|processor|service)(_test)?\.go)$' || true)"
 	[[ -z "$unexpected_paths" ]] || fail "post-parity runtime source changed outside the governance allowlist: $unexpected_paths"
 
 	git diff --check

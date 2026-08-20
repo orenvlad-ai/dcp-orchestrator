@@ -17,6 +17,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	dcpv2svc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
 
@@ -416,6 +417,43 @@ func dcpTaskOperations() []operation {
 			resps: []respUnit{
 				{http.StatusCreated, controllers.DCPPolicyTaskResponse{}},
 				{http.StatusOK, controllers.DCPPolicyTaskResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/dcp/v2/tasks", id: "submitDCPV2TwinTask", tag: "dcpTasks",
+			summary: "Submit the one authorized DCP v2 integration-twin task",
+			reqBody: controllers.SubmitDCPV2TwinTaskRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, dcpv2svc.TwinSubmitResult{}},
+				{http.StatusOK, dcpv2svc.TwinSubmitResult{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/dcp/v2/tasks/{taskId}", id: "getDCPV2TwinTask", tag: "dcpTasks",
+			summary: "Read the exact DCP v2 integration-twin lifecycle",
+			pathParams: []any{controllers.DCPTaskIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, dcpv2svc.TwinSnapshot{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/dcp/v2/tasks/{taskId}/release-event", id: "wakeDCPV2TwinRelease", tag: "dcpTasks",
+			summary: "Apply one immutable repository Release Train completion event",
+			pathParams: []any{controllers.DCPTaskIDParam{}},
+			reqBody: controllers.WakeDCPV2TwinReleaseRequest{},
+			resps: []respUnit{
+				{http.StatusOK, dcpv2svc.TwinSnapshot{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

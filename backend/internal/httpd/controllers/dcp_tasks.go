@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	dcptasksvc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcptask"
+	dcpv2svc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 )
 
 // DCPTaskService is the controller-facing model-free I11 task contract.
@@ -27,14 +28,79 @@ type dcpPolicyTaskService interface {
 	SubmitPolicy(ctx context.Context, in dcptasksvc.PolicySubmitInput) (dcptasksvc.PolicySubmitResult, error)
 }
 
-type DCPTasksController struct{ Svc DCPTaskService }
+type dcpV2TwinTaskService interface {
+	SubmitTwin(context.Context, dcpv2svc.TwinSubmitInput) (dcpv2svc.TwinSubmitResult, error)
+	Snapshot(context.Context, string) (dcpv2svc.TwinSnapshot, error)
+	WakeRelease(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
+}
+
+type DCPTasksController struct {
+	Svc DCPTaskService
+	V2  dcpV2TwinTaskService
+}
 
 func (c *DCPTasksController) Register(r chi.Router) {
 	r.Post("/dcp/tasks", c.submit)
 	r.Post("/dcp/tasks/policy", c.submitPolicy)
+	r.Post("/dcp/v2/tasks", c.submitV2Twin)
+	r.Get("/dcp/v2/tasks/{taskId}", c.getV2Twin)
+	r.Post("/dcp/v2/tasks/{taskId}/release-event", c.wakeV2TwinRelease)
 	r.Get("/dcp/tasks", c.list)
 	r.Get("/dcp/tasks/{taskId}", c.get)
 	r.Get("/dcp/tasks/{taskId}/events", c.events)
+}
+
+func (c *DCPTasksController) submitV2Twin(w http.ResponseWriter, r *http.Request) {
+	if c.V2 == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/dcp/v2/tasks")
+		return
+	}
+	var req SubmitDCPV2TwinTaskRequest
+	if err := decodeDCPTaskRequest(r, &req); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be one JSON object with no unknown fields", nil)
+		return
+	}
+	result, err := c.V2.SubmitTwin(r.Context(), dcpv2svc.TwinSubmitInput{TaskID: req.TaskID, Prompt: req.Prompt})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
+	}
+	envelope.WriteJSON(w, status, result)
+}
+
+func (c *DCPTasksController) getV2Twin(w http.ResponseWriter, r *http.Request) {
+	if c.V2 == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/dcp/v2/tasks/{taskId}")
+		return
+	}
+	result, err := c.V2.Snapshot(r.Context(), chi.URLParam(r, "taskId"))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
+}
+
+func (c *DCPTasksController) wakeV2TwinRelease(w http.ResponseWriter, r *http.Request) {
+	if c.V2 == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/dcp/v2/tasks/{taskId}/release-event")
+		return
+	}
+	var req WakeDCPV2TwinReleaseRequest
+	if err := decodeDCPTaskRequest(r, &req); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be one JSON object with no unknown fields", nil)
+		return
+	}
+	result, err := c.V2.WakeRelease(r.Context(), chi.URLParam(r, "taskId"), req.DeliveryID, req.RunID, req.PayloadDigest)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
 }
 
 func (c *DCPTasksController) submitPolicy(w http.ResponseWriter, r *http.Request) {

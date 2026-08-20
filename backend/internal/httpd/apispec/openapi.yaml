@@ -547,6 +547,145 @@ paths:
       summary: Submit one durable future DCP review-lab policy task
       tags:
       - dcpTasks
+  /api/v1/dcp/v2/tasks:
+    post:
+      operationId: submitDCPV2TwinTask
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSubmitDCPV2TwinTaskRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dcpv2TwinSubmitResult'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dcpv2TwinSubmitResult'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Submit the one authorized DCP v2 integration-twin task
+      tags:
+      - dcpTasks
+  /api/v1/dcp/v2/tasks/{taskId}:
+    get:
+      operationId: getDCPV2TwinTask
+      parameters:
+      - description: Durable DCP task identifier.
+        in: path
+        name: taskId
+        required: true
+        schema:
+          description: Durable DCP task identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dcpv2TwinSnapshot'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read the exact DCP v2 integration-twin lifecycle
+      tags:
+      - dcpTasks
+  /api/v1/dcp/v2/tasks/{taskId}/release-event:
+    post:
+      operationId: wakeDCPV2TwinRelease
+      parameters:
+      - description: Durable DCP task identifier.
+        in: path
+        name: taskId
+        required: true
+        schema:
+          description: Durable DCP task identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersWakeDCPV2TwinReleaseRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dcpv2TwinSnapshot'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Apply one immutable repository Release Train completion event
+      tags:
+      - dcpTasks
   /api/v1/dev/import-projects:
     post:
       operationId: runDevImportProjects
@@ -3607,6 +3746,7 @@ components:
           enum:
           - synthetic-pr
           - repo-only
+          - live-runtime
           type: string
         prompt:
           maxLength: 512
@@ -3618,6 +3758,7 @@ components:
           - orenvlad-ai/wb-price-extension
           - orenvlad-ai/wb-browser-extension
           - orenvlad-ai/wb-core
+          - orenvlad-ai/dcp-wbc-integration-lab
           type: string
         target:
           enum:
@@ -3625,9 +3766,10 @@ components:
           - wb-price-extension
           - wb-browser-extension
           - wb-core
+          - dcp-wbc-integration-lab
           type: string
         taskId:
-          maxLength: 16
+          maxLength: 64
           minLength: 1
           type: string
       required:
@@ -3636,6 +3778,39 @@ components:
       - profile
       - repository
       - prompt
+      type: object
+    ControllersSubmitDCPV2TwinTaskRequest:
+      properties:
+        prompt:
+          maxLength: 512
+          minLength: 1
+          type: string
+        taskId:
+          maxLength: 64
+          minLength: 1
+          type: string
+      required:
+      - taskId
+      - prompt
+      type: object
+    ControllersWakeDCPV2TwinReleaseRequest:
+      properties:
+        deliveryId:
+          maxLength: 256
+          minLength: 1
+          type: string
+        payloadDigest:
+          maxLength: 64
+          minLength: 64
+          type: string
+        runId:
+          format: int64
+          minimum: 1
+          type: integer
+      required:
+      - deliveryId
+      - runId
+      - payloadDigest
       type: object
     DCPApprovedScope:
       properties:
@@ -3814,6 +3989,70 @@ components:
           $ref: '#/components/schemas/DCPTask'
       required:
       - task
+      - duplicate
+      type: object
+    Dcpv2TwinSnapshot:
+      properties:
+        actions:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Action'
+          type: array
+        admissions:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Admission'
+          type: array
+        commands:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Command'
+          type: array
+        events:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2ExternalEvent'
+          type: array
+        incidents:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Incident'
+          type: array
+        native:
+          $ref: '#/components/schemas/DomainDCPReviewLabPolicyTask'
+        projection:
+          $ref: '#/components/schemas/DomainDCPV2LifecycleProjection'
+        results:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Result'
+          type: array
+        revisions:
+          items:
+            $ref: '#/components/schemas/DomainDCPV2Revision'
+          type: array
+        task:
+          $ref: '#/components/schemas/DomainDCPV2Task'
+      required:
+      - task
+      - native
+      - revisions
+      - commands
+      - actions
+      - admissions
+      - results
+      - incidents
+      - events
+      - projection
+      type: object
+    Dcpv2TwinSubmitResult:
+      properties:
+        duplicate:
+          type: boolean
+        native:
+          $ref: '#/components/schemas/DomainDCPReviewLabPolicyTask'
+        projection:
+          $ref: '#/components/schemas/DomainDCPV2LifecycleProjection'
+        task:
+          $ref: '#/components/schemas/DomainDCPV2Task'
+      required:
+      - task
+      - native
+      - projection
       - duplicate
       type: object
     DegradedProject:
@@ -4042,6 +4281,16 @@ components:
       - createdAt
       - updatedAt
       type: object
+    DomainDCPV2Action:
+      type: object
+    DomainDCPV2Admission:
+      type: object
+    DomainDCPV2Command:
+      type: object
+    DomainDCPV2ExternalEvent:
+      type: object
+    DomainDCPV2Incident:
+      type: object
     DomainDCPV2LifecycleProjection:
       properties:
         admissionId:
@@ -4103,6 +4352,12 @@ components:
       - error
       - merged
       - deployed
+      type: object
+    DomainDCPV2Result:
+      type: object
+    DomainDCPV2Revision:
+      type: object
+    DomainDCPV2Task:
       type: object
     DomainReviewerConfig:
       properties:

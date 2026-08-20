@@ -35,11 +35,22 @@ type SubmitDCPTaskRequest struct {
 // SubmitDCPPolicyTaskRequest is the hidden loopback command used only by the
 // canonical dev-control-plane adapter after its locked target preflight.
 type SubmitDCPPolicyTaskRequest struct {
-	TaskID     string `json:"taskId" minLength:"1" maxLength:"16"`
-	Target     string `json:"target" enum:"dcp-review-lab,wb-price-extension,wb-browser-extension,wb-core"`
-	Profile    string `json:"profile" enum:"synthetic-pr,repo-only"`
-	Repository string `json:"repository" enum:"orenvlad-ai/dcp-review-lab,orenvlad-ai/wb-price-extension,orenvlad-ai/wb-browser-extension,orenvlad-ai/wb-core"`
+	TaskID     string `json:"taskId" minLength:"1" maxLength:"64"`
+	Target     string `json:"target" enum:"dcp-review-lab,wb-price-extension,wb-browser-extension,wb-core,dcp-wbc-integration-lab"`
+	Profile    string `json:"profile" enum:"synthetic-pr,repo-only,live-runtime"`
+	Repository string `json:"repository" enum:"orenvlad-ai/dcp-review-lab,orenvlad-ai/wb-price-extension,orenvlad-ai/wb-browser-extension,orenvlad-ai/wb-core,orenvlad-ai/dcp-wbc-integration-lab"`
 	Prompt     string `json:"prompt" minLength:"1" maxLength:"512"`
+}
+
+type SubmitDCPV2TwinTaskRequest struct {
+	TaskID string `json:"taskId" minLength:"1" maxLength:"64"`
+	Prompt string `json:"prompt" minLength:"1" maxLength:"512"`
+}
+
+type WakeDCPV2TwinReleaseRequest struct {
+	DeliveryID    string `json:"deliveryId" minLength:"1" maxLength:"256"`
+	RunID         int64  `json:"runId" minimum:"1"`
+	PayloadDigest string `json:"payloadDigest" minLength:"64" maxLength:"64"`
 }
 
 type DCPPolicyTaskResponse struct {

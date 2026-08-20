@@ -40,6 +40,11 @@ type Processor interface {
 }
 
 type Outcome struct {
+	// PauseDrain commits this transition but leaves its newly-persisted
+	// successor pending until a concrete startup/provider/runtime wake. This is
+	// how live adapters avoid turning a finite drain into CI or deployment
+	// polling while preserving state-plus-next-command atomicity.
+	PauseDrain              bool
 	NextTaskState           domain.DCPV2TaskState
 	RepairIncrement         bool
 	ReadmissionIncrement    bool
@@ -62,6 +67,8 @@ type Outcome struct {
 	Incident                *domain.DCPV2Incident
 	Result                  *domain.DCPV2Result
 }
+
+var errPauseDrain = errors.New("dcp v2 drain paused for an external wake")
 
 type IdentitySource interface {
 	Token(kind, id string) string
@@ -104,6 +111,9 @@ func (e *Engine) Startup(ctx context.Context) error {
 				command = recovered
 			}
 			if err := e.reconcileModelCommand(ctx, command); err != nil {
+				if errors.Is(err, errPauseDrain) {
+					return nil
+				}
 				return err
 			}
 			continue
@@ -119,6 +129,9 @@ func (e *Engine) Startup(ctx context.Context) error {
 			return fmt.Errorf("recover command %s: %w", command.CommandID, err)
 		}
 		if err := e.process(ctx, recovered, nil); err != nil {
+			if errors.Is(err, errPauseDrain) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -133,6 +146,9 @@ func (e *Engine) Event(ctx context.Context, event domain.DCPV2ExternalEvent) err
 		return fmt.Errorf("record provider event: %w", err)
 	}
 	if err := e.reconcileCompletedModelCommands(ctx); err != nil {
+		if errors.Is(err, errPauseDrain) {
+			return nil
+		}
 		return err
 	}
 	return e.Drain(ctx)
@@ -153,6 +169,9 @@ func (e *Engine) Drain(ctx context.Context) error {
 			continue
 		}
 		if err := e.process(ctx, *command, nil); err != nil {
+			if errors.Is(err, errPauseDrain) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -205,6 +224,9 @@ func (e *Engine) process(ctx context.Context, command domain.DCPV2Command, actio
 			return fmt.Errorf("transition command %s: %w (fail-closed transition: %v)", command.CommandID, err, failErr)
 		}
 		return fmt.Errorf("transition command %s: %w", command.CommandID, err)
+	}
+	if outcome.PauseDrain {
+		return errPauseDrain
 	}
 	return nil
 }
