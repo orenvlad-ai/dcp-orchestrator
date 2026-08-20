@@ -283,6 +283,8 @@ type TwinManifest struct {
 	AdmissionID       string            `json:"admission_id"`
 	AdmissionSequence int64             `json:"admission_sequence"`
 	PRNumber          int64             `json:"pr_number"`
+	HeadRepository    string            `json:"head_repository"`
+	HeadBranch        string            `json:"head_branch"`
 	AdmittedHead      string            `json:"admitted_head"`
 	AdmittedBase      string            `json:"admitted_base"`
 	MainSnapshot      string            `json:"main_snapshot"`
@@ -313,7 +315,8 @@ func BuildTwinManifest(task domain.DCPV2Task, revision domain.DCPV2Revision, adm
 		Issuer:            map[string]string{"actor": TwinIssuerActor, "event": TwinIssuerEvent, "kind": TwinIssuerKind},
 		QualificationCase: "dcp_canary", TaskID: task.TaskID, RevisionID: revision.RevisionID,
 		AdmissionID: admission.AdmissionID, AdmissionSequence: admission.Sequence,
-		PRNumber: admission.PRNumber, AdmittedHead: admission.HeadSHA, AdmittedBase: admission.BaseSHA,
+		PRNumber: admission.PRNumber, HeadRepository: TwinRepository, HeadBranch: revision.HeadRef,
+		AdmittedHead: admission.HeadSHA, AdmittedBase: admission.BaseSHA,
 		MainSnapshot: admission.MainSHA, CheckRunID: checkID, ReviewID: reviewID, ReviewDigest: reviewParts[1],
 		IssuedAt: revision.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"),
 	}
