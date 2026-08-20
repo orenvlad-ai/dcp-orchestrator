@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,12 +19,16 @@ type dcpV2Stage5ActivateOptions struct {
 	sourceCommit      string
 	sourceTree        string
 	installReceiptSHA string
+	targetPath        string
 	json              bool
 }
 
 type dcpV2Stage5ActivateResponse struct {
-	Activation domain.DCPV2Stage5Activation `json:"activation"`
-	Created    bool                         `json:"created"`
+	Activation     domain.DCPV2Stage5Activation `json:"activation"`
+	ProjectID      string                       `json:"projectId"`
+	ProjectPath    string                       `json:"projectPath"`
+	Created        bool                         `json:"created"`
+	ProjectCreated bool                         `json:"projectCreated"`
 }
 
 type dcpPolicySubmitOptions struct {
@@ -85,6 +90,10 @@ func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {
 			if Commit != "" && Commit != opts.sourceCommit {
 				return usageError{fmt.Errorf("--source-commit does not match the installed binary commit")}
 			}
+			targetPath := filepath.Clean(strings.TrimSpace(opts.targetPath))
+			if targetPath == "." || !filepath.IsAbs(targetPath) || filepath.Base(targetPath) != "dcp-wbc-integration-lab" || filepath.Base(filepath.Dir(targetPath)) != "targets" {
+				return usageError{fmt.Errorf("--target-path must be the absolute exact targets/dcp-wbc-integration-lab path")}
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -106,12 +115,27 @@ func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {
 				Environment: "dcp-wbc-integration-lab-selectel", Service: "dcp-wbc-integration-lab",
 				Adapter: "selectel-systemd/v1", ActivatedAt: ctx.deps.Now().UTC(),
 			}
+			spec, ok := domain.DCPPolicyTarget("dcp-wbc-integration-lab", "live-runtime")
+			if !ok {
+				return fmt.Errorf("exact DCP v2 twin target is absent from the managed-source allowlist")
+			}
+			project := domain.ProjectRecord{
+				ID: spec.Target, Path: targetPath, RepoOriginURL: spec.OriginURL, DisplayName: spec.Target,
+				RegisteredAt: activation.ActivatedAt, Kind: domain.ProjectKindSingleRepo,
+				Config: domain.ProjectConfig{
+					DefaultBranch: spec.DefaultBranch, SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules,
+					Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{
+						Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true,
+					}},
+					Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}},
+				},
+			}
 			store, err := sqlite.Open(cfg.DataDir)
 			if err != nil {
 				return fmt.Errorf("open stopped Stage 5 store: %w", err)
 			}
 			defer func() { _ = store.Close() }()
-			created, err := store.ActivateDCPV2Stage5(cmd.Context(), activation)
+			created, projectCreated, err := store.ActivateDCPV2Stage5WithProject(cmd.Context(), activation, project)
 			if err != nil {
 				return fmt.Errorf("activate DCP v2 Stage 5: %w", err)
 			}
@@ -119,13 +143,17 @@ func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read back DCP v2 Stage 5 activation: %w", err)
 			}
-			response := dcpV2Stage5ActivateResponse{Activation: stored, Created: created}
+			storedProject, found, err := store.GetProject(cmd.Context(), project.ID)
+			if err != nil || !found {
+				return fmt.Errorf("read back exact DCP v2 twin project: found=%t: %w", found, err)
+			}
+			response := dcpV2Stage5ActivateResponse{Activation: stored, ProjectID: storedProject.ID, ProjectPath: storedProject.Path, Created: created, ProjectCreated: projectCreated}
 			if opts.json {
 				return writeJSON(cmd.OutOrStdout(), response)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "activation_id=%s\nsource_commit=%s\nsource_tree=%s\ninstall_receipt_sha=%s\ntarget_policy_digest=%s\ncreated=%t\n",
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "activation_id=%s\nsource_commit=%s\nsource_tree=%s\ninstall_receipt_sha=%s\ntarget_policy_digest=%s\nproject_id=%s\nproject_path=%s\ncreated=%t\nproject_created=%t\n",
 				stored.ActivationID, stored.SourceCommit, stored.SourceTree, stored.InstallReceiptSHA,
-				stored.TargetPolicyDigest, created)
+				stored.TargetPolicyDigest, storedProject.ID, storedProject.Path, created, projectCreated)
 			return err
 		},
 	}
@@ -133,6 +161,7 @@ func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.sourceCommit, "source-commit", "", "Exact reviewed managed-source merge commit")
 	f.StringVar(&opts.sourceTree, "source-tree", "", "Exact reviewed managed-source merge tree")
 	f.StringVar(&opts.installReceiptSHA, "install-receipt-sha", "", "SHA-256 of the exact install receipt")
+	f.StringVar(&opts.targetPath, "target-path", "", "Absolute exact local integration-twin repository path")
 	f.BoolVar(&opts.json, "json", false, "Print JSON")
 	return cmd
 }

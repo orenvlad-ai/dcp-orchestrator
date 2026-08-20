@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -33,8 +35,32 @@ const (
 // closed. The caller must separately prove the daemon is stopped before it
 // opens the writable store.
 func (s *Store) ActivateDCPV2Stage5(ctx context.Context, activation domain.DCPV2Stage5Activation) (bool, error) {
+	return s.activateDCPV2Stage5(ctx, activation, domain.ProjectRecord{}, false)
+}
+
+// ActivateDCPV2Stage5WithProject atomically registers the sole exact twin
+// project and inserts its immutable installation fact. The project must be
+// absent on the first call. An exact replay requires both durable identities;
+// partial or conflicting state fails closed.
+func (s *Store) ActivateDCPV2Stage5WithProject(ctx context.Context, activation domain.DCPV2Stage5Activation, project domain.ProjectRecord) (bool, bool, error) {
+	created, err := s.activateDCPV2Stage5(ctx, activation, project, true)
+	return created, created, err
+}
+
+func (s *Store) activateDCPV2Stage5(ctx context.Context, activation domain.DCPV2Stage5Activation, project domain.ProjectRecord, registerProject bool) (bool, error) {
 	if err := validateDCPV2Stage5Activation(activation); err != nil {
 		return false, err
+	}
+	var projectConfig sql.NullString
+	if registerProject {
+		if err := validateDCPV2Stage5Project(project); err != nil {
+			return false, err
+		}
+		var err error
+		projectConfig, err = marshalProjectConfig(project.Config)
+		if err != nil {
+			return false, err
+		}
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -47,6 +73,12 @@ func (s *Store) ActivateDCPV2Stage5(ctx context.Context, activation domain.DCPV2
 			if !sameDCPV2Stage5Activation(existing, activation) {
 				return ErrDCPV2IdentityConflict
 			}
+			if registerProject {
+				projectRow, projectErr := q.GetProject(ctx, domain.ProjectID(project.ID))
+				if projectErr != nil || !sameDCPV2Stage5Project(projectRowFromGen(projectRow), project) || !projectRow.RegisteredAt.Equal(existing.ActivatedAt) {
+					return ErrDCPV2IdentityConflict
+				}
+			}
 			return nil
 		case !errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("read existing activation: %w", err)
@@ -57,6 +89,23 @@ func (s *Store) ActivateDCPV2Stage5(ctx context.Context, activation domain.DCPV2
 		}
 		if lifecycleRows != 0 {
 			return ErrDCPV2ProtocolViolation
+		}
+		if registerProject {
+			if _, projectErr := q.GetProject(ctx, domain.ProjectID(project.ID)); !errors.Is(projectErr, sql.ErrNoRows) {
+				if projectErr == nil {
+					return ErrDCPV2IdentityConflict
+				}
+				return fmt.Errorf("inspect existing twin project: %w", projectErr)
+			}
+			if _, pathErr := q.FindProjectByPath(ctx, project.Path); !errors.Is(pathErr, sql.ErrNoRows) {
+				if pathErr == nil {
+					return ErrDCPV2IdentityConflict
+				}
+				return fmt.Errorf("inspect existing twin project path: %w", pathErr)
+			}
+			if err := upsertProject(ctx, q, project, projectConfig); err != nil {
+				return fmt.Errorf("insert exact twin project: %w", err)
+			}
 		}
 		if err := q.InsertDCPV2Stage5Activation(ctx, gen.InsertDCPV2Stage5ActivationParams{
 			ActivationID: activation.ActivationID, AuthorityCommit: activation.AuthorityCommit,
@@ -76,6 +125,30 @@ func (s *Store) ActivateDCPV2Stage5(ctx context.Context, activation domain.DCPV2
 		return nil
 	})
 	return created, err
+}
+
+func validateDCPV2Stage5Project(project domain.ProjectRecord) error {
+	spec, ok := domain.DCPPolicyTarget("dcp-wbc-integration-lab", "live-runtime")
+	expectedConfig := domain.ProjectConfig{
+		DefaultBranch: spec.DefaultBranch, SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules,
+		Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{
+			Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true,
+		}},
+		Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}},
+	}
+	if !ok || project.ID != spec.Target || !filepath.IsAbs(project.Path) || filepath.Clean(project.Path) != project.Path ||
+		filepath.Base(project.Path) != spec.Target || filepath.Base(filepath.Dir(project.Path)) != "targets" ||
+		project.RepoOriginURL != spec.OriginURL || project.DisplayName != spec.Target || !project.ArchivedAt.IsZero() ||
+		project.Kind.WithDefault() != domain.ProjectKindSingleRepo || project.RegisteredAt.IsZero() ||
+		!reflect.DeepEqual(project.Config, expectedConfig) {
+		return ErrDCPV2ProtocolViolation
+	}
+	return nil
+}
+
+func sameDCPV2Stage5Project(a, b domain.ProjectRecord) bool {
+	a.RegisteredAt, b.RegisteredAt = time.Time{}, time.Time{}
+	return reflect.DeepEqual(a, b)
 }
 
 func (s *Store) GetDCPV2Stage5Activation(ctx context.Context) (domain.DCPV2Stage5Activation, error) {
