@@ -185,6 +185,34 @@ const (
 	DCPV2IncidentTerminal  DCPV2IncidentDisposition = "terminal"
 )
 
+// DCPV2Stage5Activation is the immutable stopped-install fact that activates
+// the otherwise dormant Stage 4 schema for the one reviewed integration twin.
+// It is deliberately separate from dcp_v2_core_authority so the source-only
+// Stage 4 record remains byte-for-byte truthful.
+type DCPV2Stage5Activation struct {
+	ActivationID       string    `json:"activationId"`
+	AuthorityCommit    string    `json:"authorityCommit"`
+	SourceCommit       string    `json:"sourceCommit"`
+	SourceTree         string    `json:"sourceTree"`
+	InstallReceiptSHA  string    `json:"installReceiptSha"`
+	TargetSpecVersion  string    `json:"targetSpecVersion"`
+	TargetPolicyDigest string    `json:"targetPolicyDigest"`
+	Repository         string    `json:"repository"`
+	RepositoryID       int64     `json:"repositoryId"`
+	OwnerID            int64     `json:"ownerId"`
+	BaseRef            string    `json:"baseRef"`
+	RequiredCheck      string    `json:"requiredCheck"`
+	IssuerKind         string    `json:"issuerKind"`
+	IssuerActor        string    `json:"issuerActor"`
+	IssuerEvent        string    `json:"issuerEvent"`
+	IssuerEventType    string    `json:"issuerEventType"`
+	WorkflowID         int64     `json:"workflowId"`
+	Environment        string    `json:"environment"`
+	Service            string    `json:"service"`
+	Adapter            string    `json:"adapter"`
+	ActivatedAt        time.Time `json:"activatedAt"`
+}
+
 type DCPV2Task struct {
 	TaskID              string
 	TargetSpecVersion   string

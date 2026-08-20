@@ -1,3 +1,25 @@
+-- name: GetDCPV2Stage5Activation :one
+SELECT * FROM dcp_v2_stage5_activation WHERE activation_id = ?;
+
+-- name: CountDCPV2LifecycleRows :one
+SELECT (SELECT count(*) FROM dcp_v2_task) +
+       (SELECT count(*) FROM dcp_v2_revision) +
+       (SELECT count(*) FROM dcp_v2_command) +
+       (SELECT count(*) FROM dcp_v2_action) +
+       (SELECT count(*) FROM dcp_v2_admission) +
+       (SELECT count(*) FROM dcp_v2_incident) +
+       (SELECT count(*) FROM dcp_v2_external_event) +
+       (SELECT count(*) FROM dcp_v2_result);
+
+-- name: InsertDCPV2Stage5Activation :exec
+INSERT INTO dcp_v2_stage5_activation (
+    activation_id, authority_commit, source_commit, source_tree,
+    install_receipt_sha, target_spec_version, target_policy_digest,
+    repository, repository_id, owner_id, base_ref, required_check,
+    issuer_kind, issuer_actor, issuer_event, issuer_event_type, workflow_id,
+    environment, service, adapter, activated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
 -- name: InsertDCPV2Task :exec
 INSERT INTO dcp_v2_task (
     task_id, target_spec_version, repository, repository_id, owner_id, base_ref,

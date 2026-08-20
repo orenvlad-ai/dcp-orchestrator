@@ -49,6 +49,14 @@ type dcpPolicyActionReader interface {
 	GetActiveDCPModelActionBySession(ctx context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error)
 }
 
+type dcpV2ProjectionReader interface {
+	GetDCPV2Task(context.Context, string) (domain.DCPV2Task, error)
+	ListDCPV2Commands(context.Context, string) ([]domain.DCPV2Command, error)
+	ListDCPV2Actions(context.Context, string) ([]domain.DCPV2Action, error)
+	ListDCPV2Admissions(context.Context, string) ([]domain.DCPV2Admission, error)
+	ListDCPV2Results(context.Context, string) ([]domain.DCPV2Result, error)
+}
+
 type dcpWBCReadmissionReader interface {
 	GetOpenDCPWBCReadmissionGenerationByTask(ctx context.Context, taskID string) (domain.DCPWBCReadmissionGeneration, bool, error)
 }
@@ -782,6 +790,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	var arbiterCohort []string
 	var arbiterActionStatus domain.DCPModelActionStatus
 	var humanGateQuestion string
+	var dcpV2Projection *domain.DCPV2LifecycleProjection
 	if reviews, ok := s.store.(reviewRunReader); ok {
 		runs, reviewErr := reviews.ListReviewRunsBySession(ctx, rec.ID)
 		if reviewErr != nil {
@@ -843,6 +852,44 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 				}
 			}
 			policyWorkflowActive = dcpPolicyWorkflowActive(task.State, arbiterStatus, policyReadmissionStatus)
+			if spec, exact := domain.DCPPolicyTargetForTask(task); exact && spec.UsesDCPV2TwinRelease() {
+				reader, ok := s.store.(dcpV2ProjectionReader)
+				if !ok {
+					return domain.Session{}, errors.New("DCP v2 projection store is unavailable")
+				}
+				v2task, v2Err := reader.GetDCPV2Task(ctx, task.TaskID)
+				commands, commandErr := reader.ListDCPV2Commands(ctx, task.TaskID)
+				actions, actionErr := reader.ListDCPV2Actions(ctx, task.TaskID)
+				admissions, admissionErr := reader.ListDCPV2Admissions(ctx, task.TaskID)
+				results, resultErr := reader.ListDCPV2Results(ctx, task.TaskID)
+				if joined := errors.Join(v2Err, commandErr, actionErr, admissionErr, resultErr); joined != nil {
+					return domain.Session{}, fmt.Errorf("DCP v2 projection facts %s: %w", rec.ID, joined)
+				}
+				var command *domain.DCPV2Command
+				for i := range commands {
+					if commands[i].Status == domain.DCPV2CommandPending || commands[i].Status == domain.DCPV2CommandLeased {
+						command = &commands[i]
+					}
+				}
+				var action *domain.DCPV2Action
+				for i := range actions {
+					if actions[i].RevisionID == v2task.CurrentRevisionID && (actions[i].Status == domain.DCPV2ActionQueued ||
+						actions[i].Status == domain.DCPV2ActionLaunching || actions[i].Status == domain.DCPV2ActionRunning) {
+						action = &actions[i]
+					}
+				}
+				var admission *domain.DCPV2Admission
+				if len(admissions) > 0 {
+					admission = &admissions[len(admissions)-1]
+				}
+				var result *domain.DCPV2Result
+				if len(results) > 0 {
+					result = &results[len(results)-1]
+				}
+				projection := domain.ProjectDCPV2Lifecycle(v2task, command, action, admission, result)
+				dcpV2Projection = &projection
+				policyModelActive, policyWorkflowActive = projection.ModelActive, projection.WorkflowActive
+			}
 		}
 	}
 	return domain.Session{
@@ -850,6 +897,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 		Status:                     status,
 		SCMStatus:                  deriveSCMStatus(prs),
 		TerminalHandleID:           rec.Metadata.RuntimeHandleID,
+		DCPV2:                      dcpV2Projection,
 		DCPPolicyState:             policyState,
 		DCPPolicyProfile:           policyProfile,
 		DCPPolicyReleasePhase:      policyReleasePhase,

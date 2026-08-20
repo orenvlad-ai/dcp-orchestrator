@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -21,6 +22,111 @@ var (
 	ErrDCPV2ProtocolViolation  = errors.New("dcp v2 protocol violation")
 	ErrDCPV2ExternalEventDrift = errors.New("dcp v2 external event identity conflict")
 )
+
+const (
+	dcpV2Stage5ActivationID    = "dcp-v2-twin-stage5"
+	dcpV2Stage5AuthorityCommit = "4143982eb054a40537d963356c209bfe8447ba31"
+)
+
+// ActivateDCPV2Stage5 inserts one immutable installation fact. An exact replay
+// is inert; any conflicting replay or any pre-existing v2 lifecycle row fails
+// closed. The caller must separately prove the daemon is stopped before it
+// opens the writable store.
+func (s *Store) ActivateDCPV2Stage5(ctx context.Context, activation domain.DCPV2Stage5Activation) (bool, error) {
+	if err := validateDCPV2Stage5Activation(activation); err != nil {
+		return false, err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	created := false
+	err := s.inTx(ctx, "activate dcp v2 stage 5", func(q *gen.Queries) error {
+		existingRow, err := q.GetDCPV2Stage5Activation(ctx, dcpV2Stage5ActivationID)
+		switch {
+		case err == nil:
+			existing := dcpV2Stage5ActivationFromGen(existingRow)
+			if !sameDCPV2Stage5Activation(existing, activation) {
+				return ErrDCPV2IdentityConflict
+			}
+			return nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("read existing activation: %w", err)
+		}
+		lifecycleRows, err := q.CountDCPV2LifecycleRows(ctx)
+		if err != nil {
+			return fmt.Errorf("verify empty dcp v2 lifecycle: %w", err)
+		}
+		if lifecycleRows != 0 {
+			return ErrDCPV2ProtocolViolation
+		}
+		if err := q.InsertDCPV2Stage5Activation(ctx, gen.InsertDCPV2Stage5ActivationParams{
+			ActivationID: activation.ActivationID, AuthorityCommit: activation.AuthorityCommit,
+			SourceCommit: activation.SourceCommit, SourceTree: activation.SourceTree,
+			InstallReceiptSha: activation.InstallReceiptSHA, TargetSpecVersion: activation.TargetSpecVersion,
+			TargetPolicyDigest: activation.TargetPolicyDigest, Repository: activation.Repository,
+			RepositoryID: activation.RepositoryID, OwnerID: activation.OwnerID, BaseRef: activation.BaseRef,
+			RequiredCheck: activation.RequiredCheck, IssuerKind: activation.IssuerKind,
+			IssuerActor: activation.IssuerActor, IssuerEvent: activation.IssuerEvent,
+			IssuerEventType: activation.IssuerEventType, WorkflowID: activation.WorkflowID,
+			Environment: activation.Environment, Service: activation.Service, Adapter: activation.Adapter,
+			ActivatedAt: activation.ActivatedAt.UTC(),
+		}); err != nil {
+			return fmt.Errorf("insert activation: %w", err)
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+func (s *Store) GetDCPV2Stage5Activation(ctx context.Context) (domain.DCPV2Stage5Activation, error) {
+	row, err := s.qr.GetDCPV2Stage5Activation(ctx, dcpV2Stage5ActivationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DCPV2Stage5Activation{}, ErrDCPV2NotFound
+	}
+	if err != nil {
+		return domain.DCPV2Stage5Activation{}, fmt.Errorf("get dcp v2 stage 5 activation: %w", err)
+	}
+	return dcpV2Stage5ActivationFromGen(row), nil
+}
+
+func dcpV2Stage5ActivationFromGen(row gen.DcpV2Stage5Activation) domain.DCPV2Stage5Activation {
+	return domain.DCPV2Stage5Activation{
+		ActivationID: row.ActivationID, AuthorityCommit: row.AuthorityCommit, SourceCommit: row.SourceCommit,
+		SourceTree: row.SourceTree, InstallReceiptSHA: row.InstallReceiptSha,
+		TargetSpecVersion: row.TargetSpecVersion, TargetPolicyDigest: row.TargetPolicyDigest,
+		Repository: row.Repository, RepositoryID: row.RepositoryID, OwnerID: row.OwnerID, BaseRef: row.BaseRef,
+		RequiredCheck: row.RequiredCheck, IssuerKind: row.IssuerKind, IssuerActor: row.IssuerActor,
+		IssuerEvent: row.IssuerEvent, IssuerEventType: row.IssuerEventType, WorkflowID: row.WorkflowID,
+		Environment: row.Environment, Service: row.Service, Adapter: row.Adapter, ActivatedAt: row.ActivatedAt,
+	}
+}
+
+func validateDCPV2Stage5Activation(a domain.DCPV2Stage5Activation) error {
+	if a.ActivationID != dcpV2Stage5ActivationID || a.AuthorityCommit != dcpV2Stage5AuthorityCommit ||
+		len(a.SourceCommit) != 40 || len(a.SourceTree) != 40 || len(a.InstallReceiptSHA) != 64 ||
+		strings.TrimSpace(a.TargetSpecVersion) == "" || len(a.TargetPolicyDigest) != 64 ||
+		strings.TrimSpace(a.Repository) == "" || a.RepositoryID <= 0 || a.OwnerID <= 0 ||
+		strings.TrimSpace(a.BaseRef) == "" || strings.TrimSpace(a.RequiredCheck) == "" ||
+		strings.TrimSpace(a.IssuerKind) == "" || strings.TrimSpace(a.IssuerActor) == "" ||
+		strings.TrimSpace(a.IssuerEvent) == "" || strings.TrimSpace(a.IssuerEventType) == "" ||
+		a.WorkflowID <= 0 || strings.TrimSpace(a.Environment) == "" || strings.TrimSpace(a.Service) == "" ||
+		strings.TrimSpace(a.Adapter) == "" || a.ActivatedAt.IsZero() {
+		return ErrDCPV2ProtocolViolation
+	}
+	for _, digest := range []string{a.SourceCommit, a.SourceTree, a.InstallReceiptSHA, a.TargetPolicyDigest} {
+		for _, r := range digest {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				return ErrDCPV2ProtocolViolation
+			}
+		}
+	}
+	return nil
+}
+
+func sameDCPV2Stage5Activation(a, b domain.DCPV2Stage5Activation) bool {
+	a.ActivatedAt, b.ActivatedAt = time.Time{}, time.Time{}
+	return a == b
+}
 
 // DCPV2Transition is the single state-plus-next-command transaction. A
 // successor Revision, Admission or Result is immutable and is committed in

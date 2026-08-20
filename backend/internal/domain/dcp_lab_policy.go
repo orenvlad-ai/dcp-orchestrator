@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -35,6 +38,24 @@ const DCPReviewLabPolicyAgentRules = "DCP synthetic PR profile v4. Work only in 
 const DCPRepoOnlyPolicyAgentRules = "DCP repo-only profile v1. Work only in this exact public wb-browser-extension repository, current native worktree and current AO branch. Read and obey the repository AGENTS.md. Do not access or mutate wb-core, dev-control-plane, dcp-orchestrator, production, secrets, other repositories, deployments, servers, telemetry, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, network services or additional pull requests. On the initial policy action implement only the direct task, run the repository baseline, create one commit lineage, push the current branch, open one ready pull request targeting main, and stop. If the trusted daemon supplies the one bounded findings-repair envelope, change only that task on the same branch and pull request, create one new head, run the repository baseline, push, and stop. Never merge or manually review; only the trusted daemon may perform exact-head review, FIFO admission and terminal merge."
 
 const DCPWBCReleaseTrainPolicyAgentRules = "DCP wb-core Release Train profiles v2. Work only in this exact public wb-core repository, current native worktree and current AO branch. Read and obey repository AGENTS.md. The immutable DCP task profile is either repo-only or live-runtime; keep task:standard and exactly the matching scope label. Model actions are repository-only for both profiles: never access production, SSH, secrets, runtime or business data, servers, telemetry, deployments, or live Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, services, or pull requests. On the initial action implement only the direct task, run baseline, create one commit lineage, push the current branch, open one ready PR targeting main with the exact task/scope labels and no release label, then stop. On the one bounded findings repair, change only that task on the same branch and PR, create one new head, run baseline, push, then stop. Never synchronize an admitted head, add release labels, merge, deploy, release, or manually review. Only the trusted DCP daemon may perform exact-head review and FIFO admission and add release:ready. Only WBC GitHub Actions may merge, add release:done for repo-only, or deploy and add release:production for live-runtime."
+
+const DCPWBCIntegrationTwinPolicyVersion = "dcp.wbc-integration-twin/v2"
+
+const DCPWBCIntegrationTwinPolicyAgentRules = "DCP v2 integration-twin task. Work only in exact public orenvlad-ai/dcp-wbc-integration-lab, the current native worktree and the current AO branch. Read and obey repository AGENTS.md. Make only the tiny inert task requested by the prompt. Do not access SSH, Selectel, secrets, runtime, deployment, business data, wb-core, production, or Wildberries APIs. Do not create subagents, extra branches, worktrees, remotes, services, repositories, or pull requests. Run the repository baseline, create one commit lineage, push the current branch, open exactly one ready PR targeting main, then stop. A bounded findings repair may change only the same task on the same branch and PR, run baseline, push the fresh head, then stop. Never merge, deploy, dispatch Release Train, synchronize or rebase an admitted head, or manually review. Only the DCP v2 daemon may review and admit; only the repository Release Train may merge, build, install, start and prove deployment."
+
+// DCPWBCIntegrationTwinPolicyDigest is the canonical installed-policy identity
+// shared by stopped activation, preflight and task creation.
+func DCPWBCIntegrationTwinPolicyDigest() string {
+	payload, err := json.Marshal(map[string]string{
+		"agentRules": DCPWBCIntegrationTwinPolicyAgentRules,
+		"targetSpec": "dcp-wbc-integration-lab/v2",
+	})
+	if err != nil {
+		panic("marshal fixed DCP v2 twin policy: " + err.Error())
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
 
 // Retain the old exported name as a source-compatible alias. Both wb-core
 // profiles intentionally share one exact native project configuration.
@@ -136,10 +157,15 @@ type DCPPolicyReleaseAuthority string
 const (
 	DCPReleaseDirect       DCPPolicyReleaseAuthority = "dcp-direct"
 	DCPReleaseWBCTrainOnly DCPPolicyReleaseAuthority = "wbc-release-train-only"
+	DCPReleaseV2TwinOnly   DCPPolicyReleaseAuthority = "dcp-v2-twin-release-only"
 )
 
 func (s DCPPolicyTargetSpec) UsesWBCReleaseTrain() bool {
 	return s.ReleaseAuthority == DCPReleaseWBCTrainOnly
+}
+
+func (s DCPPolicyTargetSpec) UsesDCPV2TwinRelease() bool {
+	return s.ReleaseAuthority == DCPReleaseV2TwinOnly
 }
 
 // AcceptsWBCReadmissionMarker keeps observation aligned with the readmission
@@ -201,6 +227,13 @@ var dcpPolicyTargetSpecs = [...]DCPPolicyTargetSpec{
 			"apps/github_release_train.py",
 			"apps/github_release_train_spec.py",
 		},
+	},
+	{
+		Target: "dcp-wbc-integration-lab", Profile: "live-runtime", Repository: "orenvlad-ai/dcp-wbc-integration-lab",
+		OriginURL: "https://github.com/orenvlad-ai/dcp-wbc-integration-lab.git", ProviderRepositoryID: 1340359100,
+		ProviderOwnerID: 237411244, DefaultBranch: "main", RequiredCheck: "baseline",
+		SessionPrefix: "dcp-wbc-integration-lab", PolicyVersion: DCPWBCIntegrationTwinPolicyVersion,
+		AgentRules: DCPWBCIntegrationTwinPolicyAgentRules, MinimumCardNumber: 1, ReleaseAuthority: DCPReleaseV2TwinOnly,
 	},
 }
 

@@ -448,6 +448,31 @@ func TestSubmitPolicyRejectsLockedWBCTargetBeforeDurableOrModelMutation(t *testi
 	}
 }
 
+func TestSubmitPolicyRejectsTwinBypassBeforeDurableOrModelMutation(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repository := &countingRepositoryValidator{}
+	runtime := &policyRuntimeFixture{}
+	svc := New(Deps{Store: store, PolicyRepository: repository, PolicyWorktreeRoot: filepath.Join(t.TempDir(), "worktrees")})
+	svc.SetPolicyRuntime(runtime, nil)
+	input := PolicySubmitInput{TaskID: "dcp-v2-twin-canary-v1", Target: "dcp-wbc-integration-lab", Profile: "live-runtime", Repository: "orenvlad-ai/dcp-wbc-integration-lab", Prompt: "add one inert canary fixture"}
+	_, err = svc.SubmitPolicy(ctx, input)
+	requireAPIError(t, err, apierr.KindInvalid, "DCP_POLICY_V2_AUTHORITY_INVALID")
+	if repository.calls != 0 || runtime.provisionCalls != 0 || runtime.launchCalls != 0 {
+		t.Fatalf("twin bypass crossed mutation boundary: validator=%d provision=%d launch=%d", repository.calls, runtime.provisionCalls, runtime.launchCalls)
+	}
+	if tasks, listErr := store.ListDCPReviewLabPolicyTasks(ctx); listErr != nil || len(tasks) != 0 {
+		t.Fatalf("twin bypass created policy rows: tasks=%+v err=%v", tasks, listErr)
+	}
+	if actions, listErr := store.ListDCPModelActions(ctx); listErr != nil || len(actions) != 0 {
+		t.Fatalf("twin bypass created model actions: actions=%+v err=%v", actions, listErr)
+	}
+}
+
 func requireAPIError(t *testing.T, err error, kind apierr.Kind, code string) {
 	t.Helper()
 	var got *apierr.Error

@@ -5,7 +5,26 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
+
+const dcpV2Stage5AuthorityCommit = "4143982eb054a40537d963356c209bfe8447ba31"
+
+type dcpV2Stage5ActivateOptions struct {
+	sourceCommit      string
+	sourceTree        string
+	installReceiptSHA string
+	json              bool
+}
+
+type dcpV2Stage5ActivateResponse struct {
+	Activation domain.DCPV2Stage5Activation `json:"activation"`
+	Created    bool                         `json:"created"`
+}
 
 type dcpPolicySubmitOptions struct {
 	taskID     string
@@ -43,7 +62,91 @@ type dcpPolicySubmitResponse struct {
 func newDCPCommand(ctx *commandContext) *cobra.Command {
 	root := &cobra.Command{Use: "dcp", Short: "DCP internal lab commands", Hidden: true}
 	root.AddCommand(newDCPPolicySubmitCommand(ctx))
+	root.AddCommand(newDCPV2Stage5ActivateCommand(ctx))
 	return root
+}
+
+func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {
+	var opts dcpV2Stage5ActivateOptions
+	cmd := &cobra.Command{
+		Use:    "stage5-activate",
+		Short:  "Apply the exact stopped DCP v2 twin activation (internal)",
+		Hidden: true,
+		Args:   noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			for name, value := range map[string]string{
+				"source-commit": opts.sourceCommit, "source-tree": opts.sourceTree,
+				"install-receipt-sha": opts.installReceiptSHA,
+			} {
+				if !isLowerHex(value, map[string]int{"source-commit": 40, "source-tree": 40, "install-receipt-sha": 64}[name]) {
+					return usageError{fmt.Errorf("--%s must be exact lowercase hexadecimal identity", name)}
+				}
+			}
+			if Commit != "" && Commit != opts.sourceCommit {
+				return usageError{fmt.Errorf("--source-commit does not match the installed binary commit")}
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if live, err := runfile.CheckStale(cfg.RunFilePath); err != nil {
+				return fmt.Errorf("inspect run-file: %w", err)
+			} else if live != nil {
+				return usageError{fmt.Errorf("the AO daemon is running (pid %d); stop it before Stage 5 activation", live.PID)}
+			}
+			activation := domain.DCPV2Stage5Activation{
+				ActivationID: "dcp-v2-twin-stage5", AuthorityCommit: dcpV2Stage5AuthorityCommit,
+				SourceCommit: opts.sourceCommit, SourceTree: opts.sourceTree,
+				InstallReceiptSHA:  opts.installReceiptSHA,
+				TargetSpecVersion:  "dcp-wbc-integration-lab/v2",
+				TargetPolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(),
+				Repository:         "orenvlad-ai/dcp-wbc-integration-lab", RepositoryID: 1340359100, OwnerID: 237411244,
+				BaseRef: "main", RequiredCheck: "baseline", IssuerKind: "dcp/v2", IssuerActor: "orenvlad-ai",
+				IssuerEvent: "repository_dispatch", IssuerEventType: "dcp-admission-v2", WorkflowID: 338377713,
+				Environment: "dcp-wbc-integration-lab-selectel", Service: "dcp-wbc-integration-lab",
+				Adapter: "selectel-systemd/v1", ActivatedAt: ctx.deps.Now().UTC(),
+			}
+			store, err := sqlite.Open(cfg.DataDir)
+			if err != nil {
+				return fmt.Errorf("open stopped Stage 5 store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+			created, err := store.ActivateDCPV2Stage5(cmd.Context(), activation)
+			if err != nil {
+				return fmt.Errorf("activate DCP v2 Stage 5: %w", err)
+			}
+			stored, err := store.GetDCPV2Stage5Activation(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("read back DCP v2 Stage 5 activation: %w", err)
+			}
+			response := dcpV2Stage5ActivateResponse{Activation: stored, Created: created}
+			if opts.json {
+				return writeJSON(cmd.OutOrStdout(), response)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "activation_id=%s\nsource_commit=%s\nsource_tree=%s\ninstall_receipt_sha=%s\ntarget_policy_digest=%s\ncreated=%t\n",
+				stored.ActivationID, stored.SourceCommit, stored.SourceTree, stored.InstallReceiptSHA,
+				stored.TargetPolicyDigest, created)
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.sourceCommit, "source-commit", "", "Exact reviewed managed-source merge commit")
+	f.StringVar(&opts.sourceTree, "source-tree", "", "Exact reviewed managed-source merge tree")
+	f.StringVar(&opts.installReceiptSHA, "install-receipt-sha", "", "SHA-256 of the exact install receipt")
+	f.BoolVar(&opts.json, "json", false, "Print JSON")
+	return cmd
+}
+
+func isLowerHex(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func newDCPPolicySubmitCommand(ctx *commandContext) *cobra.Command {

@@ -85,6 +85,7 @@ type Service struct {
 	policyRuntime      PolicyRuntime
 	policyReviewer     PolicyReviewer
 	policyArbiter      PolicyArbiter
+	policyV2Bridge     PolicyV2Bridge
 	policyMu           sync.Mutex
 	now                func() time.Time
 	newID              func(prefix string) string
@@ -116,7 +117,7 @@ const (
 	WBCLiveRuntimeProfile  = "live-runtime"
 )
 
-var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?$`)
+var policyTaskIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
 
 // PolicyStore is the additive future-task/action surface on the same SQLite
 // authority already used by this service.
@@ -166,6 +167,16 @@ type PolicyArbiter interface {
 	FutureArbiterRepairPrompt(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction) (string, error)
 }
 
+// PolicyV2Bridge binds the predecessor native session/reviewer machinery as
+// a runtime resource for an activated v2 Task. It exposes no Admission,
+// release, merge or deployment operation to the predecessor policy.
+type PolicyV2Bridge interface {
+	PrepareLegacyReview(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction) error
+	StartLegacyAction(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction) error
+	CompleteLegacyWorker(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction, bool) error
+	CompleteLegacyReview(context.Context, domain.DCPReviewLabPolicyTask, domain.DCPModelAction, domain.ReviewRun) error
+}
+
 // SetPolicyRuntime late-binds collaborators that are constructed after the
 // task service during daemon startup. It adds no background loop.
 func (s *Service) SetPolicyRuntime(runtime PolicyRuntime, reviewer PolicyReviewer) {
@@ -175,6 +186,8 @@ func (s *Service) SetPolicyRuntime(runtime PolicyRuntime, reviewer PolicyReviewe
 
 // SetPolicyArbiter connects ordinary-card arbiter actions to the existing policy queue.
 func (s *Service) SetPolicyArbiter(arbiter PolicyArbiter) { s.policyArbiter = arbiter }
+
+func (s *Service) SetPolicyV2Bridge(bridge PolicyV2Bridge) { s.policyV2Bridge = bridge }
 
 type PolicySubmitInput struct {
 	TaskID     string
@@ -203,12 +216,26 @@ type policyPayload struct {
 // queue drain. Equal replay returns the same identity; conflicting replay is
 // rejected by the atomic store transaction.
 func (s *Service) SubmitPolicy(ctx context.Context, in PolicySubmitInput) (PolicySubmitResult, error) {
+	return s.submitPolicy(ctx, in, false)
+}
+
+// ProvisionV2RuntimePolicy is the one in-process entry used after the DCP v2
+// Task/Revision/Command/Action authority already exists. The legacy HTTP/CLI
+// policy submit surface can never reserve the twin runtime shell directly.
+func (s *Service) ProvisionV2RuntimePolicy(ctx context.Context, in PolicySubmitInput) (PolicySubmitResult, error) {
+	return s.submitPolicy(ctx, in, true)
+}
+
+func (s *Service) submitPolicy(ctx context.Context, in PolicySubmitInput, v2Runtime bool) (PolicySubmitResult, error) {
 	if s == nil || s.policyStore == nil || s.policyRepository == nil || s.policyRuntime == nil || s.policyWorktreeRoot == "." || !filepath.IsAbs(s.policyWorktreeRoot) {
 		return PolicySubmitResult{}, apierr.Internal("DCP_POLICY_UNAVAILABLE", "DCP review-lab policy is unavailable")
 	}
 	spec, err := validatePolicySubmit(in)
 	if err != nil {
 		return PolicySubmitResult{}, err
+	}
+	if spec.UsesDCPV2TwinRelease() != v2Runtime {
+		return PolicySubmitResult{}, apierr.Invalid("DCP_POLICY_V2_AUTHORITY_INVALID", "the DCP v2 twin runtime shell must be provisioned only from its durable v2 Task", nil)
 	}
 	payloadBytes, err := json.Marshal(policyPayload{
 		SchemaVersion: spec.PolicyVersion, TaskID: in.TaskID, Target: in.Target,
@@ -341,7 +368,7 @@ func policyPrompt(task domain.DCPReviewLabPolicyTask) string {
 
 func validatePolicySubmit(in PolicySubmitInput) (domain.DCPPolicyTargetSpec, error) {
 	if !policyTaskIDPattern.MatchString(in.TaskID) {
-		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "taskId must be 1-16 lowercase letters, digits, or internal hyphens", nil)
+		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "taskId must be 1-64 lowercase letters, digits, or internal hyphens", nil)
 	}
 	spec, ok := domain.DCPPolicyTarget(in.Target, in.Profile)
 	if !ok || in.Repository != spec.Repository {
@@ -349,6 +376,9 @@ func validatePolicySubmit(in PolicySubmitInput) (domain.DCPPolicyTargetSpec, err
 	}
 	if strings.TrimSpace(in.Prompt) == "" || len(in.Prompt) > 512 || !utf8.ValidString(in.Prompt) || strings.ContainsAny(in.Prompt, "\x00\r\n") {
 		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_PROMPT_INVALID", "prompt must be one line and at most 512 UTF-8 bytes", nil)
+	}
+	if len(in.TaskID) > 16 && (!spec.UsesDCPV2TwinRelease() || in.TaskID != "dcp-v2-twin-canary-v1") {
+		return domain.DCPPolicyTargetSpec{}, apierr.Invalid("DCP_POLICY_TASK_ID_INVALID", "long task identity is reserved for the exact DCP v2 twin canary", nil)
 	}
 	return spec, nil
 }

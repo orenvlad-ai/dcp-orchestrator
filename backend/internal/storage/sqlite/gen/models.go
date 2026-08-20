@@ -1093,6 +1093,30 @@ type DcpV2Revision struct {
 	CreatedAt             time.Time
 }
 
+type DcpV2Stage5Activation struct {
+	ActivationID       string
+	AuthorityCommit    string
+	SourceCommit       string
+	SourceTree         string
+	InstallReceiptSha  string
+	TargetSpecVersion  string
+	TargetPolicyDigest string
+	Repository         string
+	RepositoryID       int64
+	OwnerID            int64
+	BaseRef            string
+	RequiredCheck      string
+	IssuerKind         string
+	IssuerActor        string
+	IssuerEvent        string
+	IssuerEventType    string
+	WorkflowID         int64
+	Environment        string
+	Service            string
+	Adapter            string
+	ActivatedAt        time.Time
+}
+
 type DcpV2Task struct {
 	TaskID              string
 	TargetSpecVersion   string

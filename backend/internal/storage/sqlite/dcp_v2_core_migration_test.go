@@ -44,7 +44,7 @@ func TestDCPV2CoreMigrationIsAdditiveAndStartsEmpty(t *testing.T) {
 	if fmt.Sprint(before) != fmt.Sprint(after) {
 		t.Fatalf("schema-83 predecessor rows changed\nbefore=%v\nafter=%v", before, after)
 	}
-	var version, tasks, actions, admissions, incidents, authority, adapter, installed int64
+	var version, tasks, actions, admissions, incidents, authority, activations, adapter, installed int64
 	if err := db.QueryRow(`SELECT max(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,7 @@ func TestDCPV2CoreMigrationIsAdditiveAndStartsEmpty(t *testing.T) {
 		`SELECT count(*) FROM dcp_v2_action`:                                       &actions,
 		`SELECT count(*) FROM dcp_v2_admission`:                                    &admissions,
 		`SELECT count(*) FROM dcp_v2_incident`:                                     &incidents,
+		`SELECT count(*) FROM dcp_v2_stage5_activation`:                            &activations,
 		`SELECT count(*), adapter_activated, installed FROM dcp_v2_core_authority`: &authority,
 	} {
 		if strings.Contains(query, "core_authority") {
@@ -65,8 +66,8 @@ func TestDCPV2CoreMigrationIsAdditiveAndStartsEmpty(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if version != 84 || tasks != 0 || actions != 0 || admissions != 0 || incidents != 0 || authority != 1 || adapter != 0 || installed != 0 {
-		t.Fatalf("stage4 migration version=%d rows=%d/%d/%d/%d authority=%d adapter=%d installed=%d", version, tasks, actions, admissions, incidents, authority, adapter, installed)
+	if version != 84 || tasks != 0 || actions != 0 || admissions != 0 || incidents != 0 || activations != 0 || authority != 1 || adapter != 0 || installed != 0 {
+		t.Fatalf("stage4 migration version=%d rows=%d/%d/%d/%d activation=%d authority=%d adapter=%d installed=%d", version, tasks, actions, admissions, incidents, activations, authority, adapter, installed)
 	}
 	var controlPlane, architecture string
 	if err := db.QueryRow(`SELECT control_plane_commit, architecture_version FROM dcp_v2_core_authority`).Scan(&controlPlane, &architecture); err != nil {
@@ -110,12 +111,12 @@ func TestDCPV2CoreMigrationOnExactSchema83Copy(t *testing.T) {
 	if fmt.Sprint(before) != fmt.Sprint(after) {
 		t.Fatalf("exact schema-83 copy changed predecessor rows\nbefore=%v\nafter=%v", before, after)
 	}
-	var taskRows, actionRows, admissionRows, incidentRows int64
-	if err := db.QueryRow(`SELECT (SELECT count(*) FROM dcp_v2_task), (SELECT count(*) FROM dcp_v2_action), (SELECT count(*) FROM dcp_v2_admission), (SELECT count(*) FROM dcp_v2_incident)`).Scan(&taskRows, &actionRows, &admissionRows, &incidentRows); err != nil {
+	var taskRows, actionRows, admissionRows, incidentRows, activationRows int64
+	if err := db.QueryRow(`SELECT (SELECT count(*) FROM dcp_v2_task), (SELECT count(*) FROM dcp_v2_action), (SELECT count(*) FROM dcp_v2_admission), (SELECT count(*) FROM dcp_v2_incident), (SELECT count(*) FROM dcp_v2_stage5_activation)`).Scan(&taskRows, &actionRows, &admissionRows, &incidentRows, &activationRows); err != nil {
 		t.Fatal(err)
 	}
-	if taskRows != 0 || actionRows != 0 || admissionRows != 0 || incidentRows != 0 {
-		t.Fatalf("migration activated DCP v2 rows=%d/%d/%d/%d", taskRows, actionRows, admissionRows, incidentRows)
+	if taskRows != 0 || actionRows != 0 || admissionRows != 0 || incidentRows != 0 || activationRows != 0 {
+		t.Fatalf("migration activated DCP v2 rows=%d/%d/%d/%d activation=%d", taskRows, actionRows, admissionRows, incidentRows, activationRows)
 	}
 	var integrity string
 	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {

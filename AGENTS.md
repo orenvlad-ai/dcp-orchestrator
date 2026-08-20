@@ -26,6 +26,7 @@ repository:
 14. [task-first native lifecycle v1 contract](https://github.com/orenvlad-ai/dev-control-plane/blob/5075235780b9c38d95faa9657a70265069d3a5c5/docs/DCP_TASK_FIRST_NATIVE_LIFECYCLE_V1_CONTRACT.md)
 15. [WBC integration twin and DCP v2 architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_DCP_V2_ARCHITECTURE_CONTRACT.md)
 16. [Stage 3 terminal evidence and conditional Stage 4 source authority](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_STAGE3_4_COMBINED_EXECUTION_CONTRACT.md)
+17. [Stage 5 adapter, install and preflight authority](https://github.com/orenvlad-ai/dev-control-plane/blob/4143982eb054a40537d963356c209bfe8447ba31/docs/DCP_WBC_INTEGRATION_TWIN_STAGE5_INSTALL_ACTIVATION_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -62,20 +63,24 @@ observation remain passive and may retain the exact archived native shell.
 Action/process asymmetry remains fail-closed. This source and schema-83
 recovery remain inactive until a separate reviewed pin/install pass.
 
-Items 15-16 and the merged root/current authorities at exact
-`8be08577673722edc9ae036dedea46c88ceac129`, operating revision
-`2026-08-20.3`, activate only the Stage 4 provider-neutral source pass after
-the independently green Stage 3 qualification. The new Task -> immutable
+Items 15-17 and the merged root/current authorities at exact
+`4143982eb054a40537d963356c209bfe8447ba31`, operating revision
+`2026-08-20.5`, activate only the exact Stage 5 integration-twin adapter and
+install preparation after the independently green Stage 3 qualification. The
+new Task -> immutable
 exact-head Revision -> durable Command -> bounded Action -> FIFO Admission ->
-verified Release/Deployment Result core is additive and dormant. Every
+verified Release/Deployment Result core remains additive; the exact twin
+adapter is source-active but cannot become runtime-effective before the
+separate reviewed pin/install/preflight gates. Every
 authoritative transition persists its required next Command in the same SQLite
 transaction; startup and provider events enter one bounded drain with durable
 leases, effect fences and dedupe. There is no timer, watcher, heartbeat,
-unbounded poll, automatic retry, live target adapter or direct merge/deploy
-method. Schema 0084 creates empty v2 tables with `adapter_activated=0` and
+unbounded poll, automatic retry or direct merge/deploy method. Schema 0084
+creates empty v2 tables with `adapter_activated=0` and
 `installed=0`; it does not submit a task or mutate predecessor schema-83 facts.
-The session projection field remains nil until a separately authorized target
-adapter and Stage 5 pin/install pass. Stage 4 source completion is not install,
+The session projection field remains nil until the exact installed adapter
+binds a future v2 Task to its native runtime shell. The adapter has no merge, deploy, SSH or
+install method; Stage 4 source completion alone was not install,
 activation, submission, canary, production authority or owner acceptance.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab

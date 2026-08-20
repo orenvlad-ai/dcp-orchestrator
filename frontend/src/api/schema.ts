@@ -192,6 +192,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dcp/v2/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit the one authorized DCP v2 integration-twin task */
+        post: operations["submitDCPV2TwinTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dcp/v2/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the exact DCP v2 integration-twin lifecycle */
+        get: operations["getDCPV2TwinTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dcp/v2/tasks/{taskId}/release-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one immutable repository Release Train completion event */
+        post: operations["wakeDCPV2TwinRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dev/import-projects": {
         parameters: {
             query?: never;
@@ -1204,13 +1255,23 @@ export interface components {
         };
         ControllersSubmitDCPPolicyTaskRequest: {
             /** @enum {string} */
-            profile: "synthetic-pr" | "repo-only";
+            profile: "synthetic-pr" | "repo-only" | "live-runtime";
             prompt: string;
             /** @enum {string} */
-            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension" | "orenvlad-ai/wb-browser-extension" | "orenvlad-ai/wb-core";
+            repository: "orenvlad-ai/dcp-review-lab" | "orenvlad-ai/wb-price-extension" | "orenvlad-ai/wb-browser-extension" | "orenvlad-ai/wb-core" | "orenvlad-ai/dcp-wbc-integration-lab";
             /** @enum {string} */
-            target: "dcp-review-lab" | "wb-price-extension" | "wb-browser-extension" | "wb-core";
+            target: "dcp-review-lab" | "wb-price-extension" | "wb-browser-extension" | "wb-core" | "dcp-wbc-integration-lab";
             taskId: string;
+        };
+        ControllersSubmitDCPV2TwinTaskRequest: {
+            prompt: string;
+            taskId: string;
+        };
+        ControllersWakeDCPV2TwinReleaseRequest: {
+            deliveryId: string;
+            payloadDigest: string;
+            /** Format: int64 */
+            runId: number;
         };
         DCPApprovedScope: {
             /** @enum {string} */
@@ -1283,6 +1344,24 @@ export interface components {
         DCPTaskResponse: {
             duplicate: boolean;
             task: components["schemas"]["DCPTask"];
+        };
+        Dcpv2TwinSnapshot: {
+            actions: components["schemas"]["DomainDCPV2Action"][];
+            admissions: components["schemas"]["DomainDCPV2Admission"][];
+            commands: components["schemas"]["DomainDCPV2Command"][];
+            events: components["schemas"]["DomainDCPV2ExternalEvent"][];
+            incidents: components["schemas"]["DomainDCPV2Incident"][];
+            native: components["schemas"]["DomainDCPReviewLabPolicyTask"];
+            projection: components["schemas"]["DomainDCPV2LifecycleProjection"];
+            results: components["schemas"]["DomainDCPV2Result"][];
+            revisions: components["schemas"]["DomainDCPV2Revision"][];
+            task: components["schemas"]["DomainDCPV2Task"];
+        };
+        Dcpv2TwinSubmitResult: {
+            duplicate: boolean;
+            native: components["schemas"]["DomainDCPReviewLabPolicyTask"];
+            projection: components["schemas"]["DomainDCPV2LifecycleProjection"];
+            task: components["schemas"]["DomainDCPV2Task"];
         };
         DegradedProject: {
             id: string;
@@ -1366,6 +1445,11 @@ export interface components {
             updatedAt: string;
             worktreePath: string;
         };
+        DomainDCPV2Action: Record<string, never>;
+        DomainDCPV2Admission: Record<string, never>;
+        DomainDCPV2Command: Record<string, never>;
+        DomainDCPV2ExternalEvent: Record<string, never>;
+        DomainDCPV2Incident: Record<string, never>;
         DomainDCPV2LifecycleProjection: {
             admissionId?: string;
             deployed: boolean;
@@ -1383,6 +1467,9 @@ export interface components {
             statusLabel: string;
             workflowActive: boolean;
         };
+        DomainDCPV2Result: Record<string, never>;
+        DomainDCPV2Revision: Record<string, never>;
+        DomainDCPV2Task: Record<string, never>;
         DomainReviewerConfig: {
             harness: string;
         };
@@ -2689,6 +2776,188 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ControllersDCPPolicyTaskResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    submitDCPV2TwinTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersSubmitDCPV2TwinTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dcpv2TwinSubmitResult"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dcpv2TwinSubmitResult"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getDCPV2TwinTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable DCP task identifier. */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dcpv2TwinSnapshot"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    wakeDCPV2TwinRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable DCP task identifier. */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersWakeDCPV2TwinReleaseRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dcpv2TwinSnapshot"];
                 };
             };
             /** @description Bad Request */

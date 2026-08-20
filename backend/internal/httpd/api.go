@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -12,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	dcpv2svc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
@@ -39,7 +41,12 @@ type APIDeps struct {
 	PreviewServer       controllers.ManagedPreviewServer
 	SessionCapabilities controllers.SessionCapabilityValidator
 	DCPTasks            controllers.DCPTaskService
-	DCPArbiter          DCPArbiterService
+	DCPV2Twin           interface {
+		SubmitTwin(context.Context, dcpv2svc.TwinSubmitInput) (dcpv2svc.TwinSubmitResult, error)
+		Snapshot(context.Context, string) (dcpv2svc.TwinSnapshot, error)
+		WakeRelease(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
+	}
+	DCPArbiter DCPArbiterService
 }
 
 // API owns one controller per resource and is the single Register call the
@@ -88,7 +95,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
-		dcpTasks:      &controllers.DCPTasksController{Svc: deps.DCPTasks},
+		dcpTasks:      &controllers.DCPTasksController{Svc: deps.DCPTasks, V2: deps.DCPV2Twin},
 	}
 }
 
