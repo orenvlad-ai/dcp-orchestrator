@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,17 +10,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 const dcpV2Stage5AuthorityCommit = "4143982eb054a40537d963356c209bfe8447ba31"
-
-const (
-	dcpV2Stage5SourceCommit = "c1fc43d74cd517b7d73540f340058fa17b56ef15"
-	dcpV2Stage5SourceTree   = "ff51ca2b1f6f9fa502b999f50a366a8e35035421"
-	dcpV2Stage5ReceiptSHA   = "54dd88beef2e9c93ee86435df2645d6707acf2dc3e2c0c0b4dad6de9b40cc9c0"
-)
 
 type dcpV2Stage5ActivateOptions struct {
 	sourceCommit      string
@@ -37,30 +29,6 @@ type dcpV2Stage5ActivateResponse struct {
 	ProjectPath    string                       `json:"projectPath"`
 	Created        bool                         `json:"created"`
 	ProjectCreated bool                         `json:"projectCreated"`
-}
-
-type dcpV2Stage6RecoveryOptions struct {
-	sourceCommit      string
-	sourceTree        string
-	installReceiptSHA string
-	json              bool
-}
-
-type dcpV2Stage6RecoveryResponse struct {
-	SchemaVersion         string `json:"schemaVersion"`
-	InstalledSourceCommit string `json:"installedSourceCommit"`
-	InstalledSourceTree   string `json:"installedSourceTree"`
-	InstallReceiptSHA     string `json:"installReceiptSha"`
-	Stage5ActivationID    string `json:"stage5ActivationId"`
-	Stage5SourceCommit    string `json:"stage5SourceCommit"`
-	Stage5SourceTree      string `json:"stage5SourceTree"`
-	Stage5ReceiptSHA      string `json:"stage5ReceiptSha"`
-	TaskID                string `json:"taskId"`
-	RevisionID            string `json:"revisionId"`
-	CommandID             string `json:"commandId"`
-	ActionID              string `json:"actionId"`
-	BaseSHA               string `json:"baseSha"`
-	Ready                 bool   `json:"ready"`
 }
 
 type dcpPolicySubmitOptions struct {
@@ -100,75 +68,8 @@ func newDCPCommand(ctx *commandContext) *cobra.Command {
 	root := &cobra.Command{Use: "dcp", Short: "DCP internal lab commands", Hidden: true}
 	root.AddCommand(newDCPPolicySubmitCommand(ctx))
 	root.AddCommand(newDCPV2Stage5ActivateCommand(ctx))
-	root.AddCommand(newDCPV2Stage6RecoveryCommand(ctx))
+	root.AddCommand(newDCPV2Stage6AdoptCommand(ctx))
 	return root
-}
-
-func newDCPV2Stage6RecoveryCommand(ctx *commandContext) *cobra.Command {
-	var opts dcpV2Stage6RecoveryOptions
-	cmd := &cobra.Command{
-		Use:    "stage6-recovery-preflight",
-		Short:  "Apply and inspect the exact stopped Stage 6 recovery fence (internal)",
-		Hidden: true,
-		Args:   noArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			for name, value := range map[string]string{
-				"source-commit": opts.sourceCommit, "source-tree": opts.sourceTree,
-				"install-receipt-sha": opts.installReceiptSHA,
-			} {
-				if !isLowerHex(value, map[string]int{"source-commit": 40, "source-tree": 40, "install-receipt-sha": 64}[name]) {
-					return usageError{fmt.Errorf("--%s must be exact lowercase hexadecimal identity", name)}
-				}
-			}
-			if Commit != "" && Commit != opts.sourceCommit {
-				return usageError{fmt.Errorf("--source-commit does not match the installed binary commit")}
-			}
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			if live, err := runfile.CheckStale(cfg.RunFilePath); err != nil {
-				return fmt.Errorf("inspect run-file: %w", err)
-			} else if live != nil {
-				return usageError{fmt.Errorf("the AO daemon is running (pid %d); stop it before Stage 6 recovery", live.PID)}
-			}
-			store, err := sqlite.Open(cfg.DataDir)
-			if err != nil {
-				return fmt.Errorf("open stopped Stage 6 store: %w", err)
-			}
-			defer func() { _ = store.Close() }()
-			activation, err := store.GetDCPV2Stage5Activation(cmd.Context())
-			if err != nil || activation.ActivationID != "dcp-v2-twin-stage5" ||
-				activation.SourceCommit != dcpV2Stage5SourceCommit || activation.SourceTree != dcpV2Stage5SourceTree ||
-				activation.InstallReceiptSHA != dcpV2Stage5ReceiptSHA {
-				return fmt.Errorf("read exact immutable Stage 5 activation: %w", errors.Join(err, errors.New("identity mismatch")))
-			}
-			fence, err := dcpv2.InspectStage6RecoveryFence(cmd.Context(), store)
-			if err != nil {
-				return fmt.Errorf("inspect exact Stage 6 recovery fence: %w", err)
-			}
-			response := dcpV2Stage6RecoveryResponse{
-				SchemaVersion:         "dcp.v2.stage6-native-shell-recovery/v1",
-				InstalledSourceCommit: opts.sourceCommit, InstalledSourceTree: opts.sourceTree,
-				InstallReceiptSHA: opts.installReceiptSHA, Stage5ActivationID: activation.ActivationID,
-				Stage5SourceCommit: activation.SourceCommit, Stage5SourceTree: activation.SourceTree,
-				Stage5ReceiptSHA: activation.InstallReceiptSHA, TaskID: fence.TaskID, RevisionID: fence.RevisionID,
-				CommandID: fence.CommandID, ActionID: fence.ActionID, BaseSHA: fence.BaseSHA, Ready: true,
-			}
-			if opts.json {
-				return writeJSON(cmd.OutOrStdout(), response)
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "task_id=%s\nrevision_id=%s\ncommand_id=%s\naction_id=%s\nbase_sha=%s\nready=%t\n",
-				fence.TaskID, fence.RevisionID, fence.CommandID, fence.ActionID, fence.BaseSHA, true)
-			return err
-		},
-	}
-	f := cmd.Flags()
-	f.StringVar(&opts.sourceCommit, "source-commit", "", "Exact reviewed managed-source recovery merge commit")
-	f.StringVar(&opts.sourceTree, "source-tree", "", "Exact reviewed managed-source recovery merge tree")
-	f.StringVar(&opts.installReceiptSHA, "install-receipt-sha", "", "SHA-256 of the exact recovery install receipt")
-	f.BoolVar(&opts.json, "json", false, "Print JSON")
-	return cmd
 }
 
 func newDCPV2Stage5ActivateCommand(ctx *commandContext) *cobra.Command {

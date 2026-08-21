@@ -121,6 +121,47 @@ type TwinReviewFacts struct {
 	Body         string
 }
 
+func (a *TwinGitHubAdapter) InspectStage6WorkerOutput(ctx context.Context, worktree, branch string) (Stage6WorkerOutput, error) {
+	if a == nil || a.git == nil || a.gh == nil || !filepath.IsAbs(worktree) || filepath.Clean(worktree) != worktree || branch != stage6CanaryBranch {
+		return Stage6WorkerOutput{}, errors.New("DCP v2 Stage 6 adoption worktree identity is incomplete")
+	}
+	checks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"status", "--porcelain"}, ""},
+		{[]string{"branch", "--show-current"}, branch},
+		{[]string{"rev-parse", "HEAD"}, stage6CanaryCommit},
+		{[]string{"rev-parse", "HEAD^{tree}"}, stage6CanaryTree},
+		{[]string{"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}, "docs/STAGE6_CANARY.md"},
+		{[]string{"show", "HEAD:docs/STAGE6_CANARY.md"}, "Stage 6 DCP v2 canary."},
+	}
+	for _, check := range checks {
+		got, err := a.git(ctx, worktree, check.args...)
+		if err != nil || got != check.want {
+			return Stage6WorkerOutput{}, errors.Join(err, errors.New("DCP v2 Stage 6 Worker output drifted"))
+		}
+	}
+	if _, err := a.git(ctx, worktree, "merge-base", "--is-ancestor", stage6RecoveryBaseSHA, stage6CanaryCommit); err != nil {
+		return Stage6WorkerOutput{}, errors.New("DCP v2 Stage 6 Worker base ancestry drifted")
+	}
+	remote, err := a.git(ctx, worktree, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil || remote != "" {
+		return Stage6WorkerOutput{}, errors.Join(err, errors.New("DCP v2 Stage 6 Worker branch already has a remote effect"))
+	}
+	query := url.Values{"state": {"open"}, "base": {TwinBase}, "head": {"orenvlad-ai:" + branch}, "per_page": {"100"}}
+	var pulls []twinPR
+	if err := a.getJSON(ctx, "repos/"+TwinRepository+"/pulls?"+query.Encode(), &pulls); err != nil || len(pulls) != 0 {
+		return Stage6WorkerOutput{}, errors.Join(err, errors.New("DCP v2 Stage 6 Worker output already has a PR effect"))
+	}
+	worktreeDigest := digestCanonical(map[string]string{"branch": branch, "worktree": filepath.Clean(worktree)})
+	outputDigest := digestCanonical(map[string]string{"commit": stage6CanaryCommit, "tree": stage6CanaryTree,
+		"path": "docs/STAGE6_CANARY.md", "content": "Stage 6 DCP v2 canary."})
+	return Stage6WorkerOutput{CommitSHA: stage6CanaryCommit, TreeSHA: stage6CanaryTree, Branch: branch,
+		WorktreePath: filepath.Clean(worktree), WorktreeDigest: worktreeDigest, OutputDigest: outputDigest,
+		RemoteBranchAbsent: true, OpenPRCount: 0}, nil
+}
+
 func (a *TwinGitHubAdapter) ObserveMain(ctx context.Context) (string, error) {
 	var ref struct {
 		Object struct {
@@ -264,6 +305,155 @@ func (a *TwinGitHubAdapter) PublishExactReview(ctx context.Context, facts TwinRe
 	}
 	sum := sha256.Sum256([]byte(body))
 	return TwinReviewFacts{ReviewID: matched[0], ReviewDigest: hex.EncodeToString(sum[:]), Body: body}, nil
+}
+
+func (a *TwinGitHubAdapter) PublishExactDirectReview(ctx context.Context, facts TwinRepositoryFacts, receipt domain.DCPV2ModelTerminalReceipt) (TwinReviewFacts, error) {
+	var output directReviewResult
+	if decodeExactDirectJSON([]byte(receipt.OutputJSON), &output) != nil || output.Verdict != "approved" ||
+		output.HeadSHA != facts.HeadSHA || !validDirectReviewResult(output) ||
+		receipt.Status != domain.DCPV2ModelTerminalSucceeded || receipt.OutputDigest == "" {
+		return TwinReviewFacts{}, errors.New("DCP v2 direct review receipt is not an approved exact-head result")
+	}
+	body := "DCP v2 context-free semantic/security review " + receipt.ReceiptID + " for exact head " + facts.HeadSHA + ": no findings."
+	return a.publishReviewBody(ctx, facts, body)
+}
+
+func (a *TwinGitHubAdapter) publishReviewBody(ctx context.Context, facts TwinRepositoryFacts, body string) (TwinReviewFacts, error) {
+	var reviews []struct {
+		ID       int64  `json:"id"`
+		Body     string `json:"body"`
+		CommitID string `json:"commit_id"`
+		User     struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	path := "repos/" + TwinRepository + "/pulls/" + strconv.FormatInt(facts.PRNumber, 10) + "/reviews"
+	if err := a.getJSON(ctx, path+"?per_page=100", &reviews); err != nil {
+		return TwinReviewFacts{}, err
+	}
+	var matched []int64
+	for _, review := range reviews {
+		if review.Body == body && strings.EqualFold(review.CommitID, facts.HeadSHA) && review.User.Login == TwinIssuerActor {
+			matched = append(matched, review.ID)
+		}
+	}
+	if len(matched) > 1 {
+		return TwinReviewFacts{}, errors.New("DCP v2 exact review cardinality drifted")
+	}
+	if len(matched) == 0 {
+		payload, _ := json.Marshal(map[string]string{"body": body, "commit_id": facts.HeadSHA, "event": "COMMENT"})
+		var created struct {
+			ID int64 `json:"id"`
+		}
+		if err := a.mutateJSON(ctx, payload, path, &created); err != nil {
+			return TwinReviewFacts{}, err
+		}
+		if created.ID < 1 {
+			return TwinReviewFacts{}, errors.New("DCP v2 GitHub review lacks an identity")
+		}
+		matched = []int64{created.ID}
+	}
+	sum := sha256.Sum256([]byte(body))
+	return TwinReviewFacts{ReviewID: matched[0], ReviewDigest: hex.EncodeToString(sum[:]), Body: body}, nil
+}
+
+func (a *TwinGitHubAdapter) Publish(ctx context.Context, request ports.DCPV2PublicationRequest) (ports.DCPV2PublicationReceipt, error) {
+	if err := a.validatePublicationWorktree(ctx, request); err != nil {
+		return ports.DCPV2PublicationReceipt{}, err
+	}
+	remote, err := a.git(ctx, request.Worktree, "ls-remote", "--heads", "origin", "refs/heads/"+request.Branch)
+	if err != nil {
+		return ports.DCPV2PublicationReceipt{}, err
+	}
+	remoteHead := ""
+	if remote != "" {
+		fields := strings.Fields(remote)
+		if len(fields) != 2 || fields[1] != "refs/heads/"+request.Branch || !validV2SHA(fields[0]) {
+			return ports.DCPV2PublicationReceipt{}, errors.New("DCP v2 publication remote ref is malformed")
+		}
+		remoteHead = strings.ToLower(fields[0])
+	}
+	switch {
+	case remoteHead == strings.ToLower(request.CommitSHA):
+	case remoteHead == strings.ToLower(request.ExpectedOldHead):
+		lease := "--force-with-lease=refs/heads/" + request.Branch + ":" + remoteHead
+		if _, err := a.git(ctx, request.Worktree, "push", lease, "origin", request.CommitSHA+":refs/heads/"+request.Branch); err != nil {
+			return ports.DCPV2PublicationReceipt{}, errors.New("DCP v2 expected-old-head publication failed")
+		}
+	default:
+		return ports.DCPV2PublicationReceipt{}, errors.New("DCP v2 publication remote head crossed its fence")
+	}
+	return a.ensurePublicationPR(ctx, request)
+}
+
+func (a *TwinGitHubAdapter) ReconcilePublication(ctx context.Context, request ports.DCPV2PublicationRequest) (ports.DCPV2PublicationReceipt, bool, error) {
+	if err := a.validatePublicationWorktree(ctx, request); err != nil {
+		return ports.DCPV2PublicationReceipt{}, false, err
+	}
+	remote, err := a.git(ctx, request.Worktree, "ls-remote", "--heads", "origin", "refs/heads/"+request.Branch)
+	if err != nil || !strings.HasPrefix(strings.ToLower(remote), strings.ToLower(request.CommitSHA)+"\t") {
+		return ports.DCPV2PublicationReceipt{}, false, err
+	}
+	receipt, err := a.ensurePublicationPR(ctx, request)
+	return receipt, err == nil, err
+}
+
+func (a *TwinGitHubAdapter) validatePublicationWorktree(ctx context.Context, request ports.DCPV2PublicationRequest) error {
+	if a == nil || a.git == nil || a.gh == nil || request.Repository != TwinRepository || request.BaseRef != TwinBase ||
+		!validV2SHA(request.BaseSHA) || !validV2SHA(request.CommitSHA) || !validV2SHA(request.TreeSHA) ||
+		request.Branch == "" || request.Branch == TwinBase || !filepath.IsAbs(request.Worktree) || len(request.WorktreeDigest) != 64 ||
+		(request.ExpectedOldHead != "" && !validV2SHA(request.ExpectedOldHead)) {
+		return errors.New("DCP v2 publication identity is incomplete")
+	}
+	wantFence := "publication:" + digestCanonical(map[string]any{"baseSha": request.BaseSHA, "branch": request.Branch,
+		"commitSha": request.CommitSHA, "expectedOldHead": request.ExpectedOldHead, "treeSha": request.TreeSHA,
+		"worktree": request.Worktree, "worktreeDigest": request.WorktreeDigest})
+	if request.EffectFence != wantFence {
+		return errors.New("DCP v2 publication effect fence drifted")
+	}
+	checks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"status", "--porcelain"}, ""},
+		{[]string{"branch", "--show-current"}, request.Branch},
+		{[]string{"rev-parse", "HEAD"}, strings.ToLower(request.CommitSHA)},
+		{[]string{"rev-parse", request.CommitSHA + "^{tree}"}, strings.ToLower(request.TreeSHA)},
+	}
+	for _, check := range checks {
+		got, err := a.git(ctx, request.Worktree, check.args...)
+		if err != nil || got != check.want {
+			return errors.Join(err, errors.New("DCP v2 publication worktree identity drifted"))
+		}
+	}
+	if _, err := a.git(ctx, request.Worktree, "merge-base", "--is-ancestor", request.BaseSHA, request.CommitSHA); err != nil {
+		return errors.New("DCP v2 publication base ancestry drifted")
+	}
+	return nil
+}
+
+func (a *TwinGitHubAdapter) ensurePublicationPR(ctx context.Context, request ports.DCPV2PublicationRequest) (ports.DCPV2PublicationReceipt, error) {
+	query := url.Values{"state": {"open"}, "base": {TwinBase}, "head": {"orenvlad-ai:" + request.Branch}, "per_page": {"100"}}
+	var pulls []twinPR
+	if err := a.getJSON(ctx, "repos/"+TwinRepository+"/pulls?"+query.Encode(), &pulls); err != nil {
+		return ports.DCPV2PublicationReceipt{}, err
+	}
+	if len(pulls) == 0 {
+		payload, _ := json.Marshal(map[string]any{"title": "DCP Stage 6 canary", "head": request.Branch, "base": TwinBase,
+			"body": "DCP v2 exact same-identity Worker publication. Model-free publication command; no duplicate model call."})
+		var created twinPR
+		if err := a.mutateJSON(ctx, payload, "repos/"+TwinRepository+"/pulls", &created); err != nil {
+			return ports.DCPV2PublicationReceipt{}, err
+		}
+		pulls = []twinPR{created}
+	}
+	if len(pulls) != 1 || pulls[0].Number < 1 || pulls[0].State != "open" || pulls[0].Draft || pulls[0].Merged ||
+		pulls[0].Base.Ref != TwinBase || pulls[0].Head.Ref != request.Branch || !strings.EqualFold(pulls[0].Head.SHA, request.CommitSHA) {
+		return ports.DCPV2PublicationReceipt{}, errors.New("DCP v2 publication PR identity drifted")
+	}
+	evidence := digestCanonical(map[string]any{"branch": request.Branch, "commit": request.CommitSHA, "tree": request.TreeSHA, "pr": pulls[0].Number})
+	return ports.DCPV2PublicationReceipt{ExternalID: "github-pr:" + strconv.FormatInt(pulls[0].Number, 10), Branch: request.Branch,
+		CommitSHA: strings.ToLower(request.CommitSHA), TreeSHA: strings.ToLower(request.TreeSHA), PRNumber: pulls[0].Number, EvidenceDigest: evidence}, nil
 }
 
 func (a *TwinGitHubAdapter) ObserveRevision(ctx context.Context, _ domain.DCPV2Task, revision domain.DCPV2Revision) (ports.DCPV2RepositoryObservation, error) {

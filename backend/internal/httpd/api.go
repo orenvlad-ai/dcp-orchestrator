@@ -44,9 +44,11 @@ type APIDeps struct {
 	DCPV2Twin           interface {
 		SubmitTwin(context.Context, dcpv2svc.TwinSubmitInput) (dcpv2svc.TwinSubmitResult, error)
 		Snapshot(context.Context, string) (dcpv2svc.TwinSnapshot, error)
+		WakeChecks(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
 		WakeRelease(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
 	}
-	DCPArbiter DCPArbiterService
+	DCPV2Direct DCPV2DirectService
+	DCPArbiter  DCPArbiterService
 }
 
 // API owns one controller per resource and is the single Register call the

@@ -14,6 +14,7 @@ import (
 )
 
 const dcpV2Stage6Schema84CopyEnv = "DCP_V2_STAGE6_SCHEMA84_DB"
+const dcpV2Stage6Schema85DirectEnv = "DCP_V2_STAGE6_SCHEMA85_DB"
 
 func TestDCPV2TwinNativeShellMigrationOpensOnlyExactIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ao.db")
@@ -157,6 +158,105 @@ func TestDCPV2TwinNativeShellMigrationOnExactSchema84Copy(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("schema-85 exact copy has a foreign-key violation")
+	}
+}
+
+func TestDCPV2DirectAuthorityMigrationPreservesExactSchema85Copy(t *testing.T) {
+	source := os.Getenv(dcpV2Stage6Schema85DirectEnv)
+	if source == "" {
+		t.Skip(dcpV2Stage6Schema85DirectEnv + " is not set")
+	}
+	beforeDB := openReadOnlyDB(t, source)
+	var version int64
+	if err := beforeDB.QueryRow(`SELECT max(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version); err != nil || version != 85 {
+		t.Fatalf("exact-copy source schema=%d want=85 err=%v", version, err)
+	}
+	preservedTables := []string{
+		"projects", "sessions", "dcp_review_lab_policy_task", "dcp_model_action", "review_run", "dcp_review_lab_admission",
+		"dcp_wbc_readmission_generation", "dcp_task_first_native_lifecycle_recovery_v1", "dcp_v2_stage5_activation",
+		"dcp_v2_task", "dcp_v2_revision", "dcp_v2_command", "dcp_v2_action", "dcp_v2_admission",
+		"dcp_v2_external_event", "dcp_v2_incident", "dcp_v2_result",
+	}
+	before := dcpV2TablesSnapshot(t, beforeDB, preservedTables)
+	var taskID, revisionID, commandID, actionID, runtimeID string
+	var tasks, revisions, commands, actions, admissions, incidents, events, results int64
+	if err := beforeDB.QueryRow(`
+SELECT
+ (SELECT count(*) FROM dcp_v2_task), (SELECT count(*) FROM dcp_v2_revision),
+ (SELECT count(*) FROM dcp_v2_command), (SELECT count(*) FROM dcp_v2_action),
+ (SELECT count(*) FROM dcp_v2_admission), (SELECT count(*) FROM dcp_v2_incident),
+ (SELECT count(*) FROM dcp_v2_external_event), (SELECT count(*) FROM dcp_v2_result),
+ (SELECT task_id FROM dcp_v2_task), (SELECT revision_id FROM dcp_v2_revision),
+ (SELECT command_id FROM dcp_v2_command), (SELECT action_id FROM dcp_v2_action),
+ (SELECT runtime_id FROM dcp_v2_action)
+`).Scan(&tasks, &revisions, &commands, &actions, &admissions, &incidents, &events, &results,
+		&taskID, &revisionID, &commandID, &actionID, &runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if tasks != 1 || revisions != 1 || commands != 1 || actions != 1 || admissions != 0 || incidents != 0 || events != 0 || results != 0 ||
+		taskID != "dcp-v2-twin-canary-v1" || revisionID != "v2-13f81f321f99d1117dc931419e0bea3945ee35a5" ||
+		commandID != "v2-e028f779a18417e990911057f7db7c666f7487ca" || actionID != "v2-40f87d048813533daa1108b4316c09139acf0a8f" ||
+		runtimeID != "78535564-a2bc-478c-80b0-207753f2152c" {
+		t.Fatalf("schema-85 frozen identity drifted counts=%d/%d/%d/%d/%d/%d/%d/%d ids=%s/%s/%s/%s/%s",
+			tasks, revisions, commands, actions, admissions, incidents, events, results, taskID, revisionID, commandID, actionID, runtimeID)
+	}
+	destination := filepath.Join(t.TempDir(), "ao.db")
+	if _, err := beforeDB.Exec(`VACUUM INTO ?`, destination); err != nil {
+		t.Fatalf("create disposable exact schema-85 copy: %v", err)
+	}
+	if err := beforeDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+destination+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateDCPV2TestTo(t, db, 86)
+	after := dcpV2TablesSnapshot(t, db, preservedTables)
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Fatalf("schema-86 changed frozen schema-85 authority\nbefore=%v\nafter=%v", before, after)
+	}
+	var runtimes, receipts, adoptions int64
+	if err := db.QueryRow(`SELECT
+ (SELECT count(*) FROM dcp_v2_model_runtime),
+ (SELECT count(*) FROM dcp_v2_model_terminal_receipt),
+ (SELECT count(*) FROM dcp_v2_stage6_worker_adoption_v1)
+`).Scan(&runtimes, &receipts, &adoptions); err != nil || runtimes != 0 || receipts != 0 || adoptions != 0 {
+		t.Fatalf("migration invented direct lifecycle rows=%d/%d/%d err=%v", runtimes, receipts, adoptions, err)
+	}
+	if err := db.QueryRow(`SELECT max(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version); err != nil || version != 86 {
+		t.Fatalf("migration version=%d err=%v", version, err)
+	}
+	var launchFence string
+	if err := db.QueryRow(`SELECT launch_fence FROM dcp_v2_action WHERE action_id=?`, actionID).Scan(&launchFence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO dcp_v2_model_runtime (
+runtime_id, action_id, command_id, task_id, revision_id, slot, launch_fence,
+provider_request_id, provider_request_digest, worktree_path, worktree_digest, state, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, 1, ?, 'synthetic-provider-request', ?, '/synthetic/worktree', ?, 'running', ?, ?)`,
+		runtimeID, actionID, commandID, taskID, revisionID, launchFence, strings.Repeat("a", 64), strings.Repeat("b", 64),
+		time.Date(2026, 8, 21, 18, 0, 0, 0, time.UTC), time.Date(2026, 8, 21, 18, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert synthetic direct runtime: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE dcp_v2_model_runtime SET provider_request_digest=? WHERE runtime_id=?`, strings.Repeat("c", 64), runtimeID); err == nil {
+		t.Fatal("direct runtime provider identity was mutable")
+	}
+	if _, err := db.Exec(`DELETE FROM dcp_v2_model_runtime WHERE runtime_id=?`, runtimeID); err == nil {
+		t.Fatal("direct runtime identity was deletable")
+	}
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity=%q err=%v", integrity, err)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("schema-86 exact copy has a foreign-key violation")
 	}
 }
 

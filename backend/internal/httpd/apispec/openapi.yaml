@@ -635,6 +635,57 @@ paths:
       summary: Read the exact DCP v2 integration-twin lifecycle
       tags:
       - dcpTasks
+  /api/v1/dcp/v2/tasks/{taskId}/check-event:
+    post:
+      operationId: wakeDCPV2TwinChecks
+      parameters:
+      - description: Durable DCP task identifier.
+        in: path
+        name: taskId
+        required: true
+        schema:
+          description: Durable DCP task identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersWakeDCPV2TwinChecksRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dcpv2TwinSnapshot'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Apply one immutable exact-head check completion event
+      tags:
+      - dcpTasks
   /api/v1/dcp/v2/tasks/{taskId}/release-event:
     post:
       operationId: wakeDCPV2TwinRelease
@@ -3793,6 +3844,25 @@ components:
       - taskId
       - prompt
       type: object
+    ControllersWakeDCPV2TwinChecksRequest:
+      properties:
+        deliveryId:
+          maxLength: 256
+          minLength: 1
+          type: string
+        payloadDigest:
+          maxLength: 64
+          minLength: 64
+          type: string
+        runId:
+          format: int64
+          minimum: 1
+          type: integer
+      required:
+      - deliveryId
+      - runId
+      - payloadDigest
+      type: object
     ControllersWakeDCPV2TwinReleaseRequest:
       properties:
         deliveryId:
@@ -4013,8 +4083,6 @@ components:
           items:
             $ref: '#/components/schemas/DomainDCPV2Incident'
           type: array
-        native:
-          $ref: '#/components/schemas/DomainDCPReviewLabPolicyTask'
         projection:
           $ref: '#/components/schemas/DomainDCPV2LifecycleProjection'
         results:
@@ -4029,7 +4097,6 @@ components:
           $ref: '#/components/schemas/DomainDCPV2Task'
       required:
       - task
-      - native
       - revisions
       - commands
       - actions
@@ -4043,15 +4110,12 @@ components:
       properties:
         duplicate:
           type: boolean
-        native:
-          $ref: '#/components/schemas/DomainDCPReviewLabPolicyTask'
         projection:
           $ref: '#/components/schemas/DomainDCPV2LifecycleProjection'
         task:
           $ref: '#/components/schemas/DomainDCPV2Task'
       required:
       - task
-      - native
       - projection
       - duplicate
       type: object

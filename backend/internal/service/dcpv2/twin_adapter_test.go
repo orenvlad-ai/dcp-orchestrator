@@ -13,7 +13,37 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestTwinPublicationRejectsCrossedPayloadFenceBeforeGit(t *testing.T) {
+	request := ports.DCPV2PublicationRequest{
+		TaskID: "task-1", RevisionID: "revision-1", CommandID: "command-1",
+		Repository: TwinRepository, BaseRef: TwinBase, BaseSHA: strings.Repeat("1", 40),
+		Branch: "ao/task-1/root", CommitSHA: strings.Repeat("2", 40), TreeSHA: strings.Repeat("3", 40),
+		Worktree: filepath.Join(t.TempDir(), "worktree"), WorktreeDigest: strings.Repeat("4", 64),
+		EffectFence: "publication:" + strings.Repeat("5", 64),
+	}
+	gitCalls := 0
+	adapter := &TwinGitHubAdapter{
+		gh: func(context.Context, []byte, ...string) ([]byte, error) {
+			return nil, errors.New("unexpected provider call")
+		},
+		git: func(context.Context, string, ...string) (string, error) {
+			gitCalls++
+			return "", errors.New("unexpected Git call")
+		},
+	}
+	if _, err := adapter.Publish(t.Context(), request); err == nil || !strings.Contains(err.Error(), "effect fence drifted") {
+		t.Fatalf("crossed publication fence was accepted: %v", err)
+	}
+	if _, found, err := adapter.ReconcilePublication(t.Context(), request); err == nil || found || !strings.Contains(err.Error(), "effect fence drifted") {
+		t.Fatalf("crossed reconciliation fence was accepted: found=%t err=%v", found, err)
+	}
+	if gitCalls != 0 {
+		t.Fatalf("crossed fence reached Git %d times", gitCalls)
+	}
+}
 
 func TestTwinAdapterObservesOneExactPRAndNamedCheck(t *testing.T) {
 	const base = "1111111111111111111111111111111111111111"

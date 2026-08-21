@@ -53,6 +53,12 @@ type WakeDCPV2TwinReleaseRequest struct {
 	PayloadDigest string `json:"payloadDigest" minLength:"64" maxLength:"64"`
 }
 
+type WakeDCPV2TwinChecksRequest struct {
+	DeliveryID    string `json:"deliveryId" minLength:"1" maxLength:"256"`
+	RunID         int64  `json:"runId" minimum:"1"`
+	PayloadDigest string `json:"payloadDigest" minLength:"64" maxLength:"64"`
+}
+
 type DCPPolicyTaskResponse struct {
 	Task      domain.DCPReviewLabPolicyTask `json:"task"`
 	Duplicate bool                          `json:"duplicate"`

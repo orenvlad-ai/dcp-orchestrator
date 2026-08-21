@@ -1052,6 +1052,45 @@ type DcpV2Incident struct {
 	CreatedAt      time.Time
 }
 
+type DcpV2ModelRuntime struct {
+	RuntimeID             string
+	ActionID              string
+	CommandID             string
+	TaskID                string
+	RevisionID            string
+	Slot                  int64
+	LaunchFence           string
+	ProviderRequestID     string
+	ProviderRequestDigest string
+	WorktreePath          string
+	WorktreeDigest        string
+	State                 string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type DcpV2ModelTerminalReceipt struct {
+	ReceiptID      string
+	ActionID       string
+	CommandID      string
+	TaskID         string
+	RevisionID     string
+	RuntimeID      string
+	LaunchFence    string
+	Status         string
+	ResultDigest   string
+	ErrorCode      string
+	OutputJson     string
+	OutputDigest   string
+	HeadRef        string
+	HeadSha        string
+	TreeSha        string
+	BaseSha        string
+	WorktreePath   string
+	WorktreeDigest string
+	CreatedAt      time.Time
+}
+
 type DcpV2Result struct {
 	ResultID       string
 	TaskID         string
@@ -1115,6 +1154,25 @@ type DcpV2Stage5Activation struct {
 	Service            string
 	Adapter            string
 	ActivatedAt        time.Time
+}
+
+type DcpV2Stage6WorkerAdoptionV1 struct {
+	AdoptionID           string
+	TaskID               string
+	RevisionID           string
+	CommandID            string
+	ActionID             string
+	RuntimeID            string
+	NativeActionID       string
+	NativeSequence       int64
+	LegacyEvidenceDigest string
+	CommitSha            string
+	TreeSha              string
+	Branch               string
+	WorktreeDigest       string
+	OutputDigest         string
+	ReceiptID            string
+	ConsumedAt           time.Time
 }
 
 type DcpV2Task struct {

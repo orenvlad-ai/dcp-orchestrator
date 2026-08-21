@@ -324,7 +324,7 @@ func (e *Engine) reconcileModelCommand(ctx context.Context, command domain.DCPV2
 	case domain.DCPV2ActionFailed:
 		return e.failClosed(ctx, command, "bounded model Action failed and will not be retried", "model_action_failed")
 	case domain.DCPV2ActionLaunching, domain.DCPV2ActionRunning:
-		return ErrModelRuntimeReconciliationRequired
+		return errPauseDrain
 	default:
 		return e.failClosed(ctx, command, "model Action has an invalid durable state", "model_action_state_invalid")
 	}

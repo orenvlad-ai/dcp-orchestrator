@@ -13,6 +13,7 @@ func TestDCPV2CommandTransitionLaw(t *testing.T) {
 	}{
 		{"worker exact successor", DCPV2CommandWorkerExecute, DCPV2TaskWorkerQueued, DCPV2TaskChecksWaiting, true, true},
 		{"worker cannot omit revision", DCPV2CommandWorkerExecute, DCPV2TaskWorkerQueued, DCPV2TaskChecksWaiting, false, false},
+		{"publication preserves successor revision", DCPV2CommandPublication, DCPV2TaskChecksWaiting, DCPV2TaskChecksWaiting, false, true},
 		{"checks lead to fresh review", DCPV2CommandChecksObserve, DCPV2TaskChecksWaiting, DCPV2TaskReviewQueued, false, true},
 		{"review may consume shared repair", DCPV2CommandReviewExecute, DCPV2TaskReviewQueued, DCPV2TaskRepairQueued, false, true},
 		{"repair makes successor revision", DCPV2CommandRepairExecute, DCPV2TaskRepairQueued, DCPV2TaskChecksWaiting, true, true},
@@ -56,8 +57,19 @@ func TestDCPV2ProjectionSeparatesModelWorkflowMergedAndDeployed(t *testing.T) {
 	}
 	action.RuntimeID = "native-runtime-1"
 	projection = ProjectDCPV2Lifecycle(task, &command, &action, nil, nil)
-	if !projection.ModelActive || !projection.WorkflowActive {
-		t.Fatalf("running projection=%+v", projection)
+	if projection.ModelActive || !projection.WorkflowActive || !projection.Error {
+		t.Fatalf("running-without-observation projection=%+v", projection)
+	}
+	projection = ProjectDCPV2LifecycleWithRuntime(task, &command, &action,
+		&DCPV2RuntimeObservation{ActionID: action.ActionID, RuntimeID: action.RuntimeID, Alive: true}, nil, nil)
+	if !projection.ModelActive || !projection.WorkflowActive || projection.Error {
+		t.Fatalf("running-with-exact-runtime projection=%+v", projection)
+	}
+	action.Status = DCPV2ActionSucceeded
+	projection = ProjectDCPV2LifecycleWithRuntime(task, &command, &action,
+		&DCPV2RuntimeObservation{ActionID: action.ActionID, RuntimeID: action.RuntimeID, Alive: true}, nil, nil)
+	if projection.ModelActive || !projection.Error {
+		t.Fatalf("live-runtime-for-terminal-action projection=%+v", projection)
 	}
 
 	task.State = DCPV2TaskDeploymentWaiting

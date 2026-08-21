@@ -199,7 +199,7 @@ func TestStartupKeepsFencedButUnlaunchedActionDurablyQueued(t *testing.T) {
 	}
 }
 
-func TestStartupStopsOnActiveModelRuntimeWithoutAdoptionProof(t *testing.T) {
+func TestStartupLeavesActiveModelRuntimeForDirectRunnerReconciliation(t *testing.T) {
 	s, _, command, now := newEngineStore(t, "active-runtime")
 	processor := &scriptedProcessor{now: now}
 	engine := newEngine(t, s, processor, now.Add(10*time.Second), 4)
@@ -218,7 +218,7 @@ func TestStartupStopsOnActiveModelRuntimeWithoutAdoptionProof(t *testing.T) {
 	if err := s.StartDCPV2Action(context.Background(), action.ActionID, action.Slot, action.LaunchFence, "live-runtime-id", now.Add(14*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.Startup(context.Background()); !errors.Is(err, dcpv2.ErrModelRuntimeReconciliationRequired) {
+	if err := engine.Startup(context.Background()); err != nil {
 		t.Fatalf("active runtime startup err=%v", err)
 	}
 	task, _ := s.GetDCPV2Task(context.Background(), command.TaskID)

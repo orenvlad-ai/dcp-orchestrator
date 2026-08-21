@@ -230,6 +230,121 @@ func finishV2ModelAction(t *testing.T, s *sqlite.Store, command domain.DCPV2Comm
 	}
 }
 
+func TestDCPV2DirectTerminalReceiptAdvancesAtomicallyAndReplaysInert(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	task, current, command, now := createV2Fixture(t, s, "direct-terminal")
+	leased := claimV2Command(t, s, command.CommandID, now.Add(time.Second))
+	action, runtime, created, err := s.ReserveDCPV2ModelLaunch(ctx, leased.CommandID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken,
+		"runtime-direct-terminal", "/tmp/direct-terminal", v2Digest("w"), now.Add(2*time.Second))
+	if err != nil || !created || action.Status != domain.DCPV2ActionLaunching || runtime.Slot != 1 {
+		t.Fatalf("reserve direct runtime: action=%+v runtime=%+v created=%t err=%v", action, runtime, created, err)
+	}
+	if started, err := s.StartDCPV2ModelRuntime(ctx, runtime, "request-1", v2Digest("q"), now.Add(3*time.Second)); err != nil || !started {
+		t.Fatalf("start direct runtime: started=%t err=%v", started, err)
+	}
+	resultDigest := v2Digest("r")
+	nextRevision := domain.DCPV2Revision{RevisionID: "direct-terminal-r2", TaskID: task.TaskID, Sequence: 2,
+		Kind: domain.DCPV2RevisionWorker, Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA,
+		HeadRef: "codex/direct-terminal", HeadSHA: v2HeadSHA, PredecessorRevisionID: current.RevisionID,
+		CauseCommandID: leased.CommandID, EvidenceDigest: resultDigest, CreatedAt: now.Add(4 * time.Second)}
+	next := domain.DCPV2Command{CommandID: "direct-terminal-publication", TaskID: task.TaskID,
+		RevisionID: nextRevision.RevisionID, Kind: domain.DCPV2CommandPublication, PayloadJSON: `{}`,
+		PayloadDigest: v2Digest("s"), PrerequisiteDigest: resultDigest, IdempotencyKey: task.TaskID + "/publication/2",
+		Status: domain.DCPV2CommandPending, CreatedAt: now.Add(4 * time.Second), UpdatedAt: now.Add(4 * time.Second)}
+	receipt := domain.DCPV2ModelTerminalReceipt{ReceiptID: "receipt-direct-terminal", ActionID: action.ActionID,
+		CommandID: leased.CommandID, TaskID: task.TaskID, RevisionID: current.RevisionID, RuntimeID: runtime.RuntimeID,
+		LaunchFence: runtime.LaunchFence, Status: domain.DCPV2ModelTerminalSucceeded, ResultDigest: resultDigest,
+		OutputJSON: `{}`, OutputDigest: v2Digest("o"), HeadRef: nextRevision.HeadRef, HeadSHA: nextRevision.HeadSHA,
+		TreeSHA: strings.Repeat("c", 40), BaseSHA: v2BaseSHA, WorktreePath: "/tmp/direct-terminal", WorktreeDigest: v2Digest("w"), CreatedAt: now.Add(4 * time.Second)}
+	direct := sqlitestore.DCPV2DirectTransition{Transition: sqlitestore.DCPV2Transition{CommandID: leased.CommandID,
+		LeaseOwner: leased.LeaseOwner, LeaseEpoch: leased.LeaseEpoch, LeaseToken: leased.LeaseToken,
+		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: current.RevisionID,
+		NextTaskState: domain.DCPV2TaskChecksWaiting, RepairUsed: 0, ReadmissionCount: 0,
+		CommandResultDigest: resultDigest, NextRevision: &nextRevision, NextCommand: &next, UpdatedAt: now.Add(4 * time.Second)}, Receipt: receipt}
+	if applied, err := s.CompleteDCPV2ModelTransition(ctx, direct); err != nil || !applied {
+		t.Fatalf("complete direct terminal: applied=%t err=%v", applied, err)
+	}
+	updated, _ := s.GetDCPV2Task(ctx, task.TaskID)
+	commands, _ := s.ListDCPV2Commands(ctx, task.TaskID)
+	actions, _ := s.ListDCPV2Actions(ctx, task.TaskID)
+	if updated.State != domain.DCPV2TaskChecksWaiting || updated.CurrentRevisionID != nextRevision.RevisionID ||
+		len(commands) != 2 || commands[0].Status != domain.DCPV2CommandSucceeded || commands[1].Kind != domain.DCPV2CommandPublication ||
+		len(actions) != 1 || actions[0].Status != domain.DCPV2ActionSucceeded || actions[0].Slot != 0 {
+		t.Fatalf("atomic direct transition drifted: task=%+v commands=%+v actions=%+v", updated, commands, actions)
+	}
+	if applied, err := s.CompleteDCPV2ModelTransition(ctx, direct); err != nil || applied {
+		t.Fatalf("equal terminal replay: applied=%t err=%v", applied, err)
+	}
+	conflict := direct
+	conflict.Receipt.TreeSHA = strings.Repeat("d", 40)
+	if _, err := s.CompleteDCPV2ModelTransition(ctx, conflict); !errors.Is(err, sqlitestore.ErrDCPV2IdentityConflict) {
+		t.Fatalf("contradictory terminal replay err=%v", err)
+	}
+}
+
+func TestDCPV2DirectFourthActionWaitsUntilExactTerminalReleasesSlot(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 8, 21, 18, 0, 0, 0, time.UTC)
+	type directClaim struct {
+		task    domain.DCPV2Task
+		command domain.DCPV2Command
+		action  domain.DCPV2Action
+		runtime domain.DCPV2ModelRuntime
+	}
+	claims := make([]directClaim, 0, 4)
+	for i := 1; i <= 4; i++ {
+		task, _, command, _ := createV2Fixture(t, s, fmt.Sprintf("direct-slot-%d", i))
+		leased := claimV2Command(t, s, command.CommandID, now.Add(time.Duration(i)*time.Second))
+		action, runtime, created, err := s.ReserveDCPV2ModelLaunch(ctx, leased.CommandID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken,
+			fmt.Sprintf("direct-runtime-%d", i), filepath.Join(t.TempDir(), fmt.Sprintf("worktree-%d", i)), v2Digest("w"), now.Add(time.Duration(i+5)*time.Second))
+		if i <= 3 {
+			if err != nil || !created || action.Slot != int64(i) || runtime.Slot != int64(i) {
+				t.Fatalf("reserve direct slot %d: action=%+v runtime=%+v created=%t err=%v", i, action, runtime, created, err)
+			}
+			claims = append(claims, directClaim{task: task, command: leased, action: action, runtime: runtime})
+			continue
+		}
+		if err != nil || created || action.ActionID != "" || runtime.RuntimeID != "" {
+			t.Fatalf("fourth direct Action crossed ceiling: action=%+v runtime=%+v created=%t err=%v", action, runtime, created, err)
+		}
+		claims = append(claims, directClaim{task: task, command: leased})
+	}
+	first := claims[0]
+	if _, err := s.StartDCPV2ModelRuntime(ctx, first.runtime, "direct-slot-request-1", v2Digest("p"), now.Add(19*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	receipt := domain.DCPV2ModelTerminalReceipt{ReceiptID: "direct-slot-failure", ActionID: first.action.ActionID,
+		CommandID: first.command.CommandID, TaskID: first.task.TaskID, RevisionID: first.task.CurrentRevisionID,
+		RuntimeID: first.runtime.RuntimeID, LaunchFence: first.runtime.LaunchFence, Status: domain.DCPV2ModelTerminalFailed,
+		ErrorCode: "bounded_failure", OutputJSON: `{}`, OutputDigest: v2Digest("o"),
+		WorktreePath: first.runtime.WorktreePath, WorktreeDigest: first.runtime.WorktreeDigest, CreatedAt: now.Add(20 * time.Second)}
+	direct := sqlitestore.DCPV2DirectTransition{Transition: sqlitestore.DCPV2Transition{CommandID: first.command.CommandID,
+		LeaseOwner: first.command.LeaseOwner, LeaseEpoch: first.command.LeaseEpoch, LeaseToken: first.command.LeaseToken,
+		ExpectedTaskState: first.task.State, ExpectedStateRevision: first.task.StateRevision, ExpectedRevisionID: first.task.CurrentRevisionID,
+		NextTaskState: domain.DCPV2TaskFailed, TaskErrorCode: receipt.ErrorCode, CommandErrorCode: receipt.ErrorCode,
+		UpdatedAt: now.Add(20 * time.Second)}, Receipt: receipt}
+	if applied, err := s.CompleteDCPV2ModelTransition(ctx, direct); err != nil || !applied {
+		t.Fatalf("release direct slot: applied=%t err=%v", applied, err)
+	}
+	fourth := claims[3]
+	action, runtime, created, err := s.ReserveDCPV2ModelLaunch(ctx, fourth.command.CommandID, fourth.command.LeaseOwner,
+		fourth.command.LeaseEpoch, fourth.command.LeaseToken, "direct-runtime-4", filepath.Join(t.TempDir(), "worktree-4"),
+		v2Digest("w"), now.Add(21*time.Second))
+	if err != nil || !created || action.Slot != 1 || runtime.Slot != 1 {
+		t.Fatalf("released direct slot was not reused FIFO: action=%+v runtime=%+v created=%t err=%v", action, runtime, created, err)
+	}
+}
+
 func completeWorkerV2(t *testing.T, s *sqlite.Store, task domain.DCPV2Task, command domain.DCPV2Command, now time.Time) (domain.DCPV2Task, domain.DCPV2Revision, domain.DCPV2Command) {
 	t.Helper()
 	leased := claimV2Command(t, s, command.CommandID, now.Add(time.Second))

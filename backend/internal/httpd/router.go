@@ -5,6 +5,8 @@ package httpd
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -67,11 +69,52 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	mountTerminalMux(r, termMgr, log)
 	mountControl(r, control)
 	mountTelemetry(r, cfg, deps.Telemetry)
+	mountDCPV2Direct(r, deps.DCPV2Direct)
 	mountDCPArbiter(r, deps.DCPArbiter)
 	mountMobile(r, deps.Mobile)
 	api.Register(r)
 
 	return r
+}
+
+// DCPV2DirectService is the loopback-only completion wake used by the
+// stateless direct model supervisor. The Action id is the only caller input;
+// all Task/runtime/result bindings are read from DCP v2 durable authority.
+type DCPV2DirectService interface {
+	ReportDirectProcessExit(context.Context, string) error
+}
+
+type dcpV2DirectProcessExitRequest struct {
+	ActionID string `json:"actionId"`
+}
+
+func mountDCPV2Direct(r chi.Router, service DCPV2DirectService) {
+	if service == nil {
+		return
+	}
+	r.Post("/internal/dcp/v2/model/process-exit", func(w http.ResponseWriter, req *http.Request) {
+		if !localControlRequest(req) {
+			envelope.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "forbidden", "service": daemonmeta.ServiceName})
+			return
+		}
+		var body dcpV2DirectProcessExitRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil || body.ActionID == "" {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_DCP_V2_PROCESS_EXIT", "invalid bounded DCP v2 process exit", nil)
+			return
+		}
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "INVALID_DCP_V2_PROCESS_EXIT", "invalid bounded DCP v2 process exit", nil)
+			return
+		}
+		if err := service.ReportDirectProcessExit(req.Context(), body.ActionID); err != nil {
+			envelope.WriteAPIError(w, req, http.StatusConflict, "conflict", "DCP_V2_PROCESS_EXIT_REJECTED", "DCP v2 process exit rejected fail-closed", nil)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
 }
 
 // DCPArbiterService is the loopback-only callback surface used by the exact

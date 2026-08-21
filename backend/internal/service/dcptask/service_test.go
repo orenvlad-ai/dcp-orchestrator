@@ -461,7 +461,7 @@ func TestSubmitPolicyRejectsTwinBypassBeforeDurableOrModelMutation(t *testing.T)
 	svc.SetPolicyRuntime(runtime, nil)
 	input := PolicySubmitInput{TaskID: "dcp-v2-twin-canary-v1", Target: "dcp-wbc-integration-lab", Profile: "live-runtime", Repository: "orenvlad-ai/dcp-wbc-integration-lab", Prompt: "add one inert canary fixture"}
 	_, err = svc.SubmitPolicy(ctx, input)
-	requireAPIError(t, err, apierr.KindInvalid, "DCP_POLICY_V2_AUTHORITY_INVALID")
+	requireAPIError(t, err, apierr.KindInvalid, "DCP_POLICY_V2_AUTHORITY_REMOVED")
 	if repository.calls != 0 || runtime.provisionCalls != 0 || runtime.launchCalls != 0 {
 		t.Fatalf("twin bypass crossed mutation boundary: validator=%d provision=%d launch=%d", repository.calls, runtime.provisionCalls, runtime.launchCalls)
 	}

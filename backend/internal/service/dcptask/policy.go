@@ -117,11 +117,6 @@ func (s *Service) DrainModelActions(ctx context.Context) error {
 			default:
 				return errors.New("DCP worker action drifted during launch")
 			}
-			if s.policyV2Bridge != nil && spec.UsesDCPV2TwinRelease() && fresh.Status == domain.DCPActionRunning {
-				if err := s.policyV2Bridge.StartLegacyAction(ctx, task, fresh); err != nil {
-					return fmt.Errorf("bind DCP v2 worker runtime: %w", err)
-				}
-			}
 		case domain.DCPActionReviewer:
 			if s.policyReviewer == nil {
 				if err := s.failClaimedAction(ctx, task, action, "reviewer_unavailable"); err != nil {
@@ -262,11 +257,6 @@ func (s *Service) HandleWorkerProcessExit(ctx context.Context, id domain.Session
 	if err != nil || !changed {
 		return errors.Join(err, errors.New("policy worker exit was stale or duplicate"))
 	}
-	if spec, exact := domain.DCPPolicyTargetForTask(task); s.policyV2Bridge != nil && exact && spec.UsesDCPV2TwinRelease() {
-		if err := s.policyV2Bridge.CompleteLegacyWorker(ctx, next, action, success); err != nil {
-			return fmt.Errorf("complete DCP v2 worker Action: %w", err)
-		}
-	}
 	return s.DrainModelActions(ctx)
 }
 
@@ -363,14 +353,10 @@ func (s *Service) AuthorizePolicyReview(ctx context.Context, id domain.SessionID
 			TaskID: task.TaskID, SessionID: id, Kind: domain.DCPActionReviewer,
 			ExactHeadSHA: head, Status: domain.DCPActionQueued, CreatedAt: now, UpdatedAt: now,
 		}
-		var queued domain.DCPModelAction
 		if hasReadmission {
-			queued, _, err = readmissionStore.QueueDCPWBCReadmissionReview(ctx, task, next, action, readmission)
+			_, _, err = readmissionStore.QueueDCPWBCReadmissionReview(ctx, task, next, action, readmission)
 		} else {
-			queued, _, err = s.policyStore.QueueDCPModelAction(ctx, task, next, action)
-		}
-		if err == nil && s.policyV2Bridge != nil && spec.UsesDCPV2TwinRelease() {
-			err = s.policyV2Bridge.PrepareLegacyReview(ctx, next, queued)
+			_, _, err = s.policyStore.QueueDCPModelAction(ctx, task, next, action)
 		}
 		return true, false, err
 	case domain.DCPPolicyReviewQueued:
@@ -436,11 +422,6 @@ func (s *Service) MarkPolicyReviewStarted(ctx context.Context, id domain.Session
 	updated, err := s.policyStore.UpdateDCPReviewLabPolicyTaskCAS(ctx, task, next)
 	if err != nil || !updated {
 		return errors.Join(err, errors.New("review run binding could not be persisted"))
-	}
-	if spec, exact := domain.DCPPolicyTargetForTask(task); s.policyV2Bridge != nil && exact && spec.UsesDCPV2TwinRelease() {
-		if err := s.policyV2Bridge.StartLegacyAction(ctx, next, action); err != nil {
-			return fmt.Errorf("bind DCP v2 reviewer runtime: %w", err)
-		}
 	}
 	return nil
 }
@@ -508,11 +489,6 @@ func (s *Service) HandleStructuredPolicyReview(ctx context.Context, id domain.Se
 	}
 	if err != nil || !changed {
 		return true, errors.Join(err, errors.New("structured policy review release was rejected"))
-	}
-	if spec, exact := domain.DCPPolicyTargetForTask(task); s.policyV2Bridge != nil && exact && spec.UsesDCPV2TwinRelease() {
-		if err := s.policyV2Bridge.CompleteLegacyReview(ctx, next, action, run); err != nil {
-			return true, fmt.Errorf("complete DCP v2 reviewer Action: %w", err)
-		}
 	}
 	return true, s.DrainModelActions(ctx)
 }

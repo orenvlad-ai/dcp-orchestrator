@@ -695,8 +695,12 @@ func (s *Store) FinishDCPV2Action(ctx context.Context, actionID string, slot int
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	action, err := s.qw.GetDCPV2Action(ctx, actionID)
+	if err != nil {
+		return err
+	}
 	rows, err := s.qw.FinishDCPV2Action(ctx, gen.FinishDCPV2ActionParams{
-		Status: status, ResultDigest: resultDigest, ErrorCode: errorCode, UpdatedAt: at,
+		Status: status, RuntimeID: action.RuntimeID, ResultDigest: resultDigest, ErrorCode: errorCode, UpdatedAt: at,
 		ActionID: actionID, Slot: slot, LaunchFence: launchFence,
 	})
 	if err != nil {

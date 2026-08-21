@@ -132,8 +132,62 @@ UPDATE dcp_v2_action SET status = 'running', runtime_id = ?, updated_at = ?
 WHERE action_id = ? AND status = 'launching' AND slot = ? AND launch_fence = ?;
 
 -- name: FinishDCPV2Action :execrows
-UPDATE dcp_v2_action SET status = ?, slot = 0, result_digest = ?, error_code = ?, updated_at = ?
-WHERE action_id = ? AND status IN ('launching','running') AND slot = ? AND launch_fence = ?;
+UPDATE dcp_v2_action SET
+    status = sqlc.arg(status), slot = 0, runtime_id = sqlc.arg(runtime_id),
+    result_digest = sqlc.arg(result_digest), error_code = sqlc.arg(error_code), updated_at = sqlc.arg(updated_at)
+WHERE action_id = sqlc.arg(action_id) AND status IN ('launching','running')
+  AND slot = sqlc.arg(slot) AND launch_fence = sqlc.arg(launch_fence)
+  AND runtime_id IN ('', sqlc.arg(runtime_id));
+
+-- name: InsertDCPV2ModelRuntime :exec
+INSERT INTO dcp_v2_model_runtime (
+    runtime_id, action_id, command_id, task_id, revision_id, slot,
+    launch_fence, provider_request_id, provider_request_digest, worktree_path,
+    worktree_digest, state,
+    created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetDCPV2ModelRuntime :one
+SELECT * FROM dcp_v2_model_runtime WHERE runtime_id = ?;
+
+-- name: GetDCPV2ModelRuntimeByAction :one
+SELECT * FROM dcp_v2_model_runtime WHERE action_id = ?;
+
+-- name: ListActiveDCPV2ModelRuntimes :many
+SELECT * FROM dcp_v2_model_runtime WHERE state IN ('reserved','running') ORDER BY slot;
+
+-- name: StartDCPV2ModelRuntime :execrows
+UPDATE dcp_v2_model_runtime SET
+    provider_request_id = ?, provider_request_digest = ?, state = 'running', updated_at = ?
+WHERE runtime_id = ? AND action_id = ? AND launch_fence = ? AND state = 'reserved';
+
+-- name: FinishDCPV2ModelRuntime :execrows
+UPDATE dcp_v2_model_runtime SET state = ?, updated_at = ?
+WHERE runtime_id = ? AND action_id = ? AND launch_fence = ? AND state = 'running';
+
+-- name: InsertDCPV2ModelTerminalReceipt :exec
+INSERT INTO dcp_v2_model_terminal_receipt (
+    receipt_id, action_id, command_id, task_id, revision_id, runtime_id,
+    launch_fence, status, result_digest, error_code, output_json,
+    output_digest, head_ref, head_sha, tree_sha, base_sha, worktree_path, worktree_digest,
+    created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetDCPV2ModelTerminalReceipt :one
+SELECT * FROM dcp_v2_model_terminal_receipt WHERE receipt_id = ?;
+
+-- name: GetDCPV2ModelTerminalReceiptByAction :one
+SELECT * FROM dcp_v2_model_terminal_receipt WHERE action_id = ?;
+
+-- name: InsertDCPV2Stage6WorkerAdoption :exec
+INSERT INTO dcp_v2_stage6_worker_adoption_v1 (
+    adoption_id, task_id, revision_id, command_id, action_id, runtime_id,
+    native_action_id, native_sequence, legacy_evidence_digest, commit_sha,
+    tree_sha, branch, worktree_digest, output_digest, receipt_id, consumed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetDCPV2Stage6WorkerAdoption :one
+SELECT * FROM dcp_v2_stage6_worker_adoption_v1 WHERE adoption_id = ?;
 
 -- name: InsertDCPV2Admission :exec
 INSERT INTO dcp_v2_admission (

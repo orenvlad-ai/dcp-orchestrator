@@ -137,6 +137,14 @@ func dcpV2PredecessorSnapshot(t *testing.T, db interface {
 		"dcp_model_action", "review_run", "dcp_review_lab_admission", "dcp_wbc_readmission_generation",
 		"dcp_task_first_native_lifecycle_recovery_v1",
 	}
+	return dcpV2TablesSnapshot(t, db, tables)
+}
+
+func dcpV2TablesSnapshot(t *testing.T, db interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}, tables []string) map[string]string {
+	t.Helper()
 	snapshot := make(map[string]string, len(tables))
 	for _, table := range tables {
 		var exists int

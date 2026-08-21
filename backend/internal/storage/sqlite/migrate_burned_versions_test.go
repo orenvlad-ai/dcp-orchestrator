@@ -101,6 +101,7 @@ var shippedMigrations = map[int64]string{
 	83: "0083_dcp_task_first_native_lifecycle_recovery_v1.sql",
 	84: "0084_dcp_v2_core.sql",
 	85: "0085_dcp_v2_twin_native_shell_compatibility.sql",
+	86: "0086_dcp_v2_direct_model_authority.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

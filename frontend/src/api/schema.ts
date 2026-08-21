@@ -226,6 +226,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dcp/v2/tasks/{taskId}/check-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one immutable exact-head check completion event */
+        post: operations["wakeDCPV2TwinChecks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dcp/v2/tasks/{taskId}/release-event": {
         parameters: {
             query?: never;
@@ -1267,6 +1284,12 @@ export interface components {
             prompt: string;
             taskId: string;
         };
+        ControllersWakeDCPV2TwinChecksRequest: {
+            deliveryId: string;
+            payloadDigest: string;
+            /** Format: int64 */
+            runId: number;
+        };
         ControllersWakeDCPV2TwinReleaseRequest: {
             deliveryId: string;
             payloadDigest: string;
@@ -1351,7 +1374,6 @@ export interface components {
             commands: components["schemas"]["DomainDCPV2Command"][];
             events: components["schemas"]["DomainDCPV2ExternalEvent"][];
             incidents: components["schemas"]["DomainDCPV2Incident"][];
-            native: components["schemas"]["DomainDCPReviewLabPolicyTask"];
             projection: components["schemas"]["DomainDCPV2LifecycleProjection"];
             results: components["schemas"]["DomainDCPV2Result"][];
             revisions: components["schemas"]["DomainDCPV2Revision"][];
@@ -1359,7 +1381,6 @@ export interface components {
         };
         Dcpv2TwinSubmitResult: {
             duplicate: boolean;
-            native: components["schemas"]["DomainDCPReviewLabPolicyTask"];
             projection: components["schemas"]["DomainDCPV2LifecycleProjection"];
             task: components["schemas"]["DomainDCPV2Task"];
         };
@@ -2908,6 +2929,69 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    wakeDCPV2TwinChecks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable DCP task identifier. */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersWakeDCPV2TwinChecksRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dcpv2TwinSnapshot"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

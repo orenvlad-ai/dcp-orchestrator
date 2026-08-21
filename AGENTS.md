@@ -27,6 +27,8 @@ repository:
 15. [WBC integration twin and DCP v2 architecture contract](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_DCP_V2_ARCHITECTURE_CONTRACT.md)
 16. [Stage 3 terminal evidence and conditional Stage 4 source authority](https://github.com/orenvlad-ai/dev-control-plane/blob/8be08577673722edc9ae036dedea46c88ceac129/docs/DCP_WBC_INTEGRATION_TWIN_STAGE3_4_COMBINED_EXECUTION_CONTRACT.md)
 17. [Stage 5 adapter, install and preflight authority](https://github.com/orenvlad-ai/dev-control-plane/blob/4143982eb054a40537d963356c209bfe8447ba31/docs/DCP_WBC_INTEGRATION_TWIN_STAGE5_INSTALL_ACTIVATION_CONTRACT.md)
+18. [Stage 6 post-submit native-shell correction](https://github.com/orenvlad-ai/dev-control-plane/blob/9be4575e9eed39ae5bea9f1665f71fd4f64cd89b/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_POST_SUBMIT_NATIVE_SHELL_CORRECTION_CONTRACT.md)
+19. [Stage 6 direct DCP-v2 model authority](https://github.com/orenvlad-ai/dev-control-plane/blob/3aa42b7afda620331d111ba24299e2917821e720/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_DIRECT_MODEL_AUTHORITY_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -97,6 +99,16 @@ preflight applies no model, GitHub, Release Train or deployment effect. It
 does not authorize a second submit, replacement identity, broader target,
 credential change, direct merge/deploy, WBC mutation or Stage 7.
 
+Item 19 and the merged root/current authority at exact
+`3aa42b7afda620331d111ba24299e2917821e720`, operating revision
+`2026-08-21.4`, remove the DCP-v2 dependency on that native lifecycle. DCP
+SQLite and the daemon are the sole durable Task/Revision/Command/Action and
+model-runtime authority; a typed provider-neutral runner is stateless
+transport. The exact frozen Worker output may be consumed once by its bounded
+identity-specific adoption record, then only a model-free publication Command
+may continue it. Schema 0086 and this source package remain inactive until a
+separate reviewed pin, install/migration and stopped-preflight authority.
+
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,
 profile `repo-only`, and repository `orenvlad-ai/wb-browser-extension`. Exact
@@ -156,19 +168,27 @@ deterministic install and stopped preflight complete.
   GitHub transport only after its typed profile marker, native session,
   data/worktree/Git paths, branch and exact fetch/push remote all validate;
   never copy/expose credentials or load user Codex configuration into a lab
-  worker. Every ordinary worker and every reviewer remains network-disabled.
+  worker. The DCP-v2 direct Worker and every Reviewer remain network-disabled;
+  only a separately fenced model-free publication Command may use GitHub.
 
 ## Current implemented scope
 
-For every future task with an exact additive happy-path policy row, the
-existing daemon and SQLite own one idempotent stock native card/session/
-worktree/branch, a durable FIFO of model actions with at most three active
-slots globally, one initial worker, one fresh context-free review per exact
-head, at most one same-task findings repair and one shared durable FIFO
-admission/release lease. Queued work, CI, readmission, admission and release
-waits own no model or new loop. Only current exact public provider facts for
-one of the four compile-time target/profile/repository identities may enter
-that line. The synthetic and
+Ordinary legacy/non-DCP policy tasks retain their stock native card/session and
+historical lifecycle. DCP v2 instead owns its Task, immutable Revision, durable
+Command, bounded Action, runtime, terminal receipt and next transition solely
+in the additive v2 tables. Its typed runner is stateless transport, future
+DCP-v2 tasks create no legacy policy-task/session/model-action authority rows,
+and the one frozen Stage 6 native Worker receipt is consumable only by the
+exact immutable one-time adoption record. The current native card/session/action
+then remain historical display/evidence only.
+
+Both contours enforce at most three active model slots globally, one initial
+worker, one fresh context-free review per exact head, at most one same-task
+findings repair and one shared durable FIFO admission/release lease. Queued
+work, model-free publication, CI, readmission, admission and release waits own
+no model or new loop. Only current exact public provider facts for one of the
+four compile-time target/profile/repository identities may enter the applicable
+line. The synthetic and
 browser-extension targets may reach their ordinary daemon-owned expected-head
 terminal merge; `wb-core` may only enter the typed zero-action Release Train
 wait and receive `release:ready`, never a DCP merge or deploy call. Its
@@ -496,8 +516,10 @@ flow and do not delete legacy sessions/state.
   `backend/internal/service`, loopback controllers/DTOs in
   `backend/internal/httpd/controllers`, and SQLite in
   `backend/internal/storage/sqlite`.
-- The CLI and renderer are thin daemon clients. They never open SQLite, spawn a
-  runtime, or create an alternate state/display authority.
+- The ordinary CLI and renderer are thin daemon clients. Exact hidden stopped
+  activation/adoption commands may open SQLite only for their separately
+  authorized atomic transition; they cannot spawn a runtime or create an
+  alternate state/display authority.
 - SQLite is the sole local authority. Add a new additive migration; never edit
   a merged migration. Use one transaction for task state and its required
   semantic task event, reject stale compare-and-set revisions, and leave the
