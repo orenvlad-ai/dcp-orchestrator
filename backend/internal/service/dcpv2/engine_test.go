@@ -11,6 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/dcpv2"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 type identities struct{ next int }
@@ -21,10 +22,14 @@ func (i *identities) Token(kind, id string) string {
 }
 
 type scriptedProcessor struct {
-	calls      []string
-	failWorker bool
-	eventID    string
-	now        time.Time
+	calls              []string
+	failWorker         bool
+	eventID            string
+	now                time.Time
+	pauseWorker        bool
+	reconcileFence     string
+	reconcileEventKind string
+	reconcileCalls     int
 }
 
 func (p *scriptedProcessor) Process(_ context.Context, command domain.DCPV2Command, action *domain.DCPV2Action, fence func(string) error) (dcpv2.Outcome, error) {
@@ -50,7 +55,7 @@ func (p *scriptedProcessor) Process(_ context.Context, command domain.DCPV2Comma
 			CreatedAt: p.now.Add(time.Second), UpdatedAt: p.now.Add(time.Second),
 		}
 		return dcpv2.Outcome{
-			NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: action.ResultDigest,
+			PauseDrain: p.pauseWorker, NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: action.ResultDigest,
 			NextRevision: revision, NextCommand: next, ExternalEventDeliveryID: p.eventID,
 		}, nil
 	case domain.DCPV2CommandChecksObserve:
@@ -64,6 +69,16 @@ func (p *scriptedProcessor) Process(_ context.Context, command domain.DCPV2Comma
 	default:
 		return dcpv2.Outcome{}, errors.New("unexpected command")
 	}
+}
+
+func (p *scriptedProcessor) ReconcileEffect(_ context.Context, command domain.DCPV2Command, event *domain.DCPV2ExternalEvent) (dcpv2.Outcome, bool, error) {
+	p.reconcileCalls++
+	if command.EffectFence != p.reconcileFence || event == nil || event.Kind != p.reconcileEventKind ||
+		event.TaskID != command.TaskID || event.RevisionID != command.RevisionID || event.PrerequisiteDigest != command.PrerequisiteDigest {
+		return dcpv2.Outcome{}, false, nil
+	}
+	return dcpv2.Outcome{NextTaskState: domain.DCPV2TaskHumanGate, HumanGateQuestion: "bounded test stop",
+		CommandResultDigest: event.PayloadDigest}, true, nil
 }
 
 func completeEngineAction(t *testing.T, s *sqlite.Store, commandID string, now time.Time) {
@@ -237,7 +252,7 @@ func TestRestartAfterCommittedFenceDoesNotDuplicatePriorCommand(t *testing.T) {
 	}
 }
 
-func TestProcessorFailureHasNoAutomaticRetryOrFalseSuccess(t *testing.T) {
+func TestProcessorFailureIsTechnicalTerminalWithoutAutomaticRetryOrHumanGate(t *testing.T) {
 	s, _, command, now := newEngineStore(t, "processor-failure")
 	processor := &scriptedProcessor{now: now, failWorker: true}
 	engine := newEngine(t, s, processor, now.Add(10*time.Second), 4)
@@ -254,8 +269,9 @@ func TestProcessorFailureHasNoAutomaticRetryOrFalseSuccess(t *testing.T) {
 	task, _ := s.GetDCPV2Task(context.Background(), command.TaskID)
 	worker, _ := s.GetDCPV2Command(context.Background(), command.CommandID)
 	incidents, _ := s.ListDCPV2Incidents(context.Background(), command.TaskID)
-	if task.State != domain.DCPV2TaskHumanGate || worker.Status != domain.DCPV2CommandFailed || task.TerminalResultID != "" ||
-		len(incidents) != 1 || incidents[0].Disposition != domain.DCPV2IncidentHumanGate {
+	if task.State != domain.DCPV2TaskFailed || task.ErrorCode != "processor_failed" || task.HumanGateQuestion != "" ||
+		worker.Status != domain.DCPV2CommandFailed || task.TerminalResultID != "" || len(incidents) != 1 ||
+		incidents[0].Disposition != domain.DCPV2IncidentTerminal || incidents[0].OwnerQuestion != "" {
 		t.Fatalf("false terminal success task=%+v command=%+v incidents=%+v", task, worker, incidents)
 	}
 }
@@ -280,4 +296,79 @@ func TestProviderEventUsesSameDrainAndBindsAtomically(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].Status != "applied" || events[0].CommandID != command.CommandID {
 		t.Fatalf("event binding=%+v err=%v", events, err)
 	}
+}
+
+func TestFencedDeterministicEffectWaitsForExactEventAndReconcilesOnce(t *testing.T) {
+	now := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	task := domain.DCPV2Task{TaskID: "fenced-event-reconcile", CurrentRevisionID: "revision-1",
+		State: domain.DCPV2TaskReleaseWaiting, StateRevision: 9}
+	command := domain.DCPV2Command{CommandID: "release-command", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID,
+		Kind: domain.DCPV2CommandReleaseDispatch, Status: domain.DCPV2CommandLeased,
+		LeaseOwner: "old", LeaseEpoch: "old-epoch", LeaseToken: "old-token", EffectFence: "provider-effect/exact",
+		PrerequisiteDigest: strings.Repeat("8", 64)}
+	store := &effectReconcileStore{task: task, command: command}
+	processor := &scriptedProcessor{now: now.Add(10 * time.Second),
+		reconcileFence: "provider-effect/exact", reconcileEventKind: "provider.effect.completed"}
+	clock := now
+	engine, err := dcpv2.New(store, processor, &identities{}, "engine", "epoch-2", 4, func() time.Time {
+		clock = clock.Add(time.Second)
+		return clock
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Startup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.transitions != 0 || store.task.State != domain.DCPV2TaskReleaseWaiting {
+		t.Fatalf("unproven fenced effect advanced task=%+v transitions=%d", store.task, store.transitions)
+	}
+	event := domain.DCPV2ExternalEvent{DeliveryID: "effect-event-1", Provider: "fake", TaskID: task.TaskID,
+		RevisionID: command.RevisionID, Kind: processor.reconcileEventKind, ProviderSequence: 1,
+		PayloadDigest: strings.Repeat("9", 64), PrerequisiteDigest: command.PrerequisiteDigest,
+		CreatedAt: now.Add(32 * time.Second), UpdatedAt: now.Add(32 * time.Second)}
+	if err := engine.Event(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if store.task.State != domain.DCPV2TaskHumanGate || store.command.Status != domain.DCPV2CommandSucceeded ||
+		processor.reconcileCalls != 2 || store.transitions != 1 {
+		t.Fatalf("reconciled task=%+v command=%+v calls=%d transitions=%d", store.task, store.command, processor.reconcileCalls, store.transitions)
+	}
+}
+
+type effectReconcileStore struct {
+	task        domain.DCPV2Task
+	command     domain.DCPV2Command
+	transitions int
+}
+
+func (s *effectReconcileStore) ClaimNextDCPV2Command(context.Context, string, string, string, time.Time) (*domain.DCPV2Command, error) {
+	return nil, nil
+}
+func (s *effectReconcileStore) ListLeasedDCPV2Commands(context.Context) ([]domain.DCPV2Command, error) {
+	if s.command.Status == domain.DCPV2CommandLeased {
+		return []domain.DCPV2Command{s.command}, nil
+	}
+	return nil, nil
+}
+func (s *effectReconcileStore) RecoverDCPV2CommandLease(context.Context, domain.DCPV2Command, string, string, string, time.Time) (domain.DCPV2Command, error) {
+	return domain.DCPV2Command{}, errors.New("unexpected recovery")
+}
+func (s *effectReconcileStore) FenceDCPV2CommandEffect(context.Context, string, string, string, string, string, time.Time) error {
+	return errors.New("unexpected fence")
+}
+func (s *effectReconcileStore) TransitionDCPV2(_ context.Context, tr sqlitestore.DCPV2Transition) error {
+	s.transitions++
+	s.task.State, s.task.HumanGateQuestion = tr.NextTaskState, tr.HumanGateQuestion
+	s.command.Status, s.command.ResultDigest = domain.DCPV2CommandSucceeded, tr.CommandResultDigest
+	return nil
+}
+func (s *effectReconcileStore) GetDCPV2Task(context.Context, string) (domain.DCPV2Task, error) {
+	return s.task, nil
+}
+func (s *effectReconcileStore) GetDCPV2ActionByCommand(context.Context, string) (domain.DCPV2Action, error) {
+	return domain.DCPV2Action{}, errors.New("unexpected Action read")
+}
+func (s *effectReconcileStore) RecordDCPV2ExternalEvent(_ context.Context, event domain.DCPV2ExternalEvent) (sqlitestore.DCPV2ExternalEventOutcome, error) {
+	return sqlitestore.DCPV2ExternalEventOutcome{Event: event, Created: true}, nil
 }

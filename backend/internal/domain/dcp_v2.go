@@ -410,8 +410,12 @@ func ProjectDCPV2Lifecycle(task DCPV2Task, command *DCPV2Command, action *DCPV2A
 	}
 	if action != nil && action.TaskID == task.TaskID && action.RevisionID == task.CurrentRevisionID {
 		p.Role = string(action.Role)
-		p.ModelActive = action.Status == DCPV2ActionLaunching || action.Status == DCPV2ActionRunning
-		p.WorkflowActive = p.WorkflowActive || action.Status == DCPV2ActionQueued || p.ModelActive
+		// A launch fence is not a process. The presentation becomes model-active
+		// only after the exact runtime identity is durably bound. A queued or
+		// launching Action still keeps the deterministic workflow active.
+		p.ModelActive = action.Status == DCPV2ActionRunning && action.RuntimeID != ""
+		p.WorkflowActive = p.WorkflowActive || action.Status == DCPV2ActionQueued ||
+			action.Status == DCPV2ActionLaunching || p.ModelActive
 	}
 	if admission != nil && admission.TaskID == task.TaskID && admission.RevisionID == task.CurrentRevisionID {
 		p.AdmissionID = admission.AdmissionID

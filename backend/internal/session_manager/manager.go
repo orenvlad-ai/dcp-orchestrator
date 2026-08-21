@@ -612,9 +612,10 @@ func (m *Manager) ProvisionDCPReviewLabPolicySession(ctx context.Context, id dom
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: %w", id, err)
 	}
-	if cfg.ProjectID != domain.ProjectID(task.Target) || cfg.Kind != domain.KindWorker || cfg.Harness != domain.HarnessCodex ||
-		cfg.DisplayName != "DCP:"+task.TaskID || cfg.Prompt != dcpPolicyPrompt(task) ||
-		cfg.Branch != task.SourceBranch || len(cfg.Attachments) != 0 || cfg.IssueID != "" {
+	envelope := domain.CanonicalDCPPolicySpawnEnvelope(task)
+	if envelope.SessionID != id || cfg.ProjectID != envelope.ProjectID || cfg.Kind != envelope.Kind || cfg.Harness != envelope.Harness ||
+		cfg.DisplayName != envelope.DisplayName || cfg.Prompt != envelope.Prompt || cfg.Branch != envelope.Branch ||
+		len(cfg.Attachments) != 0 || cfg.IssueID != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("provision DCP policy session %s: reserved command identity drift", id)
 	}
 	project, err := m.loadProject(ctx, cfg.ProjectID)
@@ -841,10 +842,7 @@ func exactDCPPolicyProject(project domain.ProjectRecord, task domain.DCPReviewLa
 }
 
 func dcpPolicyPrompt(task domain.DCPReviewLabPolicyTask) string {
-	if task.Profile == "repo-only" {
-		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
-	}
-	return "DCP synthetic task " + task.TaskID + ": " + task.Prompt
+	return domain.CanonicalDCPPolicySpawnEnvelope(task).Prompt
 }
 
 // loadProject loads the project record so spawn can resolve its per-project

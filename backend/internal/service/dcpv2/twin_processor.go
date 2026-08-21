@@ -46,6 +46,8 @@ func (p *twinProcessor) Process(ctx context.Context, command domain.DCPV2Command
 		return p.completeReview(ctx, task, revision, command, action)
 	case domain.DCPV2CommandAdmissionEnqueue:
 		return p.enqueueAdmission(ctx, task, revision, command)
+	case domain.DCPV2CommandReadmission:
+		return p.materializeReadmission(ctx, task, revision, command, fence)
 	case domain.DCPV2CommandReleaseDispatch:
 		return p.dispatchRelease(ctx, task, revision, command, fence)
 	case domain.DCPV2CommandMergeObserve:
@@ -56,6 +58,61 @@ func (p *twinProcessor) Process(ctx context.Context, command domain.DCPV2Command
 		return p.verifyTerminal(ctx, task, revision, command)
 	default:
 		return Outcome{}, fmt.Errorf("DCP v2 twin command %s is not activated", command.Kind)
+	}
+}
+
+func (p *twinProcessor) ReconcileEffect(ctx context.Context, command domain.DCPV2Command, event *domain.DCPV2ExternalEvent) (Outcome, bool, error) {
+	task, err := p.store.GetDCPV2Task(ctx, command.TaskID)
+	if err != nil || task.CurrentRevisionID != command.RevisionID {
+		return Outcome{}, false, errors.Join(err, errors.New("DCP v2 fenced effect Revision drifted"))
+	}
+	revision, err := p.currentRevision(ctx, task)
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	switch command.Kind {
+	case domain.DCPV2CommandReleaseDispatch:
+		if event == nil || event.Kind != "github/release.completed" || event.TaskID != task.TaskID ||
+			event.RevisionID != revision.RevisionID {
+			return Outcome{}, false, nil
+		}
+		admission, err := p.currentAdmission(ctx, task)
+		if err != nil || command.EffectFence != "release:"+admission.ManifestDigest || event.PrerequisiteDigest != admission.ManifestDigest {
+			return Outcome{}, false, errors.Join(err, errors.New("DCP v2 fenced release Admission drifted"))
+		}
+		observed, err := p.adapter.ObserveRelease(ctx, task, revision, admission, event.ProviderSequence)
+		if err != nil || observed.EvidenceDigest != event.PayloadDigest {
+			return Outcome{}, false, errors.Join(err, errors.New("DCP v2 fenced release proof drifted"))
+		}
+		switch admission.Status {
+		case domain.DCPV2AdmissionLeased:
+			if err := p.store.DispatchDCPV2Admission(ctx, admission.AdmissionID, admission.LeaseOwner, admission.LeaseEpoch, admission.LeaseToken, p.now().UTC()); err != nil {
+				return Outcome{}, false, err
+			}
+		case domain.DCPV2AdmissionDispatched:
+		default:
+			return Outcome{}, false, errors.New("DCP v2 fenced release Admission state drifted")
+		}
+		return p.releaseDispatchOutcome(task, revision, admission, observed.EvidenceDigest), true, nil
+	case domain.DCPV2CommandReadmission:
+		payload, err := readmissionPayloadFor(command)
+		if err != nil || !strings.HasPrefix(command.EffectFence, "readmission:") {
+			return Outcome{}, false, errors.Join(err, errors.New("DCP v2 readmission effect fence is malformed"))
+		}
+		newHead := strings.TrimPrefix(command.EffectFence, "readmission:")
+		effect := ports.DCPV2RepositoryEffect{ExternalID: command.EffectFence, OldHeadSHA: strings.ToLower(revision.HeadSHA),
+			NewHeadSHA: strings.ToLower(newHead), BaseSHA: strings.ToLower(payload.CurrentMainSHA)}
+		effect.EvidenceDigest = digestCanonical(effect)
+		native, found, getErr := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+		if getErr != nil || !found {
+			return Outcome{}, false, errors.Join(getErr, errors.New("DCP v2 readmission native worktree is unavailable"))
+		}
+		if _, err := p.adapter.PublishReadmission(ctx, revision, effect, native.WorktreePath); err != nil {
+			return Outcome{}, false, err
+		}
+		return p.readmissionOutcome(task, revision, command, effect), true, nil
+	default:
+		return Outcome{}, false, nil
 	}
 }
 
@@ -159,12 +216,17 @@ func (p *twinProcessor) enqueueAdmission(ctx context.Context, task domain.DCPV2T
 		return Outcome{}, err
 	}
 	existing, err := p.store.ListDCPV2Admissions(ctx, task.TaskID)
-	if err != nil || len(existing) != 0 {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 first admission cardinality drifted"))
+	if err != nil || int64(len(existing)) != task.ReadmissionCount {
+		return Outcome{}, errors.Join(err, errors.New("DCP v2 Admission generation cardinality drifted"))
+	}
+	for _, prior := range existing {
+		if prior.RevisionID == revision.RevisionID {
+			return Outcome{}, errors.New("DCP v2 current Revision already owns an Admission")
+		}
 	}
 	now := p.now().UTC()
 	admission := domain.DCPV2Admission{
-		Sequence: 1, AdmissionID: stableID(task.TaskID, "admission", revision.RevisionID),
+		Sequence: int64(len(existing) + 1), AdmissionID: stableID(task.TaskID, "admission", revision.RevisionID),
 		LineKey: TwinRepository + ":" + TwinBase, TaskID: task.TaskID, RevisionID: revision.RevisionID,
 		PRNumber: revision.PRNumber, HeadSHA: revision.HeadSHA, BaseSHA: revision.BaseSHA, MainSHA: facts.MainSHA,
 		RequiredCheckID: strconv.FormatInt(facts.CheckRunID, 10),
@@ -183,36 +245,99 @@ func (p *twinProcessor) enqueueAdmission(ctx context.Context, task domain.DCPV2T
 }
 
 func (p *twinProcessor) dispatchRelease(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, fence func(string) error) (Outcome, error) {
-	admission, err := p.onlyAdmission(ctx, task.TaskID)
-	if err != nil || admission.Status != domain.DCPV2AdmissionWaiting {
+	admission, err := p.currentAdmission(ctx, task)
+	if err != nil || (admission.Status != domain.DCPV2AdmissionWaiting && admission.Status != domain.DCPV2AdmissionLeased) {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 release has no waiting Admission"))
 	}
 	manifest, err := BuildTwinManifest(task, revision, admission)
 	if err != nil || manifest.ManifestDigest != admission.ManifestDigest {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 release manifest drifted"))
 	}
-	if err := fence("release:" + admission.ManifestDigest); err != nil {
-		return Outcome{}, err
-	}
 	now := p.now().UTC()
-	leased, err := p.store.ClaimNextDCPV2Admission(ctx, admission.LineKey, "dcp-v2-daemon", "stage5", stableID(admission.AdmissionID, "lease"), now)
-	if err != nil || leased == nil || leased.AdmissionID != admission.AdmissionID {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 FIFO Admission lease is unavailable"))
+	leased := &admission
+	if admission.Status == domain.DCPV2AdmissionWaiting {
+		leased, err = p.store.ClaimNextDCPV2Admission(ctx, admission.LineKey, "dcp-v2-daemon", "stage5", stableID(admission.AdmissionID, "lease"), now)
+		if err != nil || leased == nil || leased.AdmissionID != admission.AdmissionID {
+			return Outcome{}, errors.Join(err, errors.New("DCP v2 FIFO Admission lease is unavailable"))
+		}
 	}
-	if err := p.store.FenceDCPV2AdmissionDispatch(ctx, leased.AdmissionID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken, leased.ManifestDigest, now); err != nil {
+	if leased.DispatchFence == "" {
+		if err := p.store.FenceDCPV2AdmissionDispatch(ctx, leased.AdmissionID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken, leased.ManifestDigest, now); err != nil {
+			return Outcome{}, err
+		}
+		leased.DispatchFence = leased.ManifestDigest
+	} else if leased.DispatchFence != leased.ManifestDigest {
+		return Outcome{}, errors.New("DCP v2 Admission dispatch fence drifted")
+	}
+	if err := fence("release:" + admission.ManifestDigest); err != nil {
 		return Outcome{}, err
 	}
 	receipt, err := p.adapter.DispatchAdmission(ctx, task, revision, *leased, leased.ManifestDigest)
 	if err != nil {
-		return Outcome{}, err
+		return Outcome{}, errors.Join(ErrEffectReconciliationPending, err)
 	}
 	if err := p.store.DispatchDCPV2Admission(ctx, leased.AdmissionID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken, now); err != nil {
+		return Outcome{}, errors.Join(ErrEffectReconciliationPending, err)
+	}
+	return p.releaseDispatchOutcome(task, revision, admission, receipt.EvidenceDigest), nil
+}
+
+func (p *twinProcessor) releaseDispatchOutcome(task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission, evidence string) Outcome {
+	next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandMergeObserve,
+		task.StateRevision+1, map[string]string{"admissionId": admission.AdmissionID}, admission.ManifestDigest, p.now().UTC())
+	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskMergeObserving,
+		CommandResultDigest: evidence, NextCommand: &next}
+}
+
+type readmissionPayload struct {
+	CurrentMainSHA string `json:"currentMainSha"`
+	ProofID        string `json:"proofId"`
+}
+
+func readmissionPayloadFor(command domain.DCPV2Command) (readmissionPayload, error) {
+	var payload readmissionPayload
+	if command.Kind != domain.DCPV2CommandReadmission || json.Unmarshal([]byte(command.PayloadJSON), &payload) != nil ||
+		!validV2SHA(payload.CurrentMainSHA) || !validV2Digest(payload.ProofID) || command.PrerequisiteDigest != payload.ProofID {
+		return readmissionPayload{}, errors.New("DCP v2 readmission payload identity drifted")
+	}
+	return payload, nil
+}
+
+func (p *twinProcessor) materializeReadmission(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, fence func(string) error) (Outcome, error) {
+	payload, err := readmissionPayloadFor(command)
+	if err != nil {
 		return Outcome{}, err
 	}
-	next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandMergeObserve,
-		task.StateRevision+1, map[string]string{"admissionId": admission.AdmissionID}, admission.ManifestDigest, now)
-	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskMergeObserving,
-		CommandResultDigest: receipt.EvidenceDigest, NextCommand: &next}, nil
+	native, found, err := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+	if err != nil || !found || native.TaskID != task.TaskID || native.SessionID == "" || native.WorktreePath == "" {
+		return Outcome{}, errors.Join(err, errors.New("DCP v2 readmission native worktree identity drifted"))
+	}
+	effect, err := p.adapter.MaterializeReadmission(ctx, task, revision, payload.CurrentMainSHA, native.WorktreePath)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := fence(effect.ExternalID); err != nil {
+		return Outcome{}, err
+	}
+	if _, err := p.adapter.PublishReadmission(ctx, revision, effect, native.WorktreePath); err != nil {
+		return Outcome{}, errors.Join(ErrEffectReconciliationPending, err)
+	}
+	return p.readmissionOutcome(task, revision, command, effect), nil
+}
+
+func (p *twinProcessor) readmissionOutcome(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, effect ports.DCPV2RepositoryEffect) Outcome {
+	now := p.now().UTC()
+	nextRevision := domain.DCPV2Revision{
+		RevisionID: stableID(task.TaskID, "revision", strconv.FormatInt(revision.Sequence+1, 10), effect.NewHeadSHA),
+		TaskID:     task.TaskID, Sequence: revision.Sequence + 1, Kind: domain.DCPV2RevisionReadmission,
+		Repository: revision.Repository, BaseRef: revision.BaseRef, BaseSHA: effect.BaseSHA,
+		HeadRef: revision.HeadRef, HeadSHA: effect.NewHeadSHA, PredecessorRevisionID: revision.RevisionID,
+		CauseCommandID: command.CommandID, PRNumber: revision.PRNumber, EvidenceDigest: effect.EvidenceDigest, CreatedAt: now,
+	}
+	next := newCommand(task.TaskID, nextRevision.RevisionID, domain.DCPV2CommandChecksObserve,
+		task.StateRevision+1, map[string]any{"head": effect.NewHeadSHA, "pr": revision.PRNumber}, effect.EvidenceDigest, now)
+	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskChecksWaiting,
+		CommandResultDigest: effect.EvidenceDigest, NextRevision: &nextRevision, NextCommand: &next}
 }
 
 func (p *twinProcessor) observeRelease(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command) (Outcome, error) {
@@ -220,12 +345,25 @@ func (p *twinProcessor) observeRelease(ctx context.Context, task domain.DCPV2Tas
 	if err != nil {
 		return Outcome{}, err
 	}
-	admission, err := p.onlyAdmission(ctx, task.TaskID)
+	admission, err := p.currentAdmission(ctx, task)
 	if err != nil || admission.Status != domain.DCPV2AdmissionDispatched {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 release observation lacks a dispatched Admission"))
 	}
-	observed, err := p.adapter.ObserveRelease(ctx, task, revision, admission)
-	if err != nil || observed.MergeSHA == "" || observed.ArtifactDigest == "" {
+	observed, err := p.adapter.ObserveRelease(ctx, task, revision, admission, event.ProviderSequence)
+	if err != nil || observed.EvidenceDigest != event.PayloadDigest {
+		return Outcome{}, errors.Join(err, errors.New("DCP v2 release event/proof digest drifted"))
+	}
+	if observed.Readmission {
+		now := p.now().UTC()
+		next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandReadmission,
+			task.StateRevision+1, readmissionPayload{CurrentMainSHA: observed.CurrentMainSHA, ProofID: observed.ProofID}, observed.EvidenceDigest, now)
+		return Outcome{NextTaskState: domain.DCPV2TaskReadmission, ReadmissionIncrement: true,
+			CommandResultDigest: observed.EvidenceDigest, ExternalEventDeliveryID: event.DeliveryID, NextCommand: &next,
+			CompleteAdmissionID: admission.AdmissionID, AdmissionLeaseOwner: admission.LeaseOwner,
+			AdmissionLeaseEpoch: admission.LeaseEpoch, AdmissionLeaseToken: admission.LeaseToken,
+			AdmissionCompletion: domain.DCPV2AdmissionReadmissionRequired}, nil
+	}
+	if observed.MergeSHA == "" || observed.ArtifactDigest == "" {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 release proof is incomplete"))
 	}
 	now := p.now().UTC()
@@ -245,7 +383,7 @@ func (p *twinProcessor) observeRelease(ctx context.Context, task domain.DCPV2Tas
 }
 
 func (p *twinProcessor) observeDeployment(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command) (Outcome, error) {
-	admission, err := p.onlyAdmission(ctx, task.TaskID)
+	admission, err := p.currentAdmission(ctx, task)
 	if err != nil || admission.Status != domain.DCPV2AdmissionSucceeded {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 deployment observation lacks a successful Admission"))
 	}
@@ -304,12 +442,21 @@ func (p *twinProcessor) currentRevision(ctx context.Context, task domain.DCPV2Ta
 	return domain.DCPV2Revision{}, errors.New("DCP v2 current Revision is unavailable")
 }
 
-func (p *twinProcessor) onlyAdmission(ctx context.Context, taskID string) (domain.DCPV2Admission, error) {
-	rows, err := p.store.ListDCPV2Admissions(ctx, taskID)
-	if err != nil || len(rows) != 1 {
-		return domain.DCPV2Admission{}, errors.Join(err, fmt.Errorf("DCP v2 Admission cardinality is %d", len(rows)))
+func (p *twinProcessor) currentAdmission(ctx context.Context, task domain.DCPV2Task) (domain.DCPV2Admission, error) {
+	rows, err := p.store.ListDCPV2Admissions(ctx, task.TaskID)
+	if err != nil {
+		return domain.DCPV2Admission{}, err
 	}
-	return rows[0], nil
+	var matched []domain.DCPV2Admission
+	for _, row := range rows {
+		if row.RevisionID == task.CurrentRevisionID {
+			matched = append(matched, row)
+		}
+	}
+	if len(matched) != 1 {
+		return domain.DCPV2Admission{}, fmt.Errorf("DCP v2 current Admission cardinality is %d", len(matched))
+	}
+	return matched[0], nil
 }
 
 func (p *twinProcessor) exactWake(ctx context.Context, task domain.DCPV2Task, command domain.DCPV2Command, kind string) (domain.DCPV2ExternalEvent, error) {

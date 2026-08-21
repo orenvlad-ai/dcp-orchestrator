@@ -349,21 +349,15 @@ func samePolicyPayload(existing, requested domain.DCPReviewLabPolicyTask) bool {
 }
 
 func policySpawnConfig(task domain.DCPReviewLabPolicyTask) ports.SpawnConfig {
+	envelope := domain.CanonicalDCPPolicySpawnEnvelope(task)
 	return ports.SpawnConfig{
-		ProjectID: domain.ProjectID(task.Target), Kind: domain.KindWorker, Harness: domain.HarnessCodex,
-		Branch: task.SourceBranch, DisplayName: "DCP:" + task.TaskID,
-		Prompt: policyPrompt(task),
+		ProjectID: envelope.ProjectID, Kind: envelope.Kind, Harness: envelope.Harness,
+		Branch: envelope.Branch, DisplayName: envelope.DisplayName, Prompt: envelope.Prompt,
 	}
 }
 
 func policyPrompt(task domain.DCPReviewLabPolicyTask) string {
-	if task.Profile == WBCLiveRuntimeProfile {
-		return "DCP live-runtime task " + task.TaskID + ": " + task.Prompt
-	}
-	if task.Profile == RepoOnlyProfile {
-		return "DCP repo-only task " + task.TaskID + ": " + task.Prompt
-	}
-	return "DCP synthetic task " + task.TaskID + ": " + task.Prompt
+	return domain.CanonicalDCPPolicySpawnEnvelope(task).Prompt
 }
 
 func validatePolicySubmit(in PolicySubmitInput) (domain.DCPPolicyTargetSpec, error) {

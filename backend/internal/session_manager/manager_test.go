@@ -22,6 +22,18 @@ import (
 
 var ctx = context.Background()
 
+func TestDCPPolicyPromptUsesCanonicalLiveRuntimeEnvelope(t *testing.T) {
+	task := domain.DCPReviewLabPolicyTask{
+		TaskID:  "dcp-v2-twin-canary-v1",
+		Profile: "live-runtime",
+		Prompt:  "add one inert fixture",
+	}
+	const want = "DCP live-runtime task dcp-v2-twin-canary-v1: add one inert fixture"
+	if got := dcpPolicyPrompt(task); got != want {
+		t.Fatalf("native reservation prompt=%q want=%q", got, want)
+	}
+}
+
 type fakeStore struct {
 	sessions      map[domain.SessionID]domain.SessionRecord
 	pr            map[domain.SessionID]domain.PRFacts

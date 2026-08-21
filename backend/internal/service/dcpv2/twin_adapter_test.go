@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -109,7 +111,7 @@ func TestTwinAdapterVerifiesImmutableReleaseAndDeploymentProof(t *testing.T) {
 		t.Fatalf("unexpected proof gh call %q", path)
 		return nil, nil
 	})
-	release, err := adapter.ObserveRelease(context.Background(), task, revision, admission)
+	release, err := adapter.ObserveRelease(context.Background(), task, revision, admission, 700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +127,126 @@ func TestTwinAdapterVerifiesImmutableReleaseAndDeploymentProof(t *testing.T) {
 	proof.ProofDigest = digestWithoutField(proof, "proof_digest")
 	proofJSON, _ = json.Marshal(proof)
 	archive = proofArchive(t, manifestJSON, proofJSON)
-	if _, err := adapter.ObserveRelease(context.Background(), task, revision, admission); err == nil {
+	if _, err := adapter.ObserveRelease(context.Background(), task, revision, admission, 700); err == nil {
 		t.Fatal("proof with a foreign review identity was accepted")
+	}
+}
+
+func TestTwinAdapterImportsExactZeroEffectReadmissionProof(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	task, revision, admission := twinManifestFixture(now)
+	manifest, _ := BuildTwinManifest(task, revision, admission)
+	admission.ManifestDigest = manifest.ManifestDigest
+	const runID int64 = 701
+	evidence := twinReleaseEvidence{Protocol: "dcp-release-evidence/v1", TargetSpec: TwinTargetSpec,
+		QualificationCase: "dcp_canary", Kind: "readmission_required", Phase: "validation", Reason: "main_drift",
+		Repository: TwinRepository, RepositoryID: TwinRepositoryID, ManifestDigest: admission.ManifestDigest,
+		RunID: strconv.FormatInt(runID, 10), RunAttempt: "1", Observed: map[string]string{
+			"expected_main": admission.MainSHA, "current_main": strings.Repeat("4", 40), "current_head": admission.HeadSHA,
+		}, Effects: map[string]int64{"ref_updates": 0, "merges": 0, "release_artifacts": 0, "deploys": 0, "terminal_proofs": 0},
+		ObservedAt: now.Format(time.RFC3339)}
+	evidence.EvidenceDigest = digestWithoutField(evidence, "evidence_digest")
+	manifestJSON, _ := json.Marshal(manifest)
+	evidenceJSON, _ := json.Marshal(evidence)
+	archive := evidenceArchive(t, map[string][]byte{"manifest.json": manifestJSON, "release-evidence.json": evidenceJSON})
+	adapter := newTwinGitHubAdapterForTest(func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+		path := strings.Join(args, " ")
+		switch {
+		case strings.Contains(path, "/actions/artifacts?name=deploy-proof-"):
+			return []byte(`{"artifacts":[]}`), nil
+		case strings.Contains(path, "/actions/artifacts?name=qualification-evidence-701"):
+			return []byte(`{"artifacts":[{"id":101,"expired":false,"workflow_run":{"id":701}}]}`), nil
+		case strings.Contains(path, "/actions/artifacts/101/zip"):
+			return archive, nil
+		default:
+			t.Fatalf("unexpected readmission proof call %q", path)
+			return nil, nil
+		}
+	})
+	observed, err := adapter.ObserveRelease(context.Background(), task, revision, admission, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observed.Readmission || observed.CurrentMainSHA != strings.Repeat("4", 40) ||
+		observed.EvidenceDigest != evidence.EvidenceDigest || observed.MergeSHA != "" || observed.ArtifactDigest != "" {
+		t.Fatalf("readmission observation=%+v", observed)
+	}
+
+	evidence.Observed["current_head"] = strings.Repeat("5", 40)
+	evidence.EvidenceDigest = digestWithoutField(evidence, "evidence_digest")
+	evidenceJSON, _ = json.Marshal(evidence)
+	archive = evidenceArchive(t, map[string][]byte{"manifest.json": manifestJSON, "release-evidence.json": evidenceJSON})
+	if _, err := adapter.ObserveRelease(context.Background(), task, revision, admission, runID); err == nil {
+		t.Fatal("crossed main-drift evidence was accepted")
+	}
+}
+
+func TestTwinReadmissionPreparesThenPublishesOneExpectedOldHead(t *testing.T) {
+	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
+	task, revision, _ := twinManifestFixture(now)
+	task.CurrentRevisionID = revision.RevisionID
+	currentMain, tree, newHead := strings.Repeat("4", 40), strings.Repeat("5", 40), strings.Repeat("6", 40)
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	remoteHead, pushes := revision.HeadSHA, 0
+	adapter := newTwinGitHubAdapterForTest(func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+		path := strings.Join(args, " ")
+		switch {
+		case strings.Contains(path, "/git/ref/heads/main"):
+			return []byte(`{"object":{"sha":"` + currentMain + `"}}`), nil
+		case strings.Contains(path, "/pulls?"):
+			return []byte(`[{"number":7,"state":"open","draft":false,"merged":false,"base":{"ref":"main","sha":"` + currentMain + `"},"head":{"ref":"` + revision.HeadRef + `","sha":"` + remoteHead + `","repo":{"full_name":"` + TwinRepository + `"}}}]`), nil
+		default:
+			t.Fatalf("unexpected readmission provider call %q", path)
+			return nil, nil
+		}
+	})
+	adapter.git = func(_ context.Context, gotWorktree string, args ...string) (string, error) {
+		if gotWorktree != worktree {
+			return "", errors.New("foreign worktree")
+		}
+		command := strings.Join(args, " ")
+		switch {
+		case command == "status --porcelain":
+			return "", nil
+		case command == "branch --show-current":
+			return revision.HeadRef, nil
+		case command == "rev-parse HEAD":
+			return revision.HeadSHA, nil
+		case command == "fetch --no-tags origin main":
+			return "", nil
+		case command == "rev-parse refs/remotes/origin/main":
+			return currentMain, nil
+		case command == "merge-base --is-ancestor "+revision.BaseSHA+" "+currentMain:
+			return "", nil
+		case command == "merge-tree --write-tree "+revision.HeadSHA+" "+currentMain:
+			return tree, nil
+		case strings.Contains(command, "commit-tree "+tree+" -p "+revision.HeadSHA+" -p "+currentMain):
+			return newHead, nil
+		case command == "cat-file -e "+newHead+"^{commit}":
+			return "", nil
+		case command == "push origin "+newHead+":refs/heads/"+revision.HeadRef:
+			pushes++
+			remoteHead = newHead
+			return "", nil
+		default:
+			return "", errors.New("unexpected git call: " + command)
+		}
+	}
+	effect, err := adapter.MaterializeReadmission(context.Background(), task, revision, currentMain, worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effect.OldHeadSHA != revision.HeadSHA || effect.NewHeadSHA != newHead || effect.BaseSHA != currentMain || pushes != 0 {
+		t.Fatalf("prepared effect=%+v pushes=%d", effect, pushes)
+	}
+	if _, err := adapter.PublishReadmission(context.Background(), revision, effect, worktree); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.PublishReadmission(context.Background(), revision, effect, worktree); err != nil {
+		t.Fatal(err)
+	}
+	if pushes != 1 || remoteHead != newHead {
+		t.Fatalf("readmission pushes=%d remoteHead=%s", pushes, remoteHead)
 	}
 }
 
@@ -145,10 +265,14 @@ func twinManifestFixture(now time.Time) (domain.DCPV2Task, domain.DCPV2Revision,
 }
 
 func proofArchive(t *testing.T, manifest, proof []byte) []byte {
+	return evidenceArchive(t, map[string][]byte{"manifest.json": manifest, "deploy-proof.json": proof})
+}
+
+func evidenceArchive(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for name, body := range map[string][]byte{"manifest.json": manifest, "deploy-proof.json": proof} {
+	for name, body := range files {
 		w, err := zw.Create(name)
 		if err != nil {
 			t.Fatal(err)

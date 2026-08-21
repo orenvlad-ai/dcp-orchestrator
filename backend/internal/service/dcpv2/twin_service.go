@@ -97,7 +97,128 @@ func (s *TwinService) Startup(ctx context.Context) error {
 	if recovered, err := s.recoverStage6NativeShell(ctx); err != nil || recovered {
 		return err
 	}
+	if reconciled, err := s.reconcileNativeModelBoundary(ctx); err != nil || reconciled {
+		return err
+	}
 	return s.engine.Startup(ctx)
+}
+
+// reconcileNativeModelBoundary adopts or holds only the exact predecessor
+// shell for the current v2 Action. Session Manager and the policy service run
+// their own model-free startup reconciliation first; this bridge never starts
+// a process. It either binds their already-proven runtime identity once, keeps
+// the exact queued prelaunch fence steady, or rejects asymmetric facts.
+func (s *TwinService) reconcileNativeModelBoundary(ctx context.Context) (bool, error) {
+	task, err := s.store.GetDCPV2Task(ctx, TwinCanaryTaskID)
+	if errors.Is(err, sqlitestore.ErrDCPV2NotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	actions, err := s.store.ListDCPV2Actions(ctx, task.TaskID)
+	if err != nil {
+		return false, err
+	}
+	var active []domain.DCPV2Action
+	for _, action := range actions {
+		if action.RevisionID == task.CurrentRevisionID &&
+			(action.Status == domain.DCPV2ActionLaunching || action.Status == domain.DCPV2ActionRunning) {
+			active = append(active, action)
+		}
+	}
+	if len(active) == 0 {
+		return false, nil
+	}
+	if len(active) != 1 {
+		return false, errors.New("DCP v2 active Action cardinality drifted")
+	}
+	action := active[0]
+	command, err := s.store.GetDCPV2Command(ctx, action.CommandID)
+	if err != nil || command.Status != domain.DCPV2CommandLeased || command.TaskID != task.TaskID ||
+		command.RevisionID != task.CurrentRevisionID || command.EffectFence == "" || command.EffectFence != action.LaunchFence {
+		return false, errors.Join(err, errors.New("DCP v2 active Command/Action fence drifted"))
+	}
+	native, found, err := s.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
+	if err != nil || !found || native.TaskID != task.TaskID || native.Target != TwinTarget || native.Profile != TwinProfile ||
+		native.Repository != TwinRepository || native.PolicyVersion != domain.DCPWBCIntegrationTwinPolicyVersion ||
+		native.SessionID != domain.SessionID(TwinTarget+"-1") || native.CardNumber != 1 || native.SourceBranch != "ao/"+TwinTarget+"-1/root" ||
+		task.RequestDigest != digestCanonical(map[string]string{"taskId": task.TaskID, "prompt": native.Prompt}) {
+		return false, errors.Join(err, errors.New("DCP v2 native task identity drifted"))
+	}
+	session, found, err := s.store.GetSession(ctx, native.SessionID)
+	if err != nil || !found || session.ID != native.SessionID || session.ProjectID != domain.ProjectID(TwinTarget) ||
+		session.Kind != domain.KindWorker || session.Harness != domain.HarnessCodex || session.IsTerminated {
+		return false, errors.Join(err, errors.New("DCP v2 native session identity drifted"))
+	}
+	legacyActions, err := s.store.ListDCPModelActions(ctx)
+	if err != nil {
+		return false, err
+	}
+	wantKind, err := legacyActionKindForV2(action.Role)
+	if err != nil {
+		return false, err
+	}
+	legacy, err := exactActiveLegacyAction(legacyActions, task.TaskID, native.SessionID, wantKind)
+	if err != nil {
+		return false, err
+	}
+	envelope := domain.CanonicalDCPPolicySpawnEnvelope(native)
+	prepared := session.Metadata.Branch == envelope.Branch && session.Metadata.WorkspacePath == native.WorktreePath &&
+		session.Metadata.Prompt == envelope.Prompt
+	emptyRuntime := session.Metadata.RuntimeHandleID == "" && session.Metadata.RuntimeLaunchID == "" &&
+		legacy.LaunchID == "" && legacy.ReviewRunID == ""
+
+	switch {
+	case action.Status == domain.DCPV2ActionLaunching && action.RuntimeID == "" &&
+		legacy.Status == domain.DCPActionQueued && legacy.Slot == 0 && emptyRuntime:
+		// Both the just-reserved snapshot (empty native metadata) and a fully
+		// prepared but globally queued shell are exact prelaunch states.
+		if prepared || (session.Metadata.Branch == "" && session.Metadata.WorkspacePath == "" && session.Metadata.Prompt == "") {
+			return true, nil
+		}
+	case action.Status == domain.DCPV2ActionLaunching && action.RuntimeID == "" &&
+		legacy.Status == domain.DCPActionRunning && legacy.Slot == action.Slot && legacy.LaunchID != "" &&
+		prepared && session.Metadata.RuntimeHandleID != "" && session.Metadata.RuntimeLaunchID == legacy.LaunchID:
+		if err := s.store.StartDCPV2Action(ctx, action.ActionID, action.Slot, action.LaunchFence, legacy.LaunchID, s.now().UTC()); err != nil {
+			return false, fmt.Errorf("adopt exact native runtime: %w", err)
+		}
+		return true, nil
+	case action.Status == domain.DCPV2ActionRunning && action.RuntimeID != "" &&
+		legacy.Status == domain.DCPActionRunning && legacy.Slot == action.Slot && legacy.LaunchID == action.RuntimeID &&
+		prepared && session.Metadata.RuntimeHandleID != "" && session.Metadata.RuntimeLaunchID == action.RuntimeID:
+		return true, nil
+	}
+	return false, errors.New("DCP v2/native model runtime asymmetry")
+}
+
+func legacyActionKindForV2(role domain.DCPV2ActionRole) (domain.DCPModelActionKind, error) {
+	switch role {
+	case domain.DCPV2ActionWorker:
+		return domain.DCPActionInitialWorker, nil
+	case domain.DCPV2ActionReviewer:
+		return domain.DCPActionReviewer, nil
+	case domain.DCPV2ActionRepair:
+		return domain.DCPActionRepairWorker, nil
+	case domain.DCPV2ActionArbiter:
+		return domain.DCPActionArbiter, nil
+	default:
+		return "", errors.New("DCP v2 active Action role drifted")
+	}
+}
+
+func exactActiveLegacyAction(actions []domain.DCPModelAction, taskID string, sessionID domain.SessionID, wantKind domain.DCPModelActionKind) (domain.DCPModelAction, error) {
+	var matched []domain.DCPModelAction
+	for _, action := range actions {
+		active := action.Status == domain.DCPActionQueued || action.Status == domain.DCPActionClaimed || action.Status == domain.DCPActionRunning
+		if active && (action.TaskID == taskID || action.SessionID == sessionID) {
+			matched = append(matched, action)
+		}
+	}
+	if len(matched) != 1 || matched[0].TaskID != taskID || matched[0].SessionID != sessionID || matched[0].Kind != wantKind {
+		return domain.DCPModelAction{}, errors.New("DCP v2 native Action identity drifted")
+	}
+	return matched[0], nil
 }
 
 func (s *TwinService) SubmitTwin(ctx context.Context, in TwinSubmitInput) (TwinSubmitResult, error) {
@@ -275,17 +396,27 @@ func (s *TwinService) WakeRelease(ctx context.Context, taskID, deliveryID string
 		return TwinSnapshot{}, apierr.Invalid("DCP_V2_EVENT_INVALID", "release event identity is incomplete", nil)
 	}
 	task, err := s.store.GetDCPV2Task(ctx, taskID)
-	if err != nil || task.State != domain.DCPV2TaskMergeObserving {
+	if err != nil || (task.State != domain.DCPV2TaskMergeObserving && task.State != domain.DCPV2TaskReleaseWaiting) {
 		return TwinSnapshot{}, apierr.Conflict("DCP_V2_EVENT_STATE_INVALID", "task is not awaiting a release proof event", nil)
 	}
 	command, err := s.activeCommand(ctx, taskID)
-	if err != nil || command.Kind != domain.DCPV2CommandMergeObserve {
+	if err != nil || (command.Kind != domain.DCPV2CommandMergeObserve &&
+		(command.Kind != domain.DCPV2CommandReleaseDispatch || command.Status != domain.DCPV2CommandLeased || command.EffectFence == "")) {
 		return TwinSnapshot{}, apierr.Conflict("DCP_V2_EVENT_COMMAND_INVALID", "release observation Command is unavailable", nil)
+	}
+	prerequisite := command.PrerequisiteDigest
+	if command.Kind == domain.DCPV2CommandReleaseDispatch {
+		admissions, listErr := s.store.ListDCPV2Admissions(ctx, taskID)
+		if listErr != nil || len(admissions) == 0 || admissions[len(admissions)-1].RevisionID != task.CurrentRevisionID ||
+			command.EffectFence != "release:"+admissions[len(admissions)-1].ManifestDigest {
+			return TwinSnapshot{}, apierr.Conflict("DCP_V2_EVENT_COMMAND_INVALID", "fenced release Admission is unavailable", nil)
+		}
+		prerequisite = admissions[len(admissions)-1].ManifestDigest
 	}
 	now := s.now().UTC()
 	event := domain.DCPV2ExternalEvent{DeliveryID: deliveryID, Provider: "github", TaskID: taskID,
 		RevisionID: task.CurrentRevisionID, Kind: "github/release.completed", ProviderSequence: runID,
-		PayloadDigest: payloadDigest, PrerequisiteDigest: command.PrerequisiteDigest, CreatedAt: now, UpdatedAt: now}
+		PayloadDigest: payloadDigest, PrerequisiteDigest: prerequisite, CreatedAt: now, UpdatedAt: now}
 	if err := s.engine.Event(ctx, event); err != nil {
 		return TwinSnapshot{}, err
 	}

@@ -890,7 +890,7 @@ func TestDCPV2DeploymentMustMatchVerifiedReleaseBeforeTerminalization(t *testing
 		IdempotencyKey: task.TaskID + "/deployment", Status: domain.DCPV2CommandPending,
 		CreatedAt: now.Add(51 * time.Second), UpdatedAt: now.Add(51 * time.Second),
 	}
-	if err := s.TransitionDCPV2(ctx, sqlitestore.DCPV2Transition{
+	releaseTransition := sqlitestore.DCPV2Transition{
 		CommandID: merge.CommandID, LeaseOwner: merge.LeaseOwner, LeaseEpoch: merge.LeaseEpoch, LeaseToken: merge.LeaseToken,
 		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: task.CurrentRevisionID,
 		NextTaskState: domain.DCPV2TaskDeploymentWaiting, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
@@ -899,8 +899,15 @@ func TestDCPV2DeploymentMustMatchVerifiedReleaseBeforeTerminalization(t *testing
 		AdmissionLeaseEpoch: admission.LeaseEpoch, AdmissionLeaseToken: admission.LeaseToken,
 		AdmissionCompletion: domain.DCPV2AdmissionSucceeded, AdmissionResultID: release.ResultID,
 		UpdatedAt: now.Add(51 * time.Second),
-	}); err != nil {
+	}
+	if err := s.TransitionDCPV2(ctx, releaseTransition); err != nil {
 		t.Fatal(err)
+	}
+	if err := s.TransitionDCPV2(ctx, releaseTransition); err == nil {
+		t.Fatal("equal release result replay crossed its completed Command")
+	}
+	if results, err := s.ListDCPV2Results(ctx, task.TaskID); err != nil || len(results) != 1 || results[0].ResultID != release.ResultID {
+		t.Fatalf("release result replay changed rows=%+v err=%v", results, err)
 	}
 	task, _ = s.GetDCPV2Task(ctx, task.TaskID)
 	deployment := claimV2Command(t, s, deploymentCommand.CommandID, now.Add(52*time.Second))
@@ -923,6 +930,14 @@ func TestDCPV2DeploymentMustMatchVerifiedReleaseBeforeTerminalization(t *testing
 		NextTaskState: domain.DCPV2TaskDeploymentObserve, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
 		CommandResultDigest: deploymentResult.ProofDigest, NextCommand: &terminalCommand, Result: &deploymentResult,
 		UpdatedAt: now.Add(53 * time.Second),
+	}
+	contradiction := transition
+	contradictoryResult := deploymentResult
+	contradictoryResult.ResultID = release.ResultID
+	contradictoryResult.ArtifactDigest = release.ArtifactDigest
+	contradiction.Result = &contradictoryResult
+	if err := s.TransitionDCPV2(ctx, contradiction); err == nil {
+		t.Fatalf("contradictory reused result identity err=%v", err)
 	}
 	if err := s.TransitionDCPV2(ctx, transition); !errors.Is(err, sqlitestore.ErrDCPV2IdentityConflict) {
 		t.Fatalf("mismatched artifact transition err=%v", err)
