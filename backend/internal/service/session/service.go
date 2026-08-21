@@ -49,12 +49,8 @@ type dcpPolicyActionReader interface {
 	GetActiveDCPModelActionBySession(ctx context.Context, id domain.SessionID) (domain.DCPModelAction, bool, error)
 }
 
-type dcpV2ProjectionReader interface {
-	GetDCPV2Task(context.Context, string) (domain.DCPV2Task, error)
-	ListDCPV2Commands(context.Context, string) ([]domain.DCPV2Command, error)
-	ListDCPV2Actions(context.Context, string) ([]domain.DCPV2Action, error)
-	ListDCPV2Admissions(context.Context, string) ([]domain.DCPV2Admission, error)
-	ListDCPV2Results(context.Context, string) ([]domain.DCPV2Result, error)
+type dcpV2Projector interface {
+	Projection(context.Context, string) (domain.DCPV2LifecycleProjection, error)
 }
 
 type dcpWBCReadmissionReader interface {
@@ -150,6 +146,7 @@ type Service struct {
 	clock               func() time.Time
 	dataDir             string
 	telemetry           ports.EventSink
+	dcpV2Projector      dcpV2Projector
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
 	// signalCapable reports whether a harness has a hook pipeline that can
@@ -158,6 +155,11 @@ type Service struct {
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
 	signalCapable func(domain.AgentHarness) bool
 }
+
+// SetDCPV2Projector late-binds the direct DCP v2 presentation source after
+// daemon construction. The session card is only a display consumer; it never
+// supplies lifecycle identity or runtime facts back to DCP v2.
+func (s *Service) SetDCPV2Projector(projector dcpV2Projector) { s.dcpV2Projector = projector }
 
 // New wires a controller-facing session service over an internal session Manager.
 func New(manager *sessionmanager.Manager, store Store) *Service {
@@ -853,40 +855,13 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 			}
 			policyWorkflowActive = dcpPolicyWorkflowActive(task.State, arbiterStatus, policyReadmissionStatus)
 			if spec, exact := domain.DCPPolicyTargetForTask(task); exact && spec.UsesDCPV2TwinRelease() {
-				reader, ok := s.store.(dcpV2ProjectionReader)
-				if !ok {
-					return domain.Session{}, errors.New("DCP v2 projection store is unavailable")
+				if s.dcpV2Projector == nil {
+					return domain.Session{}, errors.New("DCP v2 direct projection service is unavailable")
 				}
-				v2task, v2Err := reader.GetDCPV2Task(ctx, task.TaskID)
-				commands, commandErr := reader.ListDCPV2Commands(ctx, task.TaskID)
-				actions, actionErr := reader.ListDCPV2Actions(ctx, task.TaskID)
-				admissions, admissionErr := reader.ListDCPV2Admissions(ctx, task.TaskID)
-				results, resultErr := reader.ListDCPV2Results(ctx, task.TaskID)
-				if joined := errors.Join(v2Err, commandErr, actionErr, admissionErr, resultErr); joined != nil {
-					return domain.Session{}, fmt.Errorf("DCP v2 projection facts %s: %w", rec.ID, joined)
+				projection, projectionErr := s.dcpV2Projector.Projection(ctx, task.TaskID)
+				if projectionErr != nil {
+					return domain.Session{}, fmt.Errorf("DCP v2 direct projection facts %s: %w", rec.ID, projectionErr)
 				}
-				var command *domain.DCPV2Command
-				for i := range commands {
-					if commands[i].Status == domain.DCPV2CommandPending || commands[i].Status == domain.DCPV2CommandLeased {
-						command = &commands[i]
-					}
-				}
-				var action *domain.DCPV2Action
-				for i := range actions {
-					if actions[i].RevisionID == v2task.CurrentRevisionID && (actions[i].Status == domain.DCPV2ActionQueued ||
-						actions[i].Status == domain.DCPV2ActionLaunching || actions[i].Status == domain.DCPV2ActionRunning) {
-						action = &actions[i]
-					}
-				}
-				var admission *domain.DCPV2Admission
-				if len(admissions) > 0 {
-					admission = &admissions[len(admissions)-1]
-				}
-				var result *domain.DCPV2Result
-				if len(results) > 0 {
-					result = &results[len(results)-1]
-				}
-				projection := domain.ProjectDCPV2Lifecycle(v2task, command, action, admission, result)
 				dcpV2Projection = &projection
 				policyModelActive, policyWorkflowActive = projection.ModelActive, projection.WorkflowActive
 			}

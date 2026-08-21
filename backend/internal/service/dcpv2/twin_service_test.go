@@ -3,8 +3,8 @@ package dcpv2
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,80 +13,270 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
-	dcptasksvc "github.com/aoagents/agent-orchestrator/backend/internal/service/dcptask"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
 const dcpV2Stage6Schema85SnapshotEnv = "DCP_V2_STAGE6_SCHEMA85_DB"
 
-type stage6RecoveryProvisioner struct {
-	calls int
-	want  dcptasksvc.PolicySubmitInput
+type fakeDirectRunner struct {
+	workspace  ports.DCPV2ModelWorkspaceReceipt
+	launches   int
+	requests   []ports.DCPV2ModelLaunchRequest
+	alive      bool
+	terminal   *domain.DCPV2ModelTerminalReceipt
+	observeErr error
+	startedAt  time.Time
 }
 
-func (p *stage6RecoveryProvisioner) ProvisionV2RuntimePolicy(_ context.Context, in dcptasksvc.PolicySubmitInput) (dcptasksvc.PolicySubmitResult, error) {
-	p.calls++
-	if in != p.want {
-		return dcptasksvc.PolicySubmitResult{}, fmt.Errorf("recovery input=%+v want=%+v", in, p.want)
+func (f *fakeDirectRunner) Prepare(context.Context, ports.DCPV2ModelPrepareRequest) (ports.DCPV2ModelWorkspaceReceipt, error) {
+	return f.workspace, nil
+}
+
+func (f *fakeDirectRunner) Launch(_ context.Context, request ports.DCPV2ModelLaunchRequest) (ports.DCPV2ModelLaunchReceipt, error) {
+	f.launches++
+	f.requests = append(f.requests, request)
+	f.alive = true
+	startedAt := f.startedAt
+	if startedAt.IsZero() {
+		startedAt = time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC)
 	}
-	return dcptasksvc.PolicySubmitResult{Task: domain.DCPReviewLabPolicyTask{
-		TaskID: in.TaskID, Target: in.Target, Profile: in.Profile, Repository: in.Repository, Prompt: in.Prompt,
-		SessionID: domain.SessionID(TwinTarget + "-1"), CardNumber: 1, SourceBranch: "ao/" + TwinTarget + "-1/root",
-	}}, nil
+	return ports.DCPV2ModelLaunchReceipt{ActionID: request.ActionID, LaunchFence: request.LaunchFence,
+		RuntimeID: request.RuntimeID, ProviderRequestID: "fake-request-1", ProviderRequestDigest: strings.Repeat("f", 64),
+		StartedAt: startedAt}, nil
 }
 
-func seedExactStage6RecoveryFence(t *testing.T, store *sqlite.Store) string {
+func (f *fakeDirectRunner) Observe(_ context.Context, request ports.DCPV2ModelLaunchRequest) (domain.DCPV2RuntimeObservation, error) {
+	return domain.DCPV2RuntimeObservation{ActionID: request.ActionID, RuntimeID: request.RuntimeID, Alive: f.alive,
+		ObservedAt: time.Date(2026, 8, 21, 13, 1, 0, 0, time.UTC)}, f.observeErr
+}
+
+func (f *fakeDirectRunner) Terminal(_ context.Context, _ ports.DCPV2ModelLaunchRequest) (domain.DCPV2ModelTerminalReceipt, bool, error) {
+	if f.terminal == nil {
+		return domain.DCPV2ModelTerminalReceipt{}, false, nil
+	}
+	return *f.terminal, true, nil
+}
+
+func activateDirectTwinForTest(t *testing.T, store *sqlite.Store, projectPath string, now time.Time) {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Date(2026, 8, 20, 17, 30, 0, 0, time.UTC)
-	activation := domain.DCPV2Stage5Activation{
-		ActivationID: "dcp-v2-twin-stage5", AuthorityCommit: "4143982eb054a40537d963356c209bfe8447ba31",
-		SourceCommit: "c1fc43d74cd517b7d73540f340058fa17b56ef15", SourceTree: "ff51ca2b1f6f9fa502b999f50a366a8e35035421",
-		InstallReceiptSHA: "54dd88beef2e9c93ee86435df2645d6707acf2dc3e2c0c0b4dad6de9b40cc9c0",
-		TargetSpecVersion: TwinTargetSpec, TargetPolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(),
-		Repository: TwinRepository, RepositoryID: TwinRepositoryID, OwnerID: TwinOwnerID, BaseRef: TwinBase,
-		RequiredCheck: TwinRequiredCheck, IssuerKind: TwinIssuerKind, IssuerActor: TwinIssuerActor,
-		IssuerEvent: TwinIssuerEvent, IssuerEventType: TwinDispatchEvent, WorkflowID: TwinWorkflowID,
-		Environment: TwinEnvironment, Service: TwinServiceName, Adapter: TwinAdapterVersion, ActivatedAt: now,
+	spec, ok := domain.DCPPolicyTarget(TwinTarget, TwinProfile)
+	if !ok {
+		t.Fatal("exact twin target is absent")
 	}
-	if created, err := store.ActivateDCPV2Stage5(ctx, activation); err != nil || !created {
-		t.Fatalf("activate exact Stage 5 fixture: created=%t err=%v", created, err)
+	activation := domain.DCPV2Stage5Activation{ActivationID: "dcp-v2-twin-stage5",
+		AuthorityCommit: "4143982eb054a40537d963356c209bfe8447ba31", SourceCommit: strings.Repeat("a", 40),
+		SourceTree: strings.Repeat("b", 40), InstallReceiptSHA: strings.Repeat("c", 64), TargetSpecVersion: TwinTargetSpec,
+		TargetPolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(), Repository: TwinRepository,
+		RepositoryID: TwinRepositoryID, OwnerID: TwinOwnerID, BaseRef: TwinBase, RequiredCheck: TwinRequiredCheck,
+		IssuerKind: TwinIssuerKind, IssuerActor: TwinIssuerActor, IssuerEvent: TwinIssuerEvent,
+		IssuerEventType: TwinDispatchEvent, WorkflowID: TwinWorkflowID, Environment: TwinEnvironment,
+		Service: TwinServiceName, Adapter: TwinAdapterVersion, ActivatedAt: now}
+	project := domain.ProjectRecord{ID: spec.Target, Path: projectPath, RepoOriginURL: spec.OriginURL, DisplayName: spec.Target,
+		RegisteredAt: now, Kind: domain.ProjectKindSingleRepo, Config: domain.ProjectConfig{DefaultBranch: spec.DefaultBranch,
+			SessionPrefix: spec.SessionPrefix, AgentRules: spec.AgentRules,
+			Worker: domain.RoleOverride{Harness: domain.HarnessCodex, AgentConfig: domain.AgentConfig{
+				Permissions: domain.PermissionModeAcceptEdits, DCPReviewLabNetwork: true}},
+			Reviewers: []domain.ReviewerConfig{{Harness: domain.ReviewerCodex}}}}
+	if created, projectCreated, err := store.ActivateDCPV2Stage5WithProject(t.Context(), activation, project); err != nil || !created || !projectCreated {
+		t.Fatalf("activate direct twin: created=%t project=%t err=%v", created, projectCreated, err)
 	}
-	prompt := "Add docs/STAGE6_CANARY.md with the single line Stage 6 DCP v2 canary. Change no other file."
-	requestDigest := digestCanonical(map[string]string{"taskId": TwinCanaryTaskID, "prompt": prompt})
-	scopeDigest := digestCanonical(map[string]any{"repository": TwinRepository, "repositoryId": TwinRepositoryID,
-		"ownerId": TwinOwnerID, "base": TwinBase, "profile": TwinProfile})
-	revision := domain.DCPV2Revision{RevisionID: stage6RecoveryRevisionID, TaskID: TwinCanaryTaskID, Sequence: 1,
-		Kind: domain.DCPV2RevisionWorkInput, Repository: TwinRepository, BaseRef: TwinBase,
-		BaseSHA: stage6RecoveryBaseSHA, HeadRef: TwinBase, HeadSHA: stage6RecoveryBaseSHA,
-		EvidenceDigest: digestCanonical(map[string]string{"main": stage6RecoveryBaseSHA}), CreatedAt: now}
-	task := domain.DCPV2Task{TaskID: TwinCanaryTaskID, TargetSpecVersion: TwinTargetSpec, Repository: TwinRepository,
-		RepositoryID: TwinRepositoryID, OwnerID: TwinOwnerID, BaseRef: TwinBase, Profile: TwinProfile,
-		RequestDigest: requestDigest, ScopeDigest: scopeDigest, PolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(),
-		InitialWorkerBudget: 1, RepairBudget: 1, MaxReadmissions: 2, CurrentRevisionID: revision.RevisionID,
-		State: domain.DCPV2TaskWorkerQueued, StateRevision: 1, CreatedAt: now, UpdatedAt: now}
-	command := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandWorkerExecute, 1,
-		map[string]string{"prompt": prompt, "baseSha": stage6RecoveryBaseSHA}, requestDigest, now)
-	action := newAction(command, domain.DCPV2ActionWorker, requestDigest, now)
-	if command.CommandID != stage6RecoveryCommandID || action.ActionID != stage6RecoveryActionID {
-		t.Fatalf("fixture identities drifted: command=%s action=%s", command.CommandID, action.ActionID)
-	}
-	if created, err := store.CreateDCPV2Task(ctx, task, revision, command, action); err != nil || !created {
-		t.Fatalf("create exact Stage 6 fixture: created=%t err=%v", created, err)
-	}
-	leased, err := store.ClaimNextDCPV2Command(ctx, "dcp-v2-daemon", "pid-29329", "lease-token", now.Add(time.Second))
-	if err != nil || leased == nil || leased.CommandID != command.CommandID {
-		t.Fatalf("lease exact command: command=%+v err=%v", leased, err)
-	}
-	fence := "model:" + action.ActionID
-	if err := store.FenceDCPV2CommandEffect(ctx, command.CommandID, leased.LeaseOwner, leased.LeaseEpoch, leased.LeaseToken, fence, now.Add(2*time.Second)); err != nil {
+}
+
+func TestDirectTwinOwnsLaunchRestartTerminalAndCreatesNoLegacyRows(t *testing.T) {
+	now := time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
+	dataDir := t.TempDir()
+	store, err := sqlite.Open(dataDir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := store.ClaimNextDCPV2Action(ctx, fence, now.Add(3*time.Second))
-	if err != nil || claimed == nil || claimed.ActionID != action.ActionID || claimed.Status != domain.DCPV2ActionLaunching || claimed.Slot != 1 {
-		t.Fatalf("claim exact Action: action=%+v err=%v", claimed, err)
+	defer store.Close()
+	projectPath := filepath.Join(t.TempDir(), "targets", TwinTarget)
+	activateDirectTwinForTest(t, store, projectPath, now)
+	worktree := filepath.Join(t.TempDir(), "worktrees", "direct")
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	return prompt
+	runner := &fakeDirectRunner{workspace: ports.DCPV2ModelWorkspaceReceipt{Branch: directWorkerBranch(TwinCanaryTaskID),
+		Worktree: worktree, WorktreeDigest: strings.Repeat("d", 64)}, startedAt: now.Add(4 * time.Second)}
+	pushes := 0
+	adapter := &TwinGitHubAdapter{gh: func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/git/ref/heads/"+TwinBase {
+			return []byte(`{"object":{"sha":"` + stage6RecoveryBaseSHA + `"}}`), nil
+		}
+		if len(args) == 1 && strings.HasPrefix(args[0], "repos/"+TwinRepository+"/pulls?") {
+			return []byte(`[]`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/pulls" {
+			return []byte(`{"number":17,"state":"open","draft":false,"merged":false,"base":{"ref":"main","sha":"` + stage6RecoveryBaseSHA + `"},"head":{"ref":"` + directWorkerBranch(TwinCanaryTaskID) + `","sha":"` + strings.Repeat("e", 40) + `","repo":{"full_name":"` + TwinRepository + `"}}}`), nil
+		}
+		return nil, errors.New("unexpected GitHub read: " + strings.Join(args, " "))
+	}, git: func(_ context.Context, _ string, args ...string) (string, error) {
+		switch strings.Join(args, "\x00") {
+		case "status\x00--porcelain":
+			return "", nil
+		case "branch\x00--show-current":
+			return directWorkerBranch(TwinCanaryTaskID), nil
+		case "rev-parse\x00HEAD":
+			return strings.Repeat("e", 40), nil
+		case "rev-parse\x00" + strings.Repeat("e", 40) + "^{tree}":
+			return strings.Repeat("f", 40), nil
+		case "merge-base\x00--is-ancestor\x00" + stage6RecoveryBaseSHA + "\x00" + strings.Repeat("e", 40):
+			return "", nil
+		case "ls-remote\x00--heads\x00origin\x00refs/heads/" + directWorkerBranch(TwinCanaryTaskID):
+			return "", nil
+		default:
+			if len(args) == 4 && args[0] == "push" && strings.HasPrefix(args[1], "--force-with-lease=") {
+				pushes++
+				return "", nil
+			}
+			return "", errors.New("unexpected Git operation: " + strings.Join(args, " "))
+		}
+	}}
+	clock := now
+	svc, err := NewTwinService(store, runner, adapter, "direct-test-epoch", func() time.Time {
+		clock = clock.Add(time.Second)
+		return clock
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.SubmitTwin(t.Context(), TwinSubmitInput{TaskID: TwinCanaryTaskID, Prompt: "add one inert canary fixture"})
+	if err != nil || result.Duplicate || runner.launches != 1 || len(runner.requests) != 1 ||
+		!result.Projection.ModelActive || !result.Projection.WorkflowActive {
+		t.Fatalf("direct submit result=%+v launches=%d requests=%d err=%v", result, runner.launches, len(runner.requests), err)
+	}
+	if err := svc.Startup(t.Context()); err != nil || runner.launches != 1 {
+		t.Fatalf("live exact restart duplicated launch: launches=%d err=%v", runner.launches, err)
+	}
+	request := runner.requests[0]
+	if request.Branch != directWorkerBranch(TwinCanaryTaskID) || request.ExpectedOldHead != "" ||
+		!strings.Contains(request.TaskInputJSON, "add one inert canary fixture") ||
+		request.TaskInputDigest != digestCanonical(json.RawMessage(request.TaskInputJSON)) ||
+		request.PromptDigest != digestCanonical(json.RawMessage(request.CommandPayloadJSON)) {
+		t.Fatalf("direct Worker restart identity=%+v", request)
+	}
+	outputDigest := digestCanonical(map[string]string{"worker": "done"})
+	receipt := domain.DCPV2ModelTerminalReceipt{ReceiptID: stableID("terminal-receipt", request.ActionID, outputDigest),
+		ActionID: request.ActionID, CommandID: request.CommandID, TaskID: request.TaskID, RevisionID: request.RevisionID,
+		RuntimeID: request.RuntimeID, LaunchFence: request.LaunchFence, Status: domain.DCPV2ModelTerminalSucceeded,
+		OutputJSON: `{}`, OutputDigest: outputDigest, HeadRef: request.Branch, HeadSHA: strings.Repeat("e", 40),
+		TreeSHA: strings.Repeat("f", 40), BaseSHA: request.HeadSHA, WorktreePath: request.Worktree,
+		WorktreeDigest: request.WorktreeDigest, CreatedAt: runner.startedAt.Add(time.Second)}
+	receipt.ResultDigest = digestCanonical(map[string]string{"output": receipt.OutputDigest, "head": receipt.HeadSHA, "tree": receipt.TreeSHA})
+	runner.alive, runner.terminal = false, &receipt
+	if err := svc.ReportDirectProcessExit(t.Context(), request.ActionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ReportDirectProcessExit(t.Context(), request.ActionID); err != nil || runner.launches != 1 {
+		t.Fatalf("equal terminal replay duplicated effect: launches=%d err=%v", runner.launches, err)
+	}
+	snapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || snapshot.Task.State != domain.DCPV2TaskChecksWaiting || snapshot.Task.CurrentRevisionID == request.RevisionID ||
+		len(snapshot.Revisions) != 2 || len(snapshot.Commands) != 3 || snapshot.Commands[1].Kind != domain.DCPV2CommandPublication ||
+		snapshot.Commands[1].Status != domain.DCPV2CommandSucceeded || snapshot.Commands[2].Kind != domain.DCPV2CommandChecksObserve || pushes != 1 ||
+		len(snapshot.Actions) != 1 || snapshot.Actions[0].Status != domain.DCPV2ActionSucceeded || snapshot.Actions[0].Slot != 0 ||
+		snapshot.Projection.ModelActive || !snapshot.Projection.WorkflowActive {
+		t.Fatalf("direct terminal snapshot=%+v err=%v", snapshot, err)
+	}
+	legacyTasks, taskErr := store.ListDCPReviewLabPolicyTasks(t.Context())
+	legacyActions, actionErr := store.ListDCPModelActions(t.Context())
+	legacySessions, sessionErr := store.ListSessions(t.Context(), domain.ProjectID(TwinTarget))
+	if err := errors.Join(taskErr, actionErr, sessionErr); err != nil || len(legacyTasks) != 0 || len(legacyActions) != 0 || len(legacySessions) != 0 {
+		t.Fatalf("direct Task created legacy authority: tasks=%d actions=%d sessions=%d err=%v", len(legacyTasks), len(legacyActions), len(legacySessions), err)
+	}
+}
+
+func TestDirectRestartAfterFenceWithoutRuntimeProofFailsClosedWithoutRelaunch(t *testing.T) {
+	now := time.Date(2026, 8, 21, 16, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	projectPath := filepath.Join(t.TempDir(), "targets", TwinTarget)
+	activateDirectTwinForTest(t, store, projectPath, now)
+	runner := &fakeDirectRunner{workspace: ports.DCPV2ModelWorkspaceReceipt{Branch: directWorkerBranch(TwinCanaryTaskID),
+		Worktree: t.TempDir(), WorktreeDigest: strings.Repeat("d", 64)}, startedAt: now.Add(4 * time.Second)}
+	adapter := &TwinGitHubAdapter{gh: func(context.Context, []byte, ...string) ([]byte, error) {
+		return []byte(`{"object":{"sha":"` + stage6RecoveryBaseSHA + `"}}`), nil
+	}, git: runTwinGit}
+	svc, err := NewTwinService(store, runner, adapter, "direct-fence-epoch", func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SubmitTwin(t.Context(), TwinSubmitInput{TaskID: TwinCanaryTaskID, Prompt: "inert"}); err != nil {
+		t.Fatal(err)
+	}
+	runner.alive = false
+	if err := svc.Startup(t.Context()); err == nil || runner.launches != 1 {
+		t.Fatalf("ambiguous fenced restart did not fail closed: launches=%d err=%v", runner.launches, err)
+	}
+}
+
+func TestDirectReviewerRepairAndArbiterShareOneDCPAuthority(t *testing.T) {
+	now := time.Date(2026, 8, 21, 17, 0, 0, 0, time.UTC)
+	processor := &twinProcessor{now: func() time.Time { return now }}
+	revision := domain.DCPV2Revision{RevisionID: "revision-2", TaskID: "task", Sequence: 2,
+		Kind: domain.DCPV2RevisionWorker, Repository: TwinRepository, BaseRef: TwinBase,
+		BaseSHA: strings.Repeat("a", 40), HeadRef: "codex/direct", HeadSHA: strings.Repeat("b", 40), CreatedAt: now.Add(-time.Minute)}
+	task := domain.DCPV2Task{TaskID: "task", BaseRef: TwinBase, CurrentRevisionID: revision.RevisionID,
+		State: domain.DCPV2TaskReviewQueued, StateRevision: 4, RepairBudget: 1}
+	command := domain.DCPV2Command{CommandID: "review-command", TaskID: task.TaskID, RevisionID: revision.RevisionID,
+		Kind: domain.DCPV2CommandReviewExecute}
+	receipt := domain.DCPV2ModelTerminalReceipt{ReceiptID: "review-receipt", OutputDigest: strings.Repeat("c", 64),
+		ResultDigest: strings.Repeat("d", 64), OutputJSON: `{"verdict":"changes_requested","headSha":"` + revision.HeadSHA + `","findings":["fix the exact regression"]}`}
+	outcome, err := processor.completeReviewReceipt(task, revision, command, receipt)
+	if err != nil || !outcome.RepairIncrement || outcome.NextTaskState != domain.DCPV2TaskRepairQueued ||
+		outcome.NextCommand == nil || outcome.NextCommand.Kind != domain.DCPV2CommandRepairExecute ||
+		outcome.NextAction == nil || outcome.NextAction.Role != domain.DCPV2ActionRepair {
+		t.Fatalf("direct repair decision outcome=%+v err=%v", outcome, err)
+	}
+	if !strings.Contains(outcome.NextCommand.PayloadJSON, "fix the exact regression") {
+		t.Fatalf("repair Command lost the reviewed finding: %s", outcome.NextCommand.PayloadJSON)
+	}
+	receipt.OutputJSON = `{"verdict":"changes_requested","headSha":"` + revision.HeadSHA + `","findings":[]}`
+	if _, err := processor.completeReviewReceipt(task, revision, command, receipt); err == nil {
+		t.Fatal("changes_requested without findings was accepted")
+	}
+	receipt.OutputJSON = `{"verdict":"approved","verdict":"changes_requested","headSha":"` + revision.HeadSHA + `","findings":["ambiguous"]}`
+	if _, err := processor.completeReviewReceipt(task, revision, command, receipt); err == nil {
+		t.Fatal("duplicate-key Reviewer result was accepted")
+	}
+	receipt.OutputJSON = `{"verdict":"changes_requested","headSha":"` + revision.HeadSHA + `","findings":["fix the exact regression"]}`
+	task.RepairUsed = 1
+	if _, err := processor.completeReviewReceipt(task, revision, command, receipt); err == nil {
+		t.Fatal("second task-level repair was accepted")
+	}
+	task.RepairUsed = 0
+	receipt.OutputJSON = `{"verdict":"approved","headSha":"` + revision.HeadSHA + `","findings":[]}`
+	outcome, err = processor.completeReviewReceipt(task, revision, command, receipt)
+	if err != nil || outcome.NextTaskState != domain.DCPV2TaskAdmissionWaiting || outcome.NextCommand == nil ||
+		outcome.NextCommand.Kind != domain.DCPV2CommandAdmissionEnqueue || outcome.NextAction != nil {
+		t.Fatalf("direct approved review outcome=%+v err=%v", outcome, err)
+	}
+
+	arbiterCommand := command
+	arbiterCommand.Kind = domain.DCPV2CommandArbiterExecute
+	receipt.OutputJSON = `{"decision":"admit"}`
+	outcome, err = processor.completeArbiterReceipt(task, revision, arbiterCommand, receipt)
+	if err != nil || outcome.NextTaskState != domain.DCPV2TaskAdmissionWaiting || outcome.NextCommand == nil ||
+		outcome.NextCommand.Kind != domain.DCPV2CommandAdmissionEnqueue {
+		t.Fatalf("direct arbiter outcome=%+v err=%v", outcome, err)
+	}
+
+	repairCommand := command
+	repairCommand.Kind = domain.DCPV2CommandRepairExecute
+	repairReceipt := domain.DCPV2ModelTerminalReceipt{OutputDigest: strings.Repeat("e", 64), ResultDigest: strings.Repeat("f", 64),
+		HeadRef: revision.HeadRef, HeadSHA: strings.Repeat("c", 40), TreeSHA: strings.Repeat("d", 40), BaseSHA: revision.HeadSHA,
+		WorktreePath: filepath.Join(t.TempDir(), "direct-repair"), WorktreeDigest: strings.Repeat("e", 64)}
+	outcome, err = processor.completeWorkerReceipt(task, revision, repairCommand, repairReceipt)
+	if err != nil || outcome.NextRevision == nil || outcome.NextRevision.Kind != domain.DCPV2RevisionRepair ||
+		outcome.NextRevision.PredecessorRevisionID != revision.RevisionID || outcome.NextCommand == nil ||
+		outcome.NextCommand.Kind != domain.DCPV2CommandPublication {
+		t.Fatalf("direct repair terminal outcome=%+v err=%v", outcome, err)
+	}
 }
 
 func TestTwinServiceIsDormantWithoutStage5Activation(t *testing.T) {
@@ -95,7 +285,8 @@ func TestTwinServiceIsDormantWithoutStage5Activation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	svc, err := NewTwinService(store, &dcptasksvc.Service{}, newTwinGitHubAdapterForTest(nil), "test-epoch", nil)
+	runner := &fakeDirectRunner{workspace: ports.DCPV2ModelWorkspaceReceipt{Branch: "codex/test", Worktree: t.TempDir(), WorktreeDigest: strings.Repeat("w", 64)}}
+	svc, err := NewTwinService(store, runner, newTwinGitHubAdapterForTest(nil), "test-epoch", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,22 +295,20 @@ func TestTwinServiceIsDormantWithoutStage5Activation(t *testing.T) {
 	}
 	_, err = svc.SubmitTwin(context.Background(), TwinSubmitInput{TaskID: TwinCanaryTaskID, Prompt: "inert"})
 	var apiError *apierr.Error
-	if !errors.As(err, &apiError) || apiError.Code != "DCP_V2_NOT_ACTIVATED" {
-		t.Fatalf("dormant submit err=%v", err)
+	if !errors.As(err, &apiError) || apiError.Code != "DCP_V2_NOT_ACTIVATED" || runner.launches != 0 {
+		t.Fatalf("dormant submit err=%v launches=%d", err, runner.launches)
 	}
 }
 
 func TestValidateTwinActivationBindsExactInstalledTuple(t *testing.T) {
-	activation := domain.DCPV2Stage5Activation{
-		ActivationID: "dcp-v2-twin-stage5", AuthorityCommit: "4143982eb054a40537d963356c209bfe8447ba31",
-		SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40),
-		InstallReceiptSHA: strings.Repeat("c", 64), TargetSpecVersion: TwinTargetSpec,
+	activation := domain.DCPV2Stage5Activation{ActivationID: "dcp-v2-twin-stage5",
+		AuthorityCommit: "4143982eb054a40537d963356c209bfe8447ba31", SourceCommit: strings.Repeat("a", 40),
+		SourceTree: strings.Repeat("b", 40), InstallReceiptSHA: strings.Repeat("c", 64), TargetSpecVersion: TwinTargetSpec,
 		TargetPolicyDigest: domain.DCPWBCIntegrationTwinPolicyDigest(), Repository: TwinRepository,
 		RepositoryID: TwinRepositoryID, OwnerID: TwinOwnerID, BaseRef: TwinBase, RequiredCheck: TwinRequiredCheck,
 		IssuerKind: TwinIssuerKind, IssuerActor: TwinIssuerActor, IssuerEvent: TwinIssuerEvent,
 		IssuerEventType: TwinDispatchEvent, WorkflowID: TwinWorkflowID, Environment: TwinEnvironment,
-		Service: TwinServiceName, Adapter: TwinAdapterVersion, ActivatedAt: time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC),
-	}
+		Service: TwinServiceName, Adapter: TwinAdapterVersion, ActivatedAt: time.Date(2026, 8, 20, 16, 0, 0, 0, time.UTC)}
 	if err := validateTwinActivation(activation); err != nil {
 		t.Fatal(err)
 	}
@@ -129,214 +318,87 @@ func TestValidateTwinActivationBindsExactInstalledTuple(t *testing.T) {
 	}
 }
 
-func TestExactActiveLegacyActionIgnoresTerminalHistoryAndBindsCurrentRole(t *testing.T) {
-	taskID := TwinCanaryTaskID
-	sessionID := domain.SessionID(TwinTarget + "-1")
-	actions := []domain.DCPModelAction{
-		{ID: "worker", TaskID: taskID, SessionID: sessionID, Kind: domain.DCPActionInitialWorker, Status: domain.DCPActionSucceeded},
-		{ID: "reviewer", TaskID: taskID, SessionID: sessionID, Kind: domain.DCPActionReviewer, Status: domain.DCPActionRunning},
-	}
-	wantKind, err := legacyActionKindForV2(domain.DCPV2ActionReviewer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := exactActiveLegacyAction(actions, taskID, sessionID, wantKind)
-	if err != nil || got.ID != "reviewer" {
-		t.Fatalf("active reviewer=%+v err=%v", got, err)
-	}
-	actions = append(actions, domain.DCPModelAction{ID: "foreign", TaskID: "foreign", SessionID: sessionID,
-		Kind: domain.DCPActionReviewer, Status: domain.DCPActionQueued})
-	if _, err := exactActiveLegacyAction(actions, taskID, sessionID, wantKind); err == nil {
-		t.Fatal("crossed active native identity was accepted")
-	}
-}
-
-func TestLegacyActionKindForV2RejectsUnknownRole(t *testing.T) {
-	for role, want := range map[domain.DCPV2ActionRole]domain.DCPModelActionKind{
-		domain.DCPV2ActionWorker: domain.DCPActionInitialWorker, domain.DCPV2ActionReviewer: domain.DCPActionReviewer,
-		domain.DCPV2ActionRepair: domain.DCPActionRepairWorker, domain.DCPV2ActionArbiter: domain.DCPActionArbiter,
-	} {
-		got, err := legacyActionKindForV2(role)
-		if err != nil || got != want {
-			t.Fatalf("role %s kind=%s err=%v", role, got, err)
-		}
-	}
-	if _, err := legacyActionKindForV2("foreign"); err == nil {
-		t.Fatal("foreign DCP v2 role was accepted")
-	}
-}
-
-func TestInspectAndRecoverExactStage6NativeShellOnce(t *testing.T) {
-	store, err := sqlite.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	prompt := seedExactStage6RecoveryFence(t, store)
-	fence, err := InspectStage6RecoveryFence(t.Context(), store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fence.TaskID != TwinCanaryTaskID || fence.RevisionID != stage6RecoveryRevisionID ||
-		fence.CommandID != stage6RecoveryCommandID || fence.ActionID != stage6RecoveryActionID ||
-		fence.BaseSHA != stage6RecoveryBaseSHA || fence.Prompt != prompt {
-		t.Fatalf("recovery fence=%+v", fence)
-	}
-	provisioner := &stage6RecoveryProvisioner{want: dcptasksvc.PolicySubmitInput{
-		TaskID: TwinCanaryTaskID, Target: TwinTarget, Profile: TwinProfile, Repository: TwinRepository, Prompt: prompt,
-	}}
-	svc, err := NewTwinService(store, provisioner, newTwinGitHubAdapterForTest(nil), "recovery-epoch", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Startup(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if provisioner.calls != 1 {
-		t.Fatalf("native recovery calls=%d want=1", provisioner.calls)
-	}
-}
-
-func TestStage6Schema85SnapshotRestartKeepsOnePrelaunchIdentity(t *testing.T) {
+func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *testing.T) {
 	destination := copyStage6Schema85Snapshot(t)
 	store, err := sqlite.Open(filepath.Dir(destination))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-
-	provisioner := &stage6RecoveryProvisioner{}
-	svc, err := NewTwinService(store, provisioner, newTwinGitHubAdapterForTest(nil), "snapshot-restart", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope := domain.CanonicalDCPPolicySpawnEnvelope(before.Native)
-	if !strings.HasPrefix(envelope.Prompt, "DCP live-runtime task ") || before.Projection.ModelActive || !before.Projection.WorkflowActive {
-		t.Fatalf("prelaunch envelope/projection drift envelope=%q projection=%+v", envelope.Prompt, before.Projection)
-	}
-	for restart := 1; restart <= 2; restart++ {
-		if err := svc.Startup(t.Context()); err != nil {
-			t.Fatalf("restart %d: %v", restart, err)
+	driftedOutput := true
+	git := func(_ context.Context, _ string, args ...string) (string, error) {
+		switch strings.Join(args, "\x00") {
+		case "status\x00--porcelain":
+			return "", nil
+		case "branch\x00--show-current":
+			return stage6CanaryBranch, nil
+		case "rev-parse\x00HEAD":
+			if driftedOutput {
+				return strings.Repeat("f", 40), nil
+			}
+			return stage6CanaryCommit, nil
+		case "rev-parse\x00HEAD^{tree}":
+			return stage6CanaryTree, nil
+		case "diff-tree\x00--no-commit-id\x00--name-only\x00-r\x00HEAD":
+			return "docs/STAGE6_CANARY.md", nil
+		case "show\x00HEAD:docs/STAGE6_CANARY.md":
+			return "Stage 6 DCP v2 canary.", nil
+		case "merge-base\x00--is-ancestor\x00" + stage6RecoveryBaseSHA + "\x00" + stage6CanaryCommit:
+			return "", nil
+		case "ls-remote\x00--heads\x00origin\x00refs/heads/" + stage6CanaryBranch:
+			return "", nil
+		default:
+			return "", errors.New("unexpected Git read: " + strings.Join(args, " "))
 		}
 	}
-	after, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	gh := func(_ context.Context, _ []byte, _ ...string) ([]byte, error) { return []byte(`[]`), nil }
+	adapter := &TwinGitHubAdapter{git: git, gh: gh}
+	runner := &fakeDirectRunner{}
+	svc, err := NewTwinService(store, runner, adapter, "adoption-epoch", func() time.Time {
+		return time.Date(2026, 8, 21, 14, 0, 0, 0, time.UTC)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyActions, err := store.ListDCPModelActions(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	if _, applied, err := svc.AdoptStage6Worker(t.Context()); err == nil || applied {
+		t.Fatalf("foreign Worker output was adopted: applied=%t err=%v", applied, err)
 	}
-	if provisioner.calls != 0 || len(before.Revisions) != 1 || len(after.Revisions) != 1 ||
-		len(before.Commands) != 1 || len(after.Commands) != 1 || len(before.Actions) != 1 || len(after.Actions) != 1 ||
-		len(legacyActions) != 74 || after.Actions[0].Status != domain.DCPV2ActionLaunching ||
-		after.Actions[0].RuntimeID != "" || after.Projection.ModelActive || !after.Projection.WorkflowActive {
-		t.Fatalf("restart duplicated or advanced effects provision=%d before=%+v after=%+v legacyActions=%d",
-			provisioner.calls, before, after, len(legacyActions))
+	if _, err := store.GetDCPV2Stage6WorkerAdoption(t.Context()); !errors.Is(err, sqlitestore.ErrDCPV2NotFound) {
+		t.Fatalf("failed adoption wrote a receipt: %v", err)
 	}
-}
-
-func TestStage6Schema85SnapshotRejectsForeignPromptAndAsymmetricRuntime(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		mutation   string
-		wantError  string
-		wantParams []any
-		rejected   bool
-	}{
-		{name: "foreign prompt rejected by immutable schema", mutation: `UPDATE dcp_review_lab_policy_task SET prompt = ? WHERE task_id = ?`,
-			wantParams: []any{"foreign prompt", TwinCanaryTaskID}, rejected: true},
-		{name: "claimed without runtime", mutation: `UPDATE dcp_model_action SET status = 'claimed', slot = 1 WHERE task_id = ?`,
-			wantParams: []any{TwinCanaryTaskID}, wantError: "runtime asymmetry"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			destination := copyStage6Schema85Snapshot(t)
-			db, err := sql.Open("sqlite", destination)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.Exec(test.mutation, test.wantParams...); err != nil {
-				if test.rejected && strings.Contains(err.Error(), "immutable identity") {
-					_ = db.Close()
-					return
-				}
-				t.Fatal(err)
-			} else if test.rejected {
-				t.Fatal("foreign immutable identity mutation was accepted")
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			store, err := sqlite.Open(filepath.Dir(destination))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer store.Close()
-			svc, err := NewTwinService(store, &stage6RecoveryProvisioner{}, newTwinGitHubAdapterForTest(nil), "snapshot-negative", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := svc.Startup(t.Context()); err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("startup error=%v want %q", err, test.wantError)
-			}
-		})
+	unchangedAction, err := store.GetDCPV2ActionByCommand(t.Context(), stage6RecoveryCommandID)
+	if err != nil || unchangedAction.Status != domain.DCPV2ActionRunning || unchangedAction.RuntimeID != stage6RecoveryRuntimeID {
+		t.Fatalf("failed adoption mutated frozen Action=%+v err=%v", unchangedAction, err)
 	}
-}
-
-func TestStage6Schema85SnapshotAdoptsOneExactRunningRuntime(t *testing.T) {
-	destination := copyStage6Schema85Snapshot(t)
+	if err := svc.Startup(t.Context()); err == nil || runner.launches != 0 {
+		t.Fatalf("frozen pre-adoption Action did not block startup: launches=%d err=%v", runner.launches, err)
+	}
+	driftedOutput = false
+	adoption, applied, err := svc.AdoptStage6Worker(t.Context())
+	if err != nil || !applied || adoption.CommitSHA != stage6CanaryCommit || adoption.TreeSHA != stage6CanaryTree {
+		t.Fatalf("adopt exact Worker: adoption=%+v applied=%t err=%v", adoption, applied, err)
+	}
+	replay, applied, err := svc.AdoptStage6Worker(t.Context())
+	if err != nil || applied || replay != adoption {
+		t.Fatalf("equal adoption replay: adoption=%+v applied=%t err=%v", replay, applied, err)
+	}
+	snapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || snapshot.Task.State != domain.DCPV2TaskChecksWaiting || len(snapshot.Revisions) != 2 ||
+		len(snapshot.Commands) != 2 || snapshot.Commands[1].Kind != domain.DCPV2CommandPublication ||
+		len(snapshot.Actions) != 1 || snapshot.Actions[0].Status != domain.DCPV2ActionSucceeded || snapshot.Actions[0].Slot != 0 || runner.launches != 0 {
+		t.Fatalf("adopted DCP state drifted: snapshot=%+v launches=%d err=%v", snapshot, runner.launches, err)
+	}
 	db, err := sql.Open("sqlite", destination)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var branch, worktree, prompt, sessionID string
-	if err := db.QueryRow(`SELECT source_branch, worktree_path, 'DCP live-runtime task ' || task_id || ': ' || prompt, session_id
-		FROM dcp_review_lab_policy_task WHERE task_id = ?`, TwinCanaryTaskID).Scan(&branch, &worktree, &prompt, &sessionID); err != nil {
+	if _, err := db.Exec(`UPDATE sessions SET branch='foreign-after-adoption' WHERE id=?`, domain.SessionID(TwinTarget+"-1")); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []struct {
-		query string
-		args  []any
-	}{
-		{`UPDATE sessions SET branch = ?, workspace_path = ?, prompt = ?, runtime_handle_id = 'handle-1',
-			runtime_launch_id = 'launch-1', activity_state = 'active' WHERE id = ?`, []any{branch, worktree, prompt, sessionID}},
-		{`UPDATE dcp_model_action SET status = 'claimed', slot = 1 WHERE task_id = ?`, []any{TwinCanaryTaskID}},
-		{`UPDATE dcp_model_action SET status = 'running', launch_id = 'launch-1' WHERE task_id = ?`, []any{TwinCanaryTaskID}},
-		{`UPDATE dcp_review_lab_policy_task SET state = 'worker_running', revision = revision + 1 WHERE task_id = ?`, []any{TwinCanaryTaskID}},
-	} {
-		if _, err := db.Exec(mutation.query, mutation.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := sqlite.Open(filepath.Dir(destination))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	svc, err := NewTwinService(store, &stage6RecoveryProvisioner{}, newTwinGitHubAdapterForTest(nil), "snapshot-running", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Startup(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Startup(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshot.Actions) != 1 || snapshot.Actions[0].Status != domain.DCPV2ActionRunning ||
-		snapshot.Actions[0].RuntimeID != "launch-1" || !snapshot.Projection.ModelActive || !snapshot.Projection.WorkflowActive {
-		t.Fatalf("running adoption=%+v projection=%+v", snapshot.Actions, snapshot.Projection)
+	_ = db.Close()
+	after, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || after.Task != snapshot.Task || len(after.Revisions) != len(snapshot.Revisions) || len(after.Commands) != len(snapshot.Commands) {
+		t.Fatalf("legacy mutation changed DCP authority: before=%+v after=%+v err=%v", snapshot.Task, after.Task, err)
 	}
 }
 

@@ -53,6 +53,7 @@ type DCPV2CommandKind string
 
 const (
 	DCPV2CommandWorkerExecute     DCPV2CommandKind = "worker.execute/v1"
+	DCPV2CommandPublication       DCPV2CommandKind = "publication.execute/v1"
 	DCPV2CommandChecksObserve     DCPV2CommandKind = "checks.observe/v1"
 	DCPV2CommandReviewExecute     DCPV2CommandKind = "review.execute/v1"
 	DCPV2CommandRepairExecute     DCPV2CommandKind = "repair.execute/v1"
@@ -80,7 +81,7 @@ func (k DCPV2CommandKind) ModelBacked() bool {
 // reads/transactions and do not need an external fence.
 func (k DCPV2CommandKind) RequiresEffectFence() bool {
 	switch k {
-	case DCPV2CommandWorkerExecute, DCPV2CommandReviewExecute, DCPV2CommandRepairExecute,
+	case DCPV2CommandWorkerExecute, DCPV2CommandPublication, DCPV2CommandReviewExecute, DCPV2CommandRepairExecute,
 		DCPV2CommandArbiterExecute, DCPV2CommandReadmission, DCPV2CommandReleaseDispatch:
 		return true
 	default:
@@ -98,6 +99,8 @@ func (k DCPV2CommandKind) AllowsTransition(from, to DCPV2TaskState, createsRevis
 	switch k {
 	case DCPV2CommandWorkerExecute:
 		return from == DCPV2TaskWorkerQueued && to == DCPV2TaskChecksWaiting && createsRevision
+	case DCPV2CommandPublication:
+		return from == DCPV2TaskChecksWaiting && to == DCPV2TaskChecksWaiting && !createsRevision
 	case DCPV2CommandChecksObserve:
 		return from == DCPV2TaskChecksWaiting && to == DCPV2TaskReviewQueued && !createsRevision
 	case DCPV2CommandReviewExecute:
@@ -301,6 +304,94 @@ type DCPV2Action struct {
 	UpdatedAt     time.Time
 }
 
+type DCPV2ModelRuntimeState string
+
+const (
+	DCPV2ModelRuntimeReserved  DCPV2ModelRuntimeState = "reserved"
+	DCPV2ModelRuntimeRunning   DCPV2ModelRuntimeState = "running"
+	DCPV2ModelRuntimeSucceeded DCPV2ModelRuntimeState = "succeeded"
+	DCPV2ModelRuntimeFailed    DCPV2ModelRuntimeState = "failed"
+)
+
+// DCPV2ModelRuntime is the DCP-owned launch identity. A runner only transports
+// this identity; it never owns the slot, task state, or retry decision.
+type DCPV2ModelRuntime struct {
+	RuntimeID             string
+	ActionID              string
+	CommandID             string
+	TaskID                string
+	RevisionID            string
+	Slot                  int64
+	LaunchFence           string
+	ProviderRequestID     string
+	ProviderRequestDigest string
+	WorktreePath          string
+	WorktreeDigest        string
+	State                 DCPV2ModelRuntimeState
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type DCPV2ModelTerminalStatus string
+
+const (
+	DCPV2ModelTerminalSucceeded DCPV2ModelTerminalStatus = "succeeded"
+	DCPV2ModelTerminalFailed    DCPV2ModelTerminalStatus = "failed"
+)
+
+// DCPV2ModelTerminalReceipt is immutable role output bound to one runtime.
+// OutputJSON is bounded provider-neutral structured output. WorktreePath is
+// daemon-local durable authority and is never projected into public evidence.
+type DCPV2ModelTerminalReceipt struct {
+	ReceiptID      string
+	ActionID       string
+	CommandID      string
+	TaskID         string
+	RevisionID     string
+	RuntimeID      string
+	LaunchFence    string
+	Status         DCPV2ModelTerminalStatus
+	ResultDigest   string
+	ErrorCode      string
+	OutputJSON     string
+	OutputDigest   string
+	HeadRef        string
+	HeadSHA        string
+	TreeSHA        string
+	BaseSHA        string
+	WorktreePath   string
+	WorktreeDigest string
+	CreatedAt      time.Time
+}
+
+// DCPV2Stage6WorkerAdoption is the immutable consumption record for the one
+// frozen native Worker result. It is not a reusable reconciliation protocol.
+type DCPV2Stage6WorkerAdoption struct {
+	AdoptionID           string
+	TaskID               string
+	RevisionID           string
+	CommandID            string
+	ActionID             string
+	RuntimeID            string
+	NativeActionID       string
+	NativeSequence       int64
+	LegacyEvidenceDigest string
+	CommitSHA            string
+	TreeSHA              string
+	Branch               string
+	WorktreeDigest       string
+	OutputDigest         string
+	ReceiptID            string
+	ConsumedAt           time.Time
+}
+
+type DCPV2RuntimeObservation struct {
+	ActionID   string
+	RuntimeID  string
+	Alive      bool
+	ObservedAt time.Time
+}
+
 type DCPV2Admission struct {
 	Sequence           int64
 	AdmissionID        string
@@ -397,6 +488,10 @@ type DCPV2LifecycleProjection struct {
 }
 
 func ProjectDCPV2Lifecycle(task DCPV2Task, command *DCPV2Command, action *DCPV2Action, admission *DCPV2Admission, result *DCPV2Result) DCPV2LifecycleProjection {
+	return ProjectDCPV2LifecycleWithRuntime(task, command, action, nil, admission, result)
+}
+
+func ProjectDCPV2LifecycleWithRuntime(task DCPV2Task, command *DCPV2Command, action *DCPV2Action, runtime *DCPV2RuntimeObservation, admission *DCPV2Admission, result *DCPV2Result) DCPV2LifecycleProjection {
 	p := DCPV2LifecycleProjection{
 		Phase: task.State, RevisionID: task.CurrentRevisionID, HumanGateQuestion: task.HumanGateQuestion,
 		HumanGate: task.State == DCPV2TaskHumanGate, Error: task.State == DCPV2TaskFailed,
@@ -413,9 +508,14 @@ func ProjectDCPV2Lifecycle(task DCPV2Task, command *DCPV2Command, action *DCPV2A
 		// A launch fence is not a process. The presentation becomes model-active
 		// only after the exact runtime identity is durably bound. A queued or
 		// launching Action still keeps the deterministic workflow active.
-		p.ModelActive = action.Status == DCPV2ActionRunning && action.RuntimeID != ""
+		matchingRuntime := runtime != nil && runtime.ActionID == action.ActionID && runtime.RuntimeID == action.RuntimeID && runtime.Alive
+		p.ModelActive = action.Status == DCPV2ActionRunning && action.RuntimeID != "" && matchingRuntime
 		p.WorkflowActive = p.WorkflowActive || action.Status == DCPV2ActionQueued ||
 			action.Status == DCPV2ActionLaunching || p.ModelActive
+		if (action.Status == DCPV2ActionRunning && !matchingRuntime) ||
+			(runtime != nil && runtime.Alive && (action.Status != DCPV2ActionRunning || runtime.ActionID != action.ActionID || runtime.RuntimeID != action.RuntimeID)) {
+			p.Error, p.Detail = true, "DCP model runtime identity is inconsistent"
+		}
 	}
 	if admission != nil && admission.TaskID == task.TaskID && admission.RevisionID == task.CurrentRevisionID {
 		p.AdmissionID = admission.AdmissionID
@@ -424,7 +524,7 @@ func ProjectDCPV2Lifecycle(task DCPV2Task, command *DCPV2Command, action *DCPV2A
 	if result != nil && result.TaskID == task.TaskID && result.RevisionID == task.CurrentRevisionID {
 		p.ResultID = result.ResultID
 	}
-	if p.HumanGate || p.Error || task.State == DCPV2TaskMerged || task.State == DCPV2TaskDeployed {
+	if p.HumanGate || task.State == DCPV2TaskFailed || task.State == DCPV2TaskMerged || task.State == DCPV2TaskDeployed {
 		p.WorkflowActive, p.ModelActive = false, false
 	}
 	switch task.State {

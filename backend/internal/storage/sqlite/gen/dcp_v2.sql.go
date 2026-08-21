@@ -143,12 +143,17 @@ func (q *Queries) FenceDCPV2CommandEffect(ctx context.Context, arg FenceDCPV2Com
 }
 
 const finishDCPV2Action = `-- name: FinishDCPV2Action :execrows
-UPDATE dcp_v2_action SET status = ?, slot = 0, result_digest = ?, error_code = ?, updated_at = ?
-WHERE action_id = ? AND status IN ('launching','running') AND slot = ? AND launch_fence = ?
+UPDATE dcp_v2_action SET
+    status = ?1, slot = 0, runtime_id = ?2,
+    result_digest = ?3, error_code = ?4, updated_at = ?5
+WHERE action_id = ?6 AND status IN ('launching','running')
+  AND slot = ?7 AND launch_fence = ?8
+  AND runtime_id IN ('', ?2)
 `
 
 type FinishDCPV2ActionParams struct {
 	Status       string
+	RuntimeID    string
 	ResultDigest string
 	ErrorCode    string
 	UpdatedAt    time.Time
@@ -160,6 +165,7 @@ type FinishDCPV2ActionParams struct {
 func (q *Queries) FinishDCPV2Action(ctx context.Context, arg FinishDCPV2ActionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, finishDCPV2Action,
 		arg.Status,
+		arg.RuntimeID,
 		arg.ResultDigest,
 		arg.ErrorCode,
 		arg.UpdatedAt,
@@ -234,6 +240,33 @@ func (q *Queries) FinishDCPV2Command(ctx context.Context, arg FinishDCPV2Command
 		arg.LeaseOwner,
 		arg.LeaseEpoch,
 		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const finishDCPV2ModelRuntime = `-- name: FinishDCPV2ModelRuntime :execrows
+UPDATE dcp_v2_model_runtime SET state = ?, updated_at = ?
+WHERE runtime_id = ? AND action_id = ? AND launch_fence = ? AND state = 'running'
+`
+
+type FinishDCPV2ModelRuntimeParams struct {
+	State       string
+	UpdatedAt   time.Time
+	RuntimeID   string
+	ActionID    string
+	LaunchFence string
+}
+
+func (q *Queries) FinishDCPV2ModelRuntime(ctx context.Context, arg FinishDCPV2ModelRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishDCPV2ModelRuntime,
+		arg.State,
+		arg.UpdatedAt,
+		arg.RuntimeID,
+		arg.ActionID,
+		arg.LaunchFence,
 	)
 	if err != nil {
 		return 0, err
@@ -425,6 +458,120 @@ func (q *Queries) GetDCPV2ExternalEvent(ctx context.Context, deliveryID string) 
 	return i, err
 }
 
+const getDCPV2ModelRuntime = `-- name: GetDCPV2ModelRuntime :one
+SELECT runtime_id, action_id, command_id, task_id, revision_id, slot, launch_fence, provider_request_id, provider_request_digest, worktree_path, worktree_digest, state, created_at, updated_at FROM dcp_v2_model_runtime WHERE runtime_id = ?
+`
+
+func (q *Queries) GetDCPV2ModelRuntime(ctx context.Context, runtimeID string) (DcpV2ModelRuntime, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2ModelRuntime, runtimeID)
+	var i DcpV2ModelRuntime
+	err := row.Scan(
+		&i.RuntimeID,
+		&i.ActionID,
+		&i.CommandID,
+		&i.TaskID,
+		&i.RevisionID,
+		&i.Slot,
+		&i.LaunchFence,
+		&i.ProviderRequestID,
+		&i.ProviderRequestDigest,
+		&i.WorktreePath,
+		&i.WorktreeDigest,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getDCPV2ModelRuntimeByAction = `-- name: GetDCPV2ModelRuntimeByAction :one
+SELECT runtime_id, action_id, command_id, task_id, revision_id, slot, launch_fence, provider_request_id, provider_request_digest, worktree_path, worktree_digest, state, created_at, updated_at FROM dcp_v2_model_runtime WHERE action_id = ?
+`
+
+func (q *Queries) GetDCPV2ModelRuntimeByAction(ctx context.Context, actionID string) (DcpV2ModelRuntime, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2ModelRuntimeByAction, actionID)
+	var i DcpV2ModelRuntime
+	err := row.Scan(
+		&i.RuntimeID,
+		&i.ActionID,
+		&i.CommandID,
+		&i.TaskID,
+		&i.RevisionID,
+		&i.Slot,
+		&i.LaunchFence,
+		&i.ProviderRequestID,
+		&i.ProviderRequestDigest,
+		&i.WorktreePath,
+		&i.WorktreeDigest,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getDCPV2ModelTerminalReceipt = `-- name: GetDCPV2ModelTerminalReceipt :one
+SELECT receipt_id, action_id, command_id, task_id, revision_id, runtime_id, launch_fence, status, result_digest, error_code, output_json, output_digest, head_ref, head_sha, tree_sha, base_sha, worktree_path, worktree_digest, created_at FROM dcp_v2_model_terminal_receipt WHERE receipt_id = ?
+`
+
+func (q *Queries) GetDCPV2ModelTerminalReceipt(ctx context.Context, receiptID string) (DcpV2ModelTerminalReceipt, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2ModelTerminalReceipt, receiptID)
+	var i DcpV2ModelTerminalReceipt
+	err := row.Scan(
+		&i.ReceiptID,
+		&i.ActionID,
+		&i.CommandID,
+		&i.TaskID,
+		&i.RevisionID,
+		&i.RuntimeID,
+		&i.LaunchFence,
+		&i.Status,
+		&i.ResultDigest,
+		&i.ErrorCode,
+		&i.OutputJson,
+		&i.OutputDigest,
+		&i.HeadRef,
+		&i.HeadSha,
+		&i.TreeSha,
+		&i.BaseSha,
+		&i.WorktreePath,
+		&i.WorktreeDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getDCPV2ModelTerminalReceiptByAction = `-- name: GetDCPV2ModelTerminalReceiptByAction :one
+SELECT receipt_id, action_id, command_id, task_id, revision_id, runtime_id, launch_fence, status, result_digest, error_code, output_json, output_digest, head_ref, head_sha, tree_sha, base_sha, worktree_path, worktree_digest, created_at FROM dcp_v2_model_terminal_receipt WHERE action_id = ?
+`
+
+func (q *Queries) GetDCPV2ModelTerminalReceiptByAction(ctx context.Context, actionID string) (DcpV2ModelTerminalReceipt, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2ModelTerminalReceiptByAction, actionID)
+	var i DcpV2ModelTerminalReceipt
+	err := row.Scan(
+		&i.ReceiptID,
+		&i.ActionID,
+		&i.CommandID,
+		&i.TaskID,
+		&i.RevisionID,
+		&i.RuntimeID,
+		&i.LaunchFence,
+		&i.Status,
+		&i.ResultDigest,
+		&i.ErrorCode,
+		&i.OutputJson,
+		&i.OutputDigest,
+		&i.HeadRef,
+		&i.HeadSha,
+		&i.TreeSha,
+		&i.BaseSha,
+		&i.WorktreePath,
+		&i.WorktreeDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getDCPV2Result = `-- name: GetDCPV2Result :one
 SELECT result_id, task_id, revision_id, admission_id, command_id, kind, provider, proof_id, run_id, actor, manifest_digest, proof_digest, merge_sha, artifact_digest, deployed_sha, environment, service, probe_digest, verified, error_code, created_at FROM dcp_v2_result WHERE result_id = ?
 `
@@ -513,6 +660,34 @@ func (q *Queries) GetDCPV2Stage5Activation(ctx context.Context, activationID str
 		&i.Service,
 		&i.Adapter,
 		&i.ActivatedAt,
+	)
+	return i, err
+}
+
+const getDCPV2Stage6WorkerAdoption = `-- name: GetDCPV2Stage6WorkerAdoption :one
+SELECT adoption_id, task_id, revision_id, command_id, action_id, runtime_id, native_action_id, native_sequence, legacy_evidence_digest, commit_sha, tree_sha, branch, worktree_digest, output_digest, receipt_id, consumed_at FROM dcp_v2_stage6_worker_adoption_v1 WHERE adoption_id = ?
+`
+
+func (q *Queries) GetDCPV2Stage6WorkerAdoption(ctx context.Context, adoptionID string) (DcpV2Stage6WorkerAdoptionV1, error) {
+	row := q.db.QueryRowContext(ctx, getDCPV2Stage6WorkerAdoption, adoptionID)
+	var i DcpV2Stage6WorkerAdoptionV1
+	err := row.Scan(
+		&i.AdoptionID,
+		&i.TaskID,
+		&i.RevisionID,
+		&i.CommandID,
+		&i.ActionID,
+		&i.RuntimeID,
+		&i.NativeActionID,
+		&i.NativeSequence,
+		&i.LegacyEvidenceDigest,
+		&i.CommitSha,
+		&i.TreeSha,
+		&i.Branch,
+		&i.WorktreeDigest,
+		&i.OutputDigest,
+		&i.ReceiptID,
+		&i.ConsumedAt,
 	)
 	return i, err
 }
@@ -831,6 +1006,108 @@ func (q *Queries) InsertDCPV2Incident(ctx context.Context, arg InsertDCPV2Incide
 	return err
 }
 
+const insertDCPV2ModelRuntime = `-- name: InsertDCPV2ModelRuntime :exec
+INSERT INTO dcp_v2_model_runtime (
+    runtime_id, action_id, command_id, task_id, revision_id, slot,
+    launch_fence, provider_request_id, provider_request_digest, worktree_path,
+    worktree_digest, state,
+    created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDCPV2ModelRuntimeParams struct {
+	RuntimeID             string
+	ActionID              string
+	CommandID             string
+	TaskID                string
+	RevisionID            string
+	Slot                  int64
+	LaunchFence           string
+	ProviderRequestID     string
+	ProviderRequestDigest string
+	WorktreePath          string
+	WorktreeDigest        string
+	State                 string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+func (q *Queries) InsertDCPV2ModelRuntime(ctx context.Context, arg InsertDCPV2ModelRuntimeParams) error {
+	_, err := q.db.ExecContext(ctx, insertDCPV2ModelRuntime,
+		arg.RuntimeID,
+		arg.ActionID,
+		arg.CommandID,
+		arg.TaskID,
+		arg.RevisionID,
+		arg.Slot,
+		arg.LaunchFence,
+		arg.ProviderRequestID,
+		arg.ProviderRequestDigest,
+		arg.WorktreePath,
+		arg.WorktreeDigest,
+		arg.State,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const insertDCPV2ModelTerminalReceipt = `-- name: InsertDCPV2ModelTerminalReceipt :exec
+INSERT INTO dcp_v2_model_terminal_receipt (
+    receipt_id, action_id, command_id, task_id, revision_id, runtime_id,
+    launch_fence, status, result_digest, error_code, output_json,
+    output_digest, head_ref, head_sha, tree_sha, base_sha, worktree_path, worktree_digest,
+    created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDCPV2ModelTerminalReceiptParams struct {
+	ReceiptID      string
+	ActionID       string
+	CommandID      string
+	TaskID         string
+	RevisionID     string
+	RuntimeID      string
+	LaunchFence    string
+	Status         string
+	ResultDigest   string
+	ErrorCode      string
+	OutputJson     string
+	OutputDigest   string
+	HeadRef        string
+	HeadSha        string
+	TreeSha        string
+	BaseSha        string
+	WorktreePath   string
+	WorktreeDigest string
+	CreatedAt      time.Time
+}
+
+func (q *Queries) InsertDCPV2ModelTerminalReceipt(ctx context.Context, arg InsertDCPV2ModelTerminalReceiptParams) error {
+	_, err := q.db.ExecContext(ctx, insertDCPV2ModelTerminalReceipt,
+		arg.ReceiptID,
+		arg.ActionID,
+		arg.CommandID,
+		arg.TaskID,
+		arg.RevisionID,
+		arg.RuntimeID,
+		arg.LaunchFence,
+		arg.Status,
+		arg.ResultDigest,
+		arg.ErrorCode,
+		arg.OutputJson,
+		arg.OutputDigest,
+		arg.HeadRef,
+		arg.HeadSha,
+		arg.TreeSha,
+		arg.BaseSha,
+		arg.WorktreePath,
+		arg.WorktreeDigest,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const insertDCPV2Result = `-- name: InsertDCPV2Result :exec
 INSERT INTO dcp_v2_result (
     result_id, task_id, revision_id, admission_id, command_id, kind,
@@ -993,6 +1270,55 @@ func (q *Queries) InsertDCPV2Stage5Activation(ctx context.Context, arg InsertDCP
 		arg.Service,
 		arg.Adapter,
 		arg.ActivatedAt,
+	)
+	return err
+}
+
+const insertDCPV2Stage6WorkerAdoption = `-- name: InsertDCPV2Stage6WorkerAdoption :exec
+INSERT INTO dcp_v2_stage6_worker_adoption_v1 (
+    adoption_id, task_id, revision_id, command_id, action_id, runtime_id,
+    native_action_id, native_sequence, legacy_evidence_digest, commit_sha,
+    tree_sha, branch, worktree_digest, output_digest, receipt_id, consumed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertDCPV2Stage6WorkerAdoptionParams struct {
+	AdoptionID           string
+	TaskID               string
+	RevisionID           string
+	CommandID            string
+	ActionID             string
+	RuntimeID            string
+	NativeActionID       string
+	NativeSequence       int64
+	LegacyEvidenceDigest string
+	CommitSha            string
+	TreeSha              string
+	Branch               string
+	WorktreeDigest       string
+	OutputDigest         string
+	ReceiptID            string
+	ConsumedAt           time.Time
+}
+
+func (q *Queries) InsertDCPV2Stage6WorkerAdoption(ctx context.Context, arg InsertDCPV2Stage6WorkerAdoptionParams) error {
+	_, err := q.db.ExecContext(ctx, insertDCPV2Stage6WorkerAdoption,
+		arg.AdoptionID,
+		arg.TaskID,
+		arg.RevisionID,
+		arg.CommandID,
+		arg.ActionID,
+		arg.RuntimeID,
+		arg.NativeActionID,
+		arg.NativeSequence,
+		arg.LegacyEvidenceDigest,
+		arg.CommitSha,
+		arg.TreeSha,
+		arg.Branch,
+		arg.WorktreeDigest,
+		arg.OutputDigest,
+		arg.ReceiptID,
+		arg.ConsumedAt,
 	)
 	return err
 }
@@ -1174,6 +1500,48 @@ func (q *Queries) ListActiveDCPV2Actions(ctx context.Context) ([]DcpV2Action, er
 			&i.RuntimeID,
 			&i.ResultDigest,
 			&i.ErrorCode,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveDCPV2ModelRuntimes = `-- name: ListActiveDCPV2ModelRuntimes :many
+SELECT runtime_id, action_id, command_id, task_id, revision_id, slot, launch_fence, provider_request_id, provider_request_digest, worktree_path, worktree_digest, state, created_at, updated_at FROM dcp_v2_model_runtime WHERE state IN ('reserved','running') ORDER BY slot
+`
+
+func (q *Queries) ListActiveDCPV2ModelRuntimes(ctx context.Context) ([]DcpV2ModelRuntime, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveDCPV2ModelRuntimes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DcpV2ModelRuntime{}
+	for rows.Next() {
+		var i DcpV2ModelRuntime
+		if err := rows.Scan(
+			&i.RuntimeID,
+			&i.ActionID,
+			&i.CommandID,
+			&i.TaskID,
+			&i.RevisionID,
+			&i.Slot,
+			&i.LaunchFence,
+			&i.ProviderRequestID,
+			&i.ProviderRequestDigest,
+			&i.WorktreePath,
+			&i.WorktreeDigest,
+			&i.State,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1891,6 +2259,36 @@ func (q *Queries) StartDCPV2Action(ctx context.Context, arg StartDCPV2ActionPara
 		arg.UpdatedAt,
 		arg.ActionID,
 		arg.Slot,
+		arg.LaunchFence,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const startDCPV2ModelRuntime = `-- name: StartDCPV2ModelRuntime :execrows
+UPDATE dcp_v2_model_runtime SET
+    provider_request_id = ?, provider_request_digest = ?, state = 'running', updated_at = ?
+WHERE runtime_id = ? AND action_id = ? AND launch_fence = ? AND state = 'reserved'
+`
+
+type StartDCPV2ModelRuntimeParams struct {
+	ProviderRequestID     string
+	ProviderRequestDigest string
+	UpdatedAt             time.Time
+	RuntimeID             string
+	ActionID              string
+	LaunchFence           string
+}
+
+func (q *Queries) StartDCPV2ModelRuntime(ctx context.Context, arg StartDCPV2ModelRuntimeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, startDCPV2ModelRuntime,
+		arg.ProviderRequestID,
+		arg.ProviderRequestDigest,
+		arg.UpdatedAt,
+		arg.RuntimeID,
+		arg.ActionID,
 		arg.LaunchFence,
 	)
 	if err != nil {

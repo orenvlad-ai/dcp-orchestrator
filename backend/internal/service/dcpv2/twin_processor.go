@@ -38,12 +38,13 @@ func (p *twinProcessor) Process(ctx context.Context, command domain.DCPV2Command
 		return Outcome{}, err
 	}
 	switch command.Kind {
-	case domain.DCPV2CommandWorkerExecute, domain.DCPV2CommandRepairExecute:
-		return p.completeWorker(ctx, task, revision, command, action)
+	case domain.DCPV2CommandPublication:
+		return p.publishWorkerOutput(ctx, task, revision, command, fence)
+	case domain.DCPV2CommandWorkerExecute, domain.DCPV2CommandRepairExecute,
+		domain.DCPV2CommandReviewExecute, domain.DCPV2CommandArbiterExecute:
+		return Outcome{}, errors.New("DCP v2 model Commands complete only through a direct terminal receipt")
 	case domain.DCPV2CommandChecksObserve:
 		return p.completeChecks(ctx, task, revision, command)
-	case domain.DCPV2CommandReviewExecute:
-		return p.completeReview(ctx, task, revision, command, action)
 	case domain.DCPV2CommandAdmissionEnqueue:
 		return p.enqueueAdmission(ctx, task, revision, command)
 	case domain.DCPV2CommandReadmission:
@@ -61,6 +62,32 @@ func (p *twinProcessor) Process(ctx context.Context, command domain.DCPV2Command
 	}
 }
 
+func (p *twinProcessor) ProcessModelTerminal(ctx context.Context, command domain.DCPV2Command, action domain.DCPV2Action, receipt domain.DCPV2ModelTerminalReceipt) (Outcome, error) {
+	task, err := p.store.GetDCPV2Task(ctx, command.TaskID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	revision, err := p.currentRevision(ctx, task)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if receipt.ActionID != action.ActionID || receipt.CommandID != command.CommandID || receipt.TaskID != task.TaskID ||
+		receipt.RevisionID != revision.RevisionID || receipt.RuntimeID != action.RuntimeID || receipt.LaunchFence != action.LaunchFence ||
+		receipt.Status != domain.DCPV2ModelTerminalSucceeded || receipt.ResultDigest == "" {
+		return Outcome{}, errors.New("DCP v2 direct terminal identity drifted")
+	}
+	switch command.Kind {
+	case domain.DCPV2CommandWorkerExecute, domain.DCPV2CommandRepairExecute:
+		return p.completeWorkerReceipt(task, revision, command, receipt)
+	case domain.DCPV2CommandReviewExecute:
+		return p.completeReviewReceipt(task, revision, command, receipt)
+	case domain.DCPV2CommandArbiterExecute:
+		return p.completeArbiterReceipt(task, revision, command, receipt)
+	default:
+		return Outcome{}, errors.New("DCP v2 terminal receipt does not bind a model Command")
+	}
+}
+
 func (p *twinProcessor) ReconcileEffect(ctx context.Context, command domain.DCPV2Command, event *domain.DCPV2ExternalEvent) (Outcome, bool, error) {
 	task, err := p.store.GetDCPV2Task(ctx, command.TaskID)
 	if err != nil || task.CurrentRevisionID != command.RevisionID {
@@ -71,6 +98,16 @@ func (p *twinProcessor) ReconcileEffect(ctx context.Context, command domain.DCPV
 		return Outcome{}, false, err
 	}
 	switch command.Kind {
+	case domain.DCPV2CommandPublication:
+		request, err := publicationRequestFor(task, revision, command)
+		if err != nil {
+			return Outcome{}, false, err
+		}
+		receipt, found, err := p.adapter.ReconcilePublication(ctx, request)
+		if err != nil || !found {
+			return Outcome{}, false, err
+		}
+		return p.publicationOutcome(task, revision, command, receipt), true, nil
 	case domain.DCPV2CommandReleaseDispatch:
 		if event == nil || event.Kind != "github/release.completed" || event.TaskID != task.TaskID ||
 			event.RevisionID != revision.RevisionID {
@@ -103,11 +140,11 @@ func (p *twinProcessor) ReconcileEffect(ctx context.Context, command domain.DCPV
 		effect := ports.DCPV2RepositoryEffect{ExternalID: command.EffectFence, OldHeadSHA: strings.ToLower(revision.HeadSHA),
 			NewHeadSHA: strings.ToLower(newHead), BaseSHA: strings.ToLower(payload.CurrentMainSHA)}
 		effect.EvidenceDigest = digestCanonical(effect)
-		native, found, getErr := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
-		if getErr != nil || !found {
-			return Outcome{}, false, errors.Join(getErr, errors.New("DCP v2 readmission native worktree is unavailable"))
+		worktree, getErr := p.worktreeForRevision(ctx, task.TaskID, revision.RevisionID)
+		if getErr != nil {
+			return Outcome{}, false, getErr
 		}
-		if _, err := p.adapter.PublishReadmission(ctx, revision, effect, native.WorktreePath); err != nil {
+		if _, err := p.adapter.PublishReadmission(ctx, revision, effect, worktree); err != nil {
 			return Outcome{}, false, err
 		}
 		return p.readmissionOutcome(task, revision, command, effect), true, nil
@@ -116,20 +153,52 @@ func (p *twinProcessor) ReconcileEffect(ctx context.Context, command domain.DCPV
 	}
 }
 
-func (p *twinProcessor) completeWorker(ctx context.Context, task domain.DCPV2Task, current domain.DCPV2Revision, command domain.DCPV2Command, action *domain.DCPV2Action) (Outcome, error) {
-	if action == nil {
-		return Outcome{}, errors.New("DCP v2 worker completion lacks an Action")
+type publicationPayload struct {
+	Branch, CommitSHA, TreeSHA, BaseSHA, ExpectedOldHead, Worktree, WorktreeDigest string
+}
+
+func publicationRequestFor(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command) (ports.DCPV2PublicationRequest, error) {
+	var payload publicationPayload
+	if command.Kind != domain.DCPV2CommandPublication || json.Unmarshal([]byte(command.PayloadJSON), &payload) != nil ||
+		payload.Branch != revision.HeadRef || payload.CommitSHA != revision.HeadSHA || payload.BaseSHA != revision.BaseSHA ||
+		!validV2SHA(payload.TreeSHA) || payload.Worktree == "" || len(payload.WorktreeDigest) != 64 {
+		return ports.DCPV2PublicationRequest{}, errors.New("DCP v2 publication payload identity drifted")
 	}
-	legacy, found, err := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
-	if err != nil || !found || legacy.SourceBranch == "" || legacy.SessionID == "" {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 worker native identity is unavailable"))
-	}
-	facts, err := p.adapter.ObserveBranch(ctx, legacy.SourceBranch)
+	return ports.DCPV2PublicationRequest{TaskID: task.TaskID, RevisionID: revision.RevisionID, CommandID: command.CommandID,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: payload.BaseSHA, Branch: payload.Branch,
+		CommitSHA: payload.CommitSHA, TreeSHA: payload.TreeSHA, Worktree: payload.Worktree, WorktreeDigest: payload.WorktreeDigest,
+		ExpectedOldHead: payload.ExpectedOldHead, EffectFence: command.EffectFence}, nil
+}
+
+func (p *twinProcessor) publishWorkerOutput(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, fence func(string) error) (Outcome, error) {
+	request, err := publicationRequestFor(task, revision, command)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if action.ResultDigest != facts.EvidenceHash || facts.BaseSHA != facts.MainSHA {
-		return Outcome{}, errors.New("DCP v2 worker result or exact main binding drifted")
+	request.EffectFence = "publication:" + command.PayloadDigest
+	if err := fence(request.EffectFence); err != nil {
+		return Outcome{}, err
+	}
+	receipt, err := p.adapter.Publish(ctx, request)
+	if err != nil {
+		return Outcome{}, errors.Join(ErrEffectReconciliationPending, err)
+	}
+	return p.publicationOutcome(task, revision, command, receipt), nil
+}
+
+func (p *twinProcessor) publicationOutcome(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, receipt ports.DCPV2PublicationReceipt) Outcome {
+	now := p.now().UTC()
+	next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandChecksObserve,
+		task.StateRevision+1, map[string]any{"head": receipt.CommitSHA, "pr": receipt.PRNumber}, receipt.EvidenceDigest, now)
+	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskChecksWaiting,
+		CommandResultDigest: receipt.EvidenceDigest, NextCommand: &next}
+}
+
+func (p *twinProcessor) completeWorkerReceipt(task domain.DCPV2Task, current domain.DCPV2Revision, command domain.DCPV2Command, receipt domain.DCPV2ModelTerminalReceipt) (Outcome, error) {
+	if !validV2SHA(receipt.HeadSHA) || !validV2SHA(receipt.TreeSHA) || !validV2SHA(receipt.BaseSHA) ||
+		receipt.HeadRef == "" || receipt.HeadRef == task.BaseRef || receipt.WorktreePath == "" ||
+		len(receipt.WorktreeDigest) != 64 || receipt.BaseSHA != current.HeadSHA {
+		return Outcome{}, errors.New("DCP v2 direct Worker repository receipt drifted")
 	}
 	now := p.now().UTC()
 	kind := domain.DCPV2RevisionWorker
@@ -137,15 +206,21 @@ func (p *twinProcessor) completeWorker(ctx context.Context, task domain.DCPV2Tas
 		kind = domain.DCPV2RevisionRepair
 	}
 	nextRevision := domain.DCPV2Revision{
-		RevisionID: stableID(task.TaskID, "revision", strconv.FormatInt(current.Sequence+1, 10), facts.HeadSHA),
+		RevisionID: stableID(task.TaskID, "revision", strconv.FormatInt(current.Sequence+1, 10), receipt.HeadSHA),
 		TaskID:     task.TaskID, Sequence: current.Sequence + 1, Kind: kind, Repository: TwinRepository,
-		BaseRef: TwinBase, BaseSHA: facts.BaseSHA, HeadRef: facts.HeadRef, HeadSHA: facts.HeadSHA,
-		PredecessorRevisionID: current.RevisionID, CauseCommandID: command.CommandID, PRNumber: facts.PRNumber,
-		EvidenceDigest: facts.EvidenceHash, CreatedAt: now,
+		BaseRef: TwinBase, BaseSHA: receipt.BaseSHA, HeadRef: receipt.HeadRef, HeadSHA: receipt.HeadSHA,
+		PredecessorRevisionID: current.RevisionID, CauseCommandID: command.CommandID,
+		EvidenceDigest: receipt.OutputDigest, CreatedAt: now,
 	}
-	next := newCommand(task.TaskID, nextRevision.RevisionID, domain.DCPV2CommandChecksObserve,
-		task.StateRevision+1, map[string]any{"head": facts.HeadSHA, "pr": facts.PRNumber, "check": facts.CheckRunID}, facts.EvidenceHash, now)
-	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: action.ResultDigest,
+	expectedOldHead := ""
+	if command.Kind == domain.DCPV2CommandRepairExecute {
+		expectedOldHead = current.HeadSHA
+	}
+	payload := map[string]any{"branch": receipt.HeadRef, "commitSha": receipt.HeadSHA, "treeSha": receipt.TreeSHA,
+		"baseSha": receipt.BaseSHA, "expectedOldHead": expectedOldHead, "worktree": receipt.WorktreePath, "worktreeDigest": receipt.WorktreeDigest}
+	next := newCommand(task.TaskID, nextRevision.RevisionID, domain.DCPV2CommandPublication,
+		task.StateRevision+1, payload, receipt.OutputDigest, now)
+	return Outcome{PauseDrain: true, NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: receipt.ResultDigest,
 		NextRevision: &nextRevision, NextCommand: &next}, nil
 }
 
@@ -166,52 +241,81 @@ func (p *twinProcessor) completeChecks(ctx context.Context, task domain.DCPV2Tas
 		ExternalEventDeliveryID: event.DeliveryID, NextCommand: &next, NextAction: &action}, nil
 }
 
-func (p *twinProcessor) completeReview(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, action *domain.DCPV2Action) (Outcome, error) {
-	if action == nil {
-		return Outcome{}, errors.New("DCP v2 review completion lacks an Action")
+type directReviewResult struct {
+	Verdict  string   `json:"verdict"`
+	HeadSHA  string   `json:"headSha"`
+	Findings []string `json:"findings"`
+}
+
+func validDirectReviewResult(result directReviewResult) bool {
+	if result.Verdict == "approved" {
+		return result.Findings != nil && len(result.Findings) == 0
 	}
-	legacy, found, err := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
-	if err != nil || !found || legacy.ReviewRunID == "" {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 exact review run is unavailable"))
+	if result.Verdict != "changes_requested" || len(result.Findings) == 0 || len(result.Findings) > 20 {
+		return false
 	}
-	run, found, err := p.store.GetReviewRun(ctx, legacy.ReviewRunID)
-	if err != nil || !found || run.TargetSHA != revision.HeadSHA || action.ResultDigest != reviewActionDigest(run) {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 exact review result drifted"))
+	for _, finding := range result.Findings {
+		if strings.TrimSpace(finding) == "" || strings.ContainsAny(finding, "\x00") || len(finding) > 1000 {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *twinProcessor) completeReviewReceipt(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, receipt domain.DCPV2ModelTerminalReceipt) (Outcome, error) {
+	var result directReviewResult
+	if decodeExactDirectJSON([]byte(receipt.OutputJSON), &result) != nil || result.HeadSHA != revision.HeadSHA || !validDirectReviewResult(result) {
+		return Outcome{}, errors.New("DCP v2 exact direct review result drifted")
 	}
 	now := p.now().UTC()
-	switch run.Verdict {
-	case domain.VerdictApproved:
+	switch result.Verdict {
+	case "approved":
 		next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandAdmissionEnqueue,
-			task.StateRevision+1, map[string]any{"head": revision.HeadSHA, "reviewRunId": run.ID}, action.ResultDigest, now)
-		return Outcome{NextTaskState: domain.DCPV2TaskAdmissionWaiting, CommandResultDigest: action.ResultDigest, NextCommand: &next}, nil
-	case domain.VerdictChangesRequested:
+			task.StateRevision+1, map[string]any{"head": revision.HeadSHA, "reviewReceiptId": receipt.ReceiptID}, receipt.OutputDigest, now)
+		return Outcome{NextTaskState: domain.DCPV2TaskAdmissionWaiting, CommandResultDigest: receipt.ResultDigest, NextCommand: &next}, nil
+	case "changes_requested":
 		if task.RepairUsed != 0 {
 			return Outcome{}, errors.New("DCP v2 task-level repair allowance is exhausted")
 		}
 		next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandRepairExecute,
-			task.StateRevision+1, map[string]any{"head": revision.HeadSHA, "reviewRunId": run.ID}, action.ResultDigest, now)
-		repair := newAction(next, domain.DCPV2ActionRepair, action.ResultDigest, now)
+			task.StateRevision+1, map[string]any{"head": revision.HeadSHA, "reviewReceiptId": receipt.ReceiptID,
+				"findings": result.Findings}, receipt.OutputDigest, now)
+		repair := newAction(next, domain.DCPV2ActionRepair, receipt.OutputDigest, now)
 		return Outcome{NextTaskState: domain.DCPV2TaskRepairQueued, RepairIncrement: true,
-			CommandResultDigest: action.ResultDigest, NextCommand: &next, NextAction: &repair}, nil
+			CommandResultDigest: receipt.ResultDigest, NextCommand: &next, NextAction: &repair}, nil
 	default:
 		return Outcome{}, errors.New("DCP v2 reviewer returned a nonterminal verdict")
 	}
 }
 
-func (p *twinProcessor) enqueueAdmission(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command) (Outcome, error) {
-	legacy, found, err := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
-	if err != nil || !found || legacy.ReviewRunID == "" {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 admission lacks a native review projection"))
+func (p *twinProcessor) completeArbiterReceipt(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, receipt domain.DCPV2ModelTerminalReceipt) (Outcome, error) {
+	var result struct {
+		Decision string `json:"decision"`
 	}
-	run, found, err := p.store.GetReviewRun(ctx, legacy.ReviewRunID)
-	if err != nil || !found || run.Verdict != domain.VerdictApproved || run.TargetSHA != revision.HeadSHA {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 admission review binding drifted"))
+	if decodeExactDirectJSON([]byte(receipt.OutputJSON), &result) != nil || result.Decision != "admit" {
+		return Outcome{}, errors.New("DCP v2 Arbiter returned no admissible technical decision")
+	}
+	now := p.now().UTC()
+	next := newCommand(task.TaskID, revision.RevisionID, domain.DCPV2CommandAdmissionEnqueue,
+		task.StateRevision+1, map[string]string{"arbiterReceiptId": receipt.ReceiptID}, receipt.OutputDigest, now)
+	return Outcome{NextTaskState: domain.DCPV2TaskAdmissionWaiting, CommandResultDigest: receipt.ResultDigest, NextCommand: &next}, nil
+}
+
+func (p *twinProcessor) enqueueAdmission(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command) (Outcome, error) {
+	receipt, err := p.latestRoleReceipt(ctx, task.TaskID, revision.RevisionID, domain.DCPV2ActionReviewer)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var directReview directReviewResult
+	if decodeExactDirectJSON([]byte(receipt.OutputJSON), &directReview) != nil || directReview.Verdict != "approved" ||
+		directReview.HeadSHA != revision.HeadSHA || !validDirectReviewResult(directReview) {
+		return Outcome{}, errors.New("DCP v2 admission direct review binding drifted")
 	}
 	facts, err := p.adapter.ObserveChecks(ctx, revision.HeadRef)
 	if err != nil || facts.HeadSHA != revision.HeadSHA || facts.MainSHA != revision.BaseSHA {
 		return Outcome{}, errors.Join(err, errors.New("DCP v2 admission repository binding drifted"))
 	}
-	review, err := p.adapter.PublishExactReview(ctx, facts, run)
+	review, err := p.adapter.PublishExactDirectReview(ctx, facts, receipt)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -228,7 +332,7 @@ func (p *twinProcessor) enqueueAdmission(ctx context.Context, task domain.DCPV2T
 	admission := domain.DCPV2Admission{
 		Sequence: int64(len(existing) + 1), AdmissionID: stableID(task.TaskID, "admission", revision.RevisionID),
 		LineKey: TwinRepository + ":" + TwinBase, TaskID: task.TaskID, RevisionID: revision.RevisionID,
-		PRNumber: revision.PRNumber, HeadSHA: revision.HeadSHA, BaseSHA: revision.BaseSHA, MainSHA: facts.MainSHA,
+		PRNumber: facts.PRNumber, HeadSHA: revision.HeadSHA, BaseSHA: revision.BaseSHA, MainSHA: facts.MainSHA,
 		RequiredCheckID: strconv.FormatInt(facts.CheckRunID, 10),
 		ReviewID:        strconv.FormatInt(review.ReviewID, 10) + ":" + review.ReviewDigest,
 		Status:          domain.DCPV2AdmissionWaiting, CreatedAt: now, UpdatedAt: now,
@@ -308,21 +412,59 @@ func (p *twinProcessor) materializeReadmission(ctx context.Context, task domain.
 	if err != nil {
 		return Outcome{}, err
 	}
-	native, found, err := p.store.GetDCPReviewLabPolicyTaskByTaskID(ctx, task.TaskID)
-	if err != nil || !found || native.TaskID != task.TaskID || native.SessionID == "" || native.WorktreePath == "" {
-		return Outcome{}, errors.Join(err, errors.New("DCP v2 readmission native worktree identity drifted"))
+	worktree, err := p.worktreeForRevision(ctx, task.TaskID, revision.RevisionID)
+	if err != nil {
+		return Outcome{}, err
 	}
-	effect, err := p.adapter.MaterializeReadmission(ctx, task, revision, payload.CurrentMainSHA, native.WorktreePath)
+	effect, err := p.adapter.MaterializeReadmission(ctx, task, revision, payload.CurrentMainSHA, worktree)
 	if err != nil {
 		return Outcome{}, err
 	}
 	if err := fence(effect.ExternalID); err != nil {
 		return Outcome{}, err
 	}
-	if _, err := p.adapter.PublishReadmission(ctx, revision, effect, native.WorktreePath); err != nil {
+	if _, err := p.adapter.PublishReadmission(ctx, revision, effect, worktree); err != nil {
 		return Outcome{}, errors.Join(ErrEffectReconciliationPending, err)
 	}
 	return p.readmissionOutcome(task, revision, command, effect), nil
+}
+
+func (p *twinProcessor) latestRoleReceipt(ctx context.Context, taskID, revisionID string, role domain.DCPV2ActionRole) (domain.DCPV2ModelTerminalReceipt, error) {
+	actions, err := p.store.ListDCPV2Actions(ctx, taskID)
+	if err != nil {
+		return domain.DCPV2ModelTerminalReceipt{}, err
+	}
+	var matched []domain.DCPV2Action
+	for _, action := range actions {
+		if action.RevisionID == revisionID && action.Role == role && action.Status == domain.DCPV2ActionSucceeded {
+			matched = append(matched, action)
+		}
+	}
+	if len(matched) != 1 {
+		return domain.DCPV2ModelTerminalReceipt{}, errors.New("DCP v2 direct role receipt cardinality drifted")
+	}
+	return p.store.GetDCPV2ModelTerminalReceiptByAction(ctx, matched[0].ActionID)
+}
+
+func (p *twinProcessor) worktreeForRevision(ctx context.Context, taskID, revisionID string) (string, error) {
+	revisions, err := p.store.ListDCPV2Revisions(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	for _, revision := range revisions {
+		if revision.RevisionID != revisionID || revision.CauseCommandID == "" {
+			continue
+		}
+		action, err := p.store.GetDCPV2ActionByCommand(ctx, revision.CauseCommandID)
+		if err != nil {
+			return "", err
+		}
+		receipt, err := p.store.GetDCPV2ModelTerminalReceiptByAction(ctx, action.ActionID)
+		if err == nil && receipt.WorktreePath != "" {
+			return receipt.WorktreePath, nil
+		}
+	}
+	return "", errors.New("DCP v2 direct worktree receipt is unavailable")
 }
 
 func (p *twinProcessor) readmissionOutcome(task domain.DCPV2Task, revision domain.DCPV2Revision, command domain.DCPV2Command, effect ports.DCPV2RepositoryEffect) Outcome {
@@ -495,11 +637,6 @@ func newAction(command domain.DCPV2Command, role domain.DCPV2ActionRole, inputDi
 
 func stableID(parts ...string) string {
 	return "v2-" + digestCanonical(strings.Join(parts, "\x00"))[:40]
-}
-
-func reviewActionDigest(run domain.ReviewRun) string {
-	return digestCanonical(map[string]string{"id": run.ID, "head": run.TargetSHA, "status": string(run.Status),
-		"verdict": string(run.Verdict), "body": run.Body})
 }
 
 var _ ports.DCPV2Repository = (*TwinGitHubAdapter)(nil)

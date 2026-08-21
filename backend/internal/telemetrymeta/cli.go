@@ -30,6 +30,7 @@ var routineInternalCLICommands = []string{
 	"ao hooks",
 	"ao pty-host",
 	"ao dcp",
+	"ao dcp-v2-model",
 }
 
 // CLIActorType infers the actor for legacy loopback CLI telemetry requests that

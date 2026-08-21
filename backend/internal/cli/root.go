@@ -203,6 +203,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newReviewCommand(ctx))
 	root.AddCommand(newArbiterCommand(ctx))
 	root.AddCommand(newRecoveryCommand(ctx))
+	root.AddCommand(newDCPV2ModelCommand(ctx))
 	root.AddCommand(newDCPCommand(ctx))
 	root.AddCommand(newCompletionCommand())
 	root.AddCommand(newVersionCommand())
@@ -224,7 +225,7 @@ func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
 	// "ao completion"/"ao help" are shell setup and self-documentation.
 	// "ao pty-host" and "ao agent-process" are internal runtime processes.
 	// None reflect user activity.
-	case "ao daemon", "ao start", "ao completion", "ao help", "ao pty-host", "ao agent-process", "ao agent-process supervise", "ao review supervise", "ao arbiter", "ao arbiter supervise", "ao recovery", "ao recovery supervise", "ao dcp", "ao dcp submit", "ao dcp stage5-activate", "ao dcp stage6-recovery-preflight":
+	case "ao daemon", "ao start", "ao completion", "ao help", "ao pty-host", "ao agent-process", "ao agent-process supervise", "ao review supervise", "ao arbiter", "ao arbiter supervise", "ao recovery", "ao recovery supervise", "ao dcp-v2-model", "ao dcp-v2-model supervise", "ao dcp", "ao dcp submit", "ao dcp stage5-activate":
 		return false
 	default:
 		return true

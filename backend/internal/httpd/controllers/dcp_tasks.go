@@ -31,6 +31,7 @@ type dcpPolicyTaskService interface {
 type dcpV2TwinTaskService interface {
 	SubmitTwin(context.Context, dcpv2svc.TwinSubmitInput) (dcpv2svc.TwinSubmitResult, error)
 	Snapshot(context.Context, string) (dcpv2svc.TwinSnapshot, error)
+	WakeChecks(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
 	WakeRelease(context.Context, string, string, int64, string) (dcpv2svc.TwinSnapshot, error)
 }
 
@@ -44,10 +45,29 @@ func (c *DCPTasksController) Register(r chi.Router) {
 	r.Post("/dcp/tasks/policy", c.submitPolicy)
 	r.Post("/dcp/v2/tasks", c.submitV2Twin)
 	r.Get("/dcp/v2/tasks/{taskId}", c.getV2Twin)
+	r.Post("/dcp/v2/tasks/{taskId}/check-event", c.wakeV2TwinChecks)
 	r.Post("/dcp/v2/tasks/{taskId}/release-event", c.wakeV2TwinRelease)
 	r.Get("/dcp/tasks", c.list)
 	r.Get("/dcp/tasks/{taskId}", c.get)
 	r.Get("/dcp/tasks/{taskId}/events", c.events)
+}
+
+func (c *DCPTasksController) wakeV2TwinChecks(w http.ResponseWriter, r *http.Request) {
+	if c.V2 == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/dcp/v2/tasks/{taskId}/check-event")
+		return
+	}
+	var req WakeDCPV2TwinChecksRequest
+	if err := decodeDCPTaskRequest(r, &req); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Request body must be one JSON object with no unknown fields", nil)
+		return
+	}
+	result, err := c.V2.WakeChecks(r.Context(), chi.URLParam(r, "taskId"), req.DeliveryID, req.RunID, req.PayloadDigest)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, result)
 }
 
 func (c *DCPTasksController) submitV2Twin(w http.ResponseWriter, r *http.Request) {

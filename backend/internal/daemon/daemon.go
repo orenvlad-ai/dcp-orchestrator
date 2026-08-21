@@ -295,11 +295,12 @@ func Run() error {
 			return terminalMerger.Try(reconcileCtx, id)
 		})
 	}
-	dcpV2Twin, err := dcpv2svc.NewTwinService(store, dcpTaskSvc, dcpv2svc.NewTwinGitHubAdapter(), fmt.Sprintf("pid-%d", os.Getpid()), nil)
+	dcpV2Runner := dcpv2svc.NewProcessModelRunner(runtimeAdapter, codex.New(), cfg.DataDir, cfg.RunFilePath)
+	dcpV2Twin, err := dcpv2svc.NewTwinService(store, dcpV2Runner, dcpv2svc.NewTwinGitHubAdapter(), fmt.Sprintf("pid-%d", os.Getpid()), nil)
 	if err != nil {
 		return fmt.Errorf("wire DCP v2 integration twin: %w", err)
 	}
-	dcpTaskSvc.SetPolicyV2Bridge(dcpV2Twin)
+	sessionSvc.SetDCPV2Projector(dcpV2Twin)
 	lcStack.scmDone = startSCMObserver(ctx, store, lcStack.LCM, scmProvider, log)
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink})
 	if err := seedScratchProjectOnBoot(ctx, cfg, projectSvc); err != nil {
@@ -395,6 +396,7 @@ func Run() error {
 		SessionCapabilities: browserAuthority,
 		DCPTasks:            dcpTaskSvc,
 		DCPV2Twin:           dcpV2Twin,
+		DCPV2Direct:         dcpV2Twin,
 		DCPArbiter:          terminalMerger,
 	})
 	if err != nil {
