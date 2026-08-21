@@ -19,6 +19,7 @@ import (
 var (
 	ErrDrainLimit                         = errors.New("dcp v2 finite command drain limit reached")
 	ErrModelRuntimeReconciliationRequired = errors.New("dcp v2 active model runtime requires exact reconciliation")
+	ErrEffectReconciliationPending        = errors.New("dcp v2 fenced external effect awaits exact reconciliation")
 )
 
 type Store interface {
@@ -37,6 +38,14 @@ type Store interface {
 // makes ambiguous restart reconciliation fail closed instead of retrying.
 type Processor interface {
 	Process(context.Context, domain.DCPV2Command, *domain.DCPV2Action, func(string) error) (Outcome, error)
+}
+
+// EffectReconciler is implemented by an activated target adapter when a
+// fenced external effect has an exact read-back path. A nil event is startup
+// reconciliation; a concrete event may prove an effect that completed after
+// its durable fence but before the local state transition committed.
+type EffectReconciler interface {
+	ReconcileEffect(context.Context, domain.DCPV2Command, *domain.DCPV2ExternalEvent) (Outcome, bool, error)
 }
 
 type Outcome struct {
@@ -93,9 +102,10 @@ func New(store Store, processor Processor, identities IdentitySource, owner, epo
 
 // Startup performs one finite snapshot reconciliation and then invokes the
 // same bounded Drain used by provider Event wakes. A leased command without an
-// effect fence can be recovered exactly. A deterministic fenced effect becomes
-// a steady Human Gate; a model command is reconciled against its exact durable
-// Action and never relaunched after that Action crossed its launch fence.
+// effect fence can be recovered exactly. A fenced external effect advances
+// only from target-owned exact readback; otherwise it remains steady. A model
+// command is reconciled against its exact durable Action and never relaunched
+// after that Action crossed its launch fence.
 func (e *Engine) Startup(ctx context.Context) error {
 	leased, err := e.store.ListLeasedDCPV2Commands(ctx)
 	if err != nil {
@@ -119,8 +129,12 @@ func (e *Engine) Startup(ctx context.Context) error {
 			continue
 		}
 		if command.EffectFence != "" {
-			if err := e.failClosed(ctx, command, "external effect "+command.EffectFence+" requires exact reconciliation", "effect_reconciliation_required"); err != nil {
-				return err
+			reconciled, reconcileErr := e.reconcileEffect(ctx, command, nil)
+			if reconcileErr != nil {
+				return reconcileErr
+			}
+			if !reconciled {
+				continue
 			}
 			continue
 		}
@@ -144,6 +158,18 @@ func (e *Engine) Event(ctx context.Context, event domain.DCPV2ExternalEvent) err
 	_, err := e.store.RecordDCPV2ExternalEvent(ctx, event)
 	if err != nil {
 		return fmt.Errorf("record provider event: %w", err)
+	}
+	leased, err := e.store.ListLeasedDCPV2Commands(ctx)
+	if err != nil {
+		return fmt.Errorf("list event commands: %w", err)
+	}
+	for _, command := range leased {
+		if command.Kind.ModelBacked() || command.EffectFence == "" {
+			continue
+		}
+		if _, err := e.reconcileEffect(ctx, command, &event); err != nil {
+			return err
+		}
 	}
 	if err := e.reconcileCompletedModelCommands(ctx); err != nil {
 		if errors.Is(err, errPauseDrain) {
@@ -186,12 +212,45 @@ func (e *Engine) process(ctx context.Context, command domain.DCPV2Command, actio
 			return e.failClosed(ctx, command, "model Action result does not bind the leased Command", "model_action_identity_drift")
 		}
 	}
+	effectFenced := command.EffectFence != ""
 	outcome, err := e.processor.Process(ctx, command, action, func(fence string) error {
-		return e.store.FenceDCPV2CommandEffect(ctx, command.CommandID, command.LeaseOwner, command.LeaseEpoch, command.LeaseToken, fence, e.now())
+		err := e.store.FenceDCPV2CommandEffect(ctx, command.CommandID, command.LeaseOwner, command.LeaseEpoch, command.LeaseToken, fence, e.now())
+		if err == nil {
+			effectFenced = true
+		}
+		return err
 	})
 	if err != nil {
+		if errors.Is(err, ErrEffectReconciliationPending) && effectFenced {
+			return nil
+		}
 		return e.failClosed(ctx, command, "command processor failed; exact evidence is required", "processor_failed")
 	}
+	return e.applyOutcome(ctx, command, action, outcome, effectFenced)
+}
+
+func (e *Engine) reconcileEffect(ctx context.Context, command domain.DCPV2Command, event *domain.DCPV2ExternalEvent) (bool, error) {
+	reconciler, ok := e.processor.(EffectReconciler)
+	if !ok {
+		return false, nil
+	}
+	outcome, reconciled, err := reconciler.ReconcileEffect(ctx, command, event)
+	if err != nil {
+		return false, e.failClosed(ctx, command, "fenced external effect reconciliation failed", "effect_reconciliation_failed")
+	}
+	if !reconciled {
+		return false, nil
+	}
+	if err := e.applyOutcome(ctx, command, nil, outcome, true); err != nil {
+		if errors.Is(err, errPauseDrain) {
+			return true, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (e *Engine) applyOutcome(ctx context.Context, command domain.DCPV2Command, action *domain.DCPV2Action, outcome Outcome, effectFenced bool) error {
 	if action != nil && outcome.CommandResultDigest != action.ResultDigest {
 		return e.failClosed(ctx, command, "model Action output digest does not match the command transition", "model_action_result_drift")
 	}
@@ -220,6 +279,9 @@ func (e *Engine) process(ctx context.Context, command domain.DCPV2Command, actio
 		Incident: outcome.Incident, Result: outcome.Result, ExternalEventDeliveryID: outcome.ExternalEventDeliveryID, UpdatedAt: e.now(),
 	}
 	if err := e.store.TransitionDCPV2(ctx, transition); err != nil {
+		if effectFenced {
+			return fmt.Errorf("transition fenced command %s: %w", command.CommandID, err)
+		}
 		if failErr := e.failClosed(ctx, command, "state transition failed closed; inspect immutable command evidence", "transition_failed"); failErr != nil {
 			return fmt.Errorf("transition command %s: %w (fail-closed transition: %v)", command.CommandID, err, failErr)
 		}
@@ -268,23 +330,22 @@ func (e *Engine) reconcileModelCommand(ctx context.Context, command domain.DCPV2
 	}
 }
 
-func (e *Engine) failClosed(ctx context.Context, command domain.DCPV2Command, question, code string) error {
+func (e *Engine) failClosed(ctx context.Context, command domain.DCPV2Command, detail, code string) error {
 	task, err := e.store.GetDCPV2Task(ctx, command.TaskID)
 	if err != nil {
 		return err
 	}
 	at := e.now()
-	evidence := sha256.Sum256([]byte(command.CommandID + "\x00" + command.RevisionID + "\x00" + code + "\x00" + question))
+	evidence := sha256.Sum256([]byte(command.CommandID + "\x00" + command.RevisionID + "\x00" + code + "\x00" + detail))
 	incident := domain.DCPV2Incident{
 		IncidentID: e.identities.Token("incident", command.CommandID+"/"+code), TaskID: command.TaskID,
 		RevisionID: command.RevisionID, CauseCommandID: command.CommandID, Kind: "provider_failure",
-		EvidenceDigest: hex.EncodeToString(evidence[:]), Disposition: domain.DCPV2IncidentHumanGate,
-		OwnerQuestion: question, CreatedAt: at,
+		EvidenceDigest: hex.EncodeToString(evidence[:]), Disposition: domain.DCPV2IncidentTerminal, CreatedAt: at,
 	}
 	return e.store.TransitionDCPV2(ctx, sqlitestore.DCPV2Transition{
 		CommandID: command.CommandID, LeaseOwner: command.LeaseOwner, LeaseEpoch: command.LeaseEpoch, LeaseToken: command.LeaseToken,
 		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: task.CurrentRevisionID,
-		NextTaskState: domain.DCPV2TaskHumanGate, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
-		HumanGateQuestion: question, CommandErrorCode: code, Incident: &incident, UpdatedAt: at,
+		NextTaskState: domain.DCPV2TaskFailed, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
+		TaskErrorCode: code, CommandErrorCode: code, Incident: &incident, UpdatedAt: at,
 	})
 }

@@ -44,7 +44,17 @@ func TestDCPV2ProjectionSeparatesModelWorkflowMergedAndDeployed(t *testing.T) {
 	if projection.ModelActive || !projection.WorkflowActive || projection.StatusLabel != "Reviewer queued" {
 		t.Fatalf("queued projection=%+v", projection)
 	}
+	action.Status = DCPV2ActionLaunching
+	projection = ProjectDCPV2Lifecycle(task, &command, &action, nil, nil)
+	if projection.ModelActive || !projection.WorkflowActive {
+		t.Fatalf("launching-without-runtime projection=%+v", projection)
+	}
 	action.Status = DCPV2ActionRunning
+	projection = ProjectDCPV2Lifecycle(task, &command, &action, nil, nil)
+	if projection.ModelActive || !projection.WorkflowActive {
+		t.Fatalf("asymmetric running projection=%+v", projection)
+	}
+	action.RuntimeID = "native-runtime-1"
 	projection = ProjectDCPV2Lifecycle(task, &command, &action, nil, nil)
 	if !projection.ModelActive || !projection.WorkflowActive {
 		t.Fatalf("running projection=%+v", projection)

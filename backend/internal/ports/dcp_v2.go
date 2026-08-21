@@ -11,7 +11,7 @@ import (
 // core owns no repository allowlist or live provider credential.
 type DCPV2Repository interface {
 	ObserveRevision(context.Context, domain.DCPV2Task, domain.DCPV2Revision) (DCPV2RepositoryObservation, error)
-	MaterializeReadmission(context.Context, domain.DCPV2Task, domain.DCPV2Revision, string) (DCPV2RepositoryEffect, error)
+	MaterializeReadmission(context.Context, domain.DCPV2Task, domain.DCPV2Revision, string, string) (DCPV2RepositoryEffect, error)
 }
 
 type DCPV2RepositoryObservation struct {
@@ -38,7 +38,7 @@ type DCPV2RepositoryEffect struct {
 // method: target Release Trains remain the only physical merge actors.
 type DCPV2Release interface {
 	DispatchAdmission(context.Context, domain.DCPV2Task, domain.DCPV2Revision, domain.DCPV2Admission, string) (DCPV2ReleaseReceipt, error)
-	ObserveRelease(context.Context, domain.DCPV2Task, domain.DCPV2Revision, domain.DCPV2Admission) (DCPV2ReleaseObservation, error)
+	ObserveRelease(context.Context, domain.DCPV2Task, domain.DCPV2Revision, domain.DCPV2Admission, int64) (DCPV2ReleaseObservation, error)
 }
 
 type DCPV2ReleaseReceipt struct {

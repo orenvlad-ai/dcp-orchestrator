@@ -349,6 +349,36 @@ type DCPReviewLabPolicyTask struct {
 	UpdatedAt       time.Time               `json:"updatedAt"`
 }
 
+// DCPPolicySpawnEnvelope is the single canonical bridge from a durable policy
+// task to its bounded native runtime shell. Both the policy service that asks
+// for the shell and Session Manager that validates the reservation consume
+// this exact envelope so profile/prompt identity cannot diverge.
+type DCPPolicySpawnEnvelope struct {
+	ProjectID   ProjectID
+	SessionID   SessionID
+	Kind        SessionKind
+	Harness     AgentHarness
+	Branch      string
+	DisplayName string
+	Prompt      string
+}
+
+func CanonicalDCPPolicySpawnEnvelope(task DCPReviewLabPolicyTask) DCPPolicySpawnEnvelope {
+	prefix := "DCP synthetic task "
+	switch task.Profile {
+	case "repo-only":
+		prefix = "DCP repo-only task "
+	case "live-runtime":
+		prefix = "DCP live-runtime task "
+	}
+	return DCPPolicySpawnEnvelope{
+		ProjectID: ProjectID(task.Target), SessionID: task.SessionID,
+		Kind: KindWorker, Harness: HarnessCodex, Branch: task.SourceBranch,
+		DisplayName: "DCP:" + task.TaskID,
+		Prompt:      prefix + task.TaskID + ": " + task.Prompt,
+	}
+}
+
 // DCPWBCReleasePhase is a typed presentation/observation fact separate from
 // model action accounting and the durable policy state.
 type DCPWBCReleasePhase string

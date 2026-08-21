@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -39,22 +40,26 @@ const (
 	TwinWorkflowID     int64 = 338377713
 )
 
+var errTwinTerminalProofUnavailable = errors.New("DCP v2 terminal proof artifact is unavailable")
+
 type ghRunner func(context.Context, []byte, ...string) ([]byte, error)
+type gitRunner func(context.Context, string, ...string) (string, error)
 
 // TwinGitHubAdapter implements the exact Stage 5 repository, Release Train
 // and deployment-observation seams. It can dispatch one immutable manifest;
 // it deliberately has no merge, artifact-build, remote-host, install, start or probe
 // method.
 type TwinGitHubAdapter struct {
-	gh ghRunner
+	gh  ghRunner
+	git gitRunner
 }
 
 func NewTwinGitHubAdapter() *TwinGitHubAdapter {
-	return &TwinGitHubAdapter{gh: runGH}
+	return &TwinGitHubAdapter{gh: runGH, git: runTwinGit}
 }
 
 func newTwinGitHubAdapterForTest(run ghRunner) *TwinGitHubAdapter {
-	return &TwinGitHubAdapter{gh: run}
+	return &TwinGitHubAdapter{gh: run, git: runTwinGit}
 }
 
 func runGH(ctx context.Context, input []byte, args ...string) ([]byte, error) {
@@ -67,6 +72,15 @@ func runGH(ctx context.Context, input []byte, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("DCP v2 GitHub adapter: %w", err)
 	}
 	return out, nil
+}
+
+func runTwinGit(ctx context.Context, worktree string, args ...string) (string, error) {
+	cmd := aoprocess.CommandContext(ctx, "git", append([]string{"-C", worktree}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("DCP v2 readmission Git: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 type twinPR struct {
@@ -262,8 +276,87 @@ func (a *TwinGitHubAdapter) ObserveRevision(ctx context.Context, _ domain.DCPV2T
 		RequiredCheckOK: facts.CheckPassed, EvidenceDigest: facts.EvidenceHash}, nil
 }
 
-func (a *TwinGitHubAdapter) MaterializeReadmission(context.Context, domain.DCPV2Task, domain.DCPV2Revision, string) (ports.DCPV2RepositoryEffect, error) {
-	return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 twin readmission requires a separately proven main-drift event")
+// MaterializeReadmission prepares the deterministic two-parent successor in
+// the existing native worktree but does not update a provider ref. The caller
+// must durably fence the returned new head before PublishReadmission.
+func (a *TwinGitHubAdapter) MaterializeReadmission(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, currentMain, worktree string) (ports.DCPV2RepositoryEffect, error) {
+	if a == nil || a.git == nil || task.TaskID == "" || revision.TaskID != task.TaskID || revision.RevisionID != task.CurrentRevisionID ||
+		revision.Repository != TwinRepository || revision.BaseRef != TwinBase || revision.HeadRef == "" || revision.HeadRef == TwinBase ||
+		!validV2SHA(revision.BaseSHA) || !validV2SHA(revision.HeadSHA) || !validV2SHA(currentMain) ||
+		strings.EqualFold(currentMain, revision.BaseSHA) || !filepath.IsAbs(worktree) {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission identity is incomplete")
+	}
+	checks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"status", "--porcelain"}, ""},
+		{[]string{"branch", "--show-current"}, revision.HeadRef},
+		{[]string{"rev-parse", "HEAD"}, strings.ToLower(revision.HeadSHA)},
+	}
+	for _, check := range checks {
+		got, err := a.git(ctx, worktree, check.args...)
+		if err != nil || got != check.want {
+			return ports.DCPV2RepositoryEffect{}, errors.Join(err, errors.New("DCP v2 readmission worktree identity drifted"))
+		}
+	}
+	if _, err := a.git(ctx, worktree, "fetch", "--no-tags", "origin", TwinBase); err != nil {
+		return ports.DCPV2RepositoryEffect{}, err
+	}
+	fetched, err := a.git(ctx, worktree, "rev-parse", "refs/remotes/origin/"+TwinBase)
+	if err != nil || !strings.EqualFold(fetched, currentMain) {
+		return ports.DCPV2RepositoryEffect{}, errors.Join(err, errors.New("DCP v2 readmission current main drifted"))
+	}
+	if _, err := a.git(ctx, worktree, "merge-base", "--is-ancestor", revision.BaseSHA, currentMain); err != nil {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission base ancestry conflicts")
+	}
+	tree, err := a.git(ctx, worktree, "merge-tree", "--write-tree", revision.HeadSHA, currentMain)
+	if err != nil || !validV2SHA(tree) {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission mechanical merge conflicts")
+	}
+	message := "DCP v2 readmission " + task.TaskID + " generation " + strconv.FormatInt(task.ReadmissionCount+1, 10)
+	newHead, err := a.git(ctx, worktree, "-c", "user.name=DCP Readmission", "-c", "user.email=dcp-readmission@users.noreply.github.com",
+		"commit-tree", tree, "-p", revision.HeadSHA, "-p", currentMain, "-m", message)
+	if err != nil || !validV2SHA(newHead) || strings.EqualFold(newHead, revision.HeadSHA) {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission successor commit is invalid")
+	}
+	effect := ports.DCPV2RepositoryEffect{ExternalID: "readmission:" + strings.ToLower(newHead),
+		OldHeadSHA: strings.ToLower(revision.HeadSHA), NewHeadSHA: strings.ToLower(newHead), BaseSHA: strings.ToLower(currentMain)}
+	effect.EvidenceDigest = digestCanonical(effect)
+	return effect, nil
+}
+
+// PublishReadmission performs one normal expected-old-head fast-forward push.
+// A restart adopts the exact already-published head and never pushes it twice.
+func (a *TwinGitHubAdapter) PublishReadmission(ctx context.Context, revision domain.DCPV2Revision, effect ports.DCPV2RepositoryEffect, worktree string) (ports.DCPV2RepositoryEffect, error) {
+	if a == nil || a.git == nil || effect.ExternalID != "readmission:"+effect.NewHeadSHA ||
+		effect.OldHeadSHA != strings.ToLower(revision.HeadSHA) || !validV2SHA(effect.NewHeadSHA) || !validV2SHA(effect.BaseSHA) ||
+		effect.EvidenceDigest != digestCanonical(ports.DCPV2RepositoryEffect{ExternalID: effect.ExternalID, OldHeadSHA: effect.OldHeadSHA,
+			NewHeadSHA: effect.NewHeadSHA, BaseSHA: effect.BaseSHA}) || !filepath.IsAbs(worktree) {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission effect fence drifted")
+	}
+	if _, err := a.git(ctx, worktree, "cat-file", "-e", effect.NewHeadSHA+"^{commit}"); err != nil {
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission fenced commit disappeared")
+	}
+	facts, err := a.ObserveBranch(ctx, revision.HeadRef)
+	if err != nil || !strings.EqualFold(facts.MainSHA, effect.BaseSHA) {
+		return ports.DCPV2RepositoryEffect{}, errors.Join(err, errors.New("DCP v2 readmission provider main drifted"))
+	}
+	switch strings.ToLower(facts.HeadSHA) {
+	case effect.NewHeadSHA:
+		return effect, nil
+	case effect.OldHeadSHA:
+		if _, err := a.git(ctx, worktree, "push", "origin", effect.NewHeadSHA+":refs/heads/"+revision.HeadRef); err != nil {
+			return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission expected-old-head push failed")
+		}
+	default:
+		return ports.DCPV2RepositoryEffect{}, errors.New("DCP v2 readmission branch crossed its effect fence")
+	}
+	facts, err = a.ObserveBranch(ctx, revision.HeadRef)
+	if err != nil || !strings.EqualFold(facts.HeadSHA, effect.NewHeadSHA) || !strings.EqualFold(facts.MainSHA, effect.BaseSHA) {
+		return ports.DCPV2RepositoryEffect{}, errors.Join(err, errors.New("DCP v2 readmission provider did not confirm the exact successor"))
+	}
+	return effect, nil
 }
 
 type TwinManifest struct {
@@ -376,7 +469,7 @@ type twinProof struct {
 	ProofDigest string `json:"proof_digest"`
 }
 
-func (a *TwinGitHubAdapter) observeProof(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission) (twinProof, error) {
+func (a *TwinGitHubAdapter) observeProof(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission, expectedRunID int64) (twinProof, error) {
 	manifest, err := BuildTwinManifest(task, revision, admission)
 	if err != nil || manifest.ManifestDigest != admission.ManifestDigest {
 		return twinProof{}, errors.Join(err, errors.New("DCP v2 expected manifest drifted"))
@@ -400,8 +493,8 @@ func (a *TwinGitHubAdapter) observeProof(ctx context.Context, task domain.DCPV2T
 			active = append(active, artifact)
 		}
 	}
-	if len(active) != 1 || active[0].ID < 1 || active[0].Run.ID < 1 {
-		return twinProof{}, errors.New("DCP v2 terminal proof artifact is not unique")
+	if len(active) != 1 || active[0].ID < 1 || active[0].Run.ID < 1 || (expectedRunID > 0 && active[0].Run.ID != expectedRunID) {
+		return twinProof{}, errTwinTerminalProofUnavailable
 	}
 	archive, err := a.gh(ctx, nil, "repos/"+TwinRepository+"/actions/artifacts/"+strconv.FormatInt(active[0].ID, 10)+"/zip")
 	if err != nil {
@@ -446,10 +539,97 @@ func (a *TwinGitHubAdapter) observeProof(ctx context.Context, task domain.DCPV2T
 	return proof, nil
 }
 
-func (a *TwinGitHubAdapter) ObserveRelease(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission) (ports.DCPV2ReleaseObservation, error) {
-	proof, err := a.observeProof(ctx, task, revision, admission)
+type twinReleaseEvidence struct {
+	Protocol          string            `json:"protocol"`
+	TargetSpec        string            `json:"target_spec"`
+	QualificationCase string            `json:"qualification_case"`
+	Kind              string            `json:"kind"`
+	Phase             string            `json:"phase"`
+	Reason            string            `json:"reason"`
+	Repository        string            `json:"repository"`
+	RepositoryID      int64             `json:"repository_id"`
+	ManifestDigest    string            `json:"manifest_digest"`
+	RunID             string            `json:"run_id"`
+	RunAttempt        string            `json:"run_attempt"`
+	Observed          map[string]string `json:"observed"`
+	Effects           map[string]int64  `json:"effects"`
+	ObservedAt        string            `json:"observed_at"`
+	EvidenceDigest    string            `json:"evidence_digest"`
+}
+
+func (a *TwinGitHubAdapter) observeReadmissionProof(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission, runID int64) (ports.DCPV2ReleaseObservation, error) {
+	if runID < 1 {
+		return ports.DCPV2ReleaseObservation{}, errors.New("DCP v2 readmission run identity is missing")
+	}
+	manifest, err := BuildTwinManifest(task, revision, admission)
+	if err != nil || manifest.ManifestDigest != admission.ManifestDigest {
+		return ports.DCPV2ReleaseObservation{}, errors.Join(err, errors.New("DCP v2 expected readmission manifest drifted"))
+	}
+	name := "qualification-evidence-" + strconv.FormatInt(runID, 10)
+	var artifacts struct {
+		Artifacts []struct {
+			ID      int64 `json:"id"`
+			Expired bool  `json:"expired"`
+			Run     struct {
+				ID int64 `json:"id"`
+			} `json:"workflow_run"`
+		} `json:"artifacts"`
+	}
+	if err := a.getJSON(ctx, "repos/"+TwinRepository+"/actions/artifacts?name="+name+"&per_page=100", &artifacts); err != nil {
+		return ports.DCPV2ReleaseObservation{}, err
+	}
+	var active []int64
+	for _, artifact := range artifacts.Artifacts {
+		if !artifact.Expired && artifact.ID > 0 && artifact.Run.ID == runID {
+			active = append(active, artifact.ID)
+		}
+	}
+	if len(active) != 1 {
+		return ports.DCPV2ReleaseObservation{}, errors.New("DCP v2 readmission proof artifact is not unique")
+	}
+	archive, err := a.gh(ctx, nil, "repos/"+TwinRepository+"/actions/artifacts/"+strconv.FormatInt(active[0], 10)+"/zip")
 	if err != nil {
 		return ports.DCPV2ReleaseObservation{}, err
+	}
+	files, err := readEvidenceZip(archive, "manifest.json", "release-evidence.json")
+	if err != nil {
+		return ports.DCPV2ReleaseObservation{}, err
+	}
+	var gotManifest TwinManifest
+	var evidence twinReleaseEvidence
+	if json.Unmarshal(files["manifest.json"], &gotManifest) != nil || json.Unmarshal(files["release-evidence.json"], &evidence) != nil {
+		return ports.DCPV2ReleaseObservation{}, errors.New("DCP v2 readmission proof cannot be decoded")
+	}
+	wantManifest, _ := json.Marshal(manifest)
+	gotManifestJSON, _ := json.Marshal(gotManifest)
+	zeroEffects := evidence.Effects["ref_updates"] == 0 && evidence.Effects["merges"] == 0 &&
+		evidence.Effects["release_artifacts"] == 0 && evidence.Effects["deploys"] == 0 && evidence.Effects["terminal_proofs"] == 0
+	currentMain, currentHead := strings.ToLower(evidence.Observed["current_main"]), strings.ToLower(evidence.Observed["current_head"])
+	exactReason := (evidence.Reason == "main_drift" && strings.EqualFold(evidence.Observed["expected_main"], admission.MainSHA) && strings.EqualFold(currentHead, admission.HeadSHA)) ||
+		(evidence.Reason == "head_drift" && strings.EqualFold(evidence.Observed["expected_head"], admission.HeadSHA))
+	if !bytes.Equal(wantManifest, gotManifestJSON) || evidence.EvidenceDigest != digestWithoutField(evidence, "evidence_digest") ||
+		evidence.Protocol != "dcp-release-evidence/v1" || evidence.TargetSpec != TwinTargetSpec || evidence.QualificationCase != "dcp_canary" ||
+		evidence.Kind != "readmission_required" || evidence.Phase != "validation" || !exactReason || evidence.Repository != TwinRepository ||
+		evidence.RepositoryID != TwinRepositoryID || evidence.ManifestDigest != admission.ManifestDigest ||
+		evidence.RunID != strconv.FormatInt(runID, 10) || !validV2SHA(currentMain) || !validV2SHA(currentHead) || !zeroEffects {
+		return ports.DCPV2ReleaseObservation{}, errors.New("DCP v2 readmission proof identity drifted")
+	}
+	return ports.DCPV2ReleaseObservation{ProofID: evidence.EvidenceDigest, Provider: "github", RunID: evidence.RunID,
+		Actor: "github-actions[bot]", AdmissionID: admission.AdmissionID, ManifestDigest: admission.ManifestDigest,
+		Readmission: true, CurrentMainSHA: currentMain, EvidenceDigest: evidence.EvidenceDigest}, nil
+}
+
+func (a *TwinGitHubAdapter) ObserveRelease(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission, runID int64) (ports.DCPV2ReleaseObservation, error) {
+	proof, err := a.observeProof(ctx, task, revision, admission, runID)
+	if err != nil {
+		if !errors.Is(err, errTwinTerminalProofUnavailable) {
+			return ports.DCPV2ReleaseObservation{}, err
+		}
+		readmission, readmissionErr := a.observeReadmissionProof(ctx, task, revision, admission, runID)
+		if readmissionErr != nil {
+			return ports.DCPV2ReleaseObservation{}, errors.Join(err, readmissionErr)
+		}
+		return readmission, nil
 	}
 	return ports.DCPV2ReleaseObservation{ProofID: proof.ProofDigest, Provider: "github", RunID: proof.RunID,
 		Actor: proof.DispatchActor, AdmissionID: admission.AdmissionID, ManifestDigest: admission.ManifestDigest,
@@ -457,7 +637,7 @@ func (a *TwinGitHubAdapter) ObserveRelease(ctx context.Context, task domain.DCPV
 }
 
 func (a *TwinGitHubAdapter) ObserveDeployment(ctx context.Context, task domain.DCPV2Task, revision domain.DCPV2Revision, admission domain.DCPV2Admission, mergeSHA string) (ports.DCPV2DeploymentObservation, error) {
-	proof, err := a.observeProof(ctx, task, revision, admission)
+	proof, err := a.observeProof(ctx, task, revision, admission, 0)
 	if err != nil {
 		return ports.DCPV2DeploymentObservation{}, err
 	}
@@ -500,15 +680,23 @@ func (a *TwinGitHubAdapter) mutateJSON(ctx context.Context, payload []byte, path
 }
 
 func readProofZip(data []byte) (map[string][]byte, error) {
+	return readEvidenceZip(data, "manifest.json", "deploy-proof.json")
+}
+
+func readEvidenceZip(data []byte, required ...string) (map[string][]byte, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, err
 	}
 	out := map[string][]byte{}
+	wanted := map[string]bool{}
+	for _, name := range required {
+		wanted[name] = true
+	}
 	for _, file := range zr.File {
 		name := file.Name
-		if strings.HasSuffix(name, "/manifest.json") || name == "manifest.json" || strings.HasSuffix(name, "/deploy-proof.json") || name == "deploy-proof.json" {
-			base := name[strings.LastIndex(name, "/")+1:]
+		base := name[strings.LastIndex(name, "/")+1:]
+		if wanted[base] {
 			if _, exists := out[base]; exists {
 				return nil, errors.New("DCP v2 proof archive contains duplicate evidence files")
 			}
@@ -524,8 +712,10 @@ func readProofZip(data []byte) (map[string][]byte, error) {
 			out[base] = b
 		}
 	}
-	if len(out["manifest.json"]) == 0 || len(out["deploy-proof.json"]) == 0 {
-		return nil, errors.New("DCP v2 proof archive is incomplete")
+	for _, name := range required {
+		if len(out[name]) == 0 {
+			return nil, errors.New("DCP v2 proof archive is incomplete")
+		}
 	}
 	return out, nil
 }
