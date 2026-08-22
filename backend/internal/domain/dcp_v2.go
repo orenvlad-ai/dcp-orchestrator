@@ -46,6 +46,7 @@ const (
 	DCPV2RevisionWorkInput   DCPV2RevisionKind = "work_input"
 	DCPV2RevisionWorker      DCPV2RevisionKind = "worker_output"
 	DCPV2RevisionRepair      DCPV2RevisionKind = "repair_output"
+	DCPV2RevisionProvider    DCPV2RevisionKind = "provider_bound"
 	DCPV2RevisionReadmission DCPV2RevisionKind = "readmission_output"
 )
 
@@ -82,11 +83,15 @@ func (k DCPV2CommandKind) ModelBacked() bool {
 func (k DCPV2CommandKind) RequiresEffectFence() bool {
 	switch k {
 	case DCPV2CommandWorkerExecute, DCPV2CommandPublication, DCPV2CommandReviewExecute, DCPV2CommandRepairExecute,
-		DCPV2CommandArbiterExecute, DCPV2CommandReadmission, DCPV2CommandReleaseDispatch:
+		DCPV2CommandArbiterExecute, DCPV2CommandAdmissionEnqueue, DCPV2CommandReadmission, DCPV2CommandReleaseDispatch:
 		return true
 	default:
 		return false
 	}
+}
+
+func (k DCPV2CommandKind) WaitsForProviderEvent() bool {
+	return k == DCPV2CommandChecksObserve || k == DCPV2CommandMergeObserve
 }
 
 // AllowsTransition is the provider-neutral state-machine law. Running model
@@ -100,7 +105,7 @@ func (k DCPV2CommandKind) AllowsTransition(from, to DCPV2TaskState, createsRevis
 	case DCPV2CommandWorkerExecute:
 		return from == DCPV2TaskWorkerQueued && to == DCPV2TaskChecksWaiting && createsRevision
 	case DCPV2CommandPublication:
-		return from == DCPV2TaskChecksWaiting && to == DCPV2TaskChecksWaiting && !createsRevision
+		return from == DCPV2TaskChecksWaiting && to == DCPV2TaskChecksWaiting && createsRevision
 	case DCPV2CommandChecksObserve:
 		return from == DCPV2TaskChecksWaiting && to == DCPV2TaskReviewQueued && !createsRevision
 	case DCPV2CommandReviewExecute:
@@ -252,6 +257,7 @@ type DCPV2Revision struct {
 	BaseSHA               string
 	HeadRef               string
 	HeadSHA               string
+	TreeSHA               string
 	PredecessorRevisionID string
 	CauseCommandID        string
 	PRNumber              int64
@@ -445,27 +451,28 @@ type DCPV2Incident struct {
 }
 
 type DCPV2Result struct {
-	ResultID       string
-	TaskID         string
-	RevisionID     string
-	AdmissionID    string
-	CommandID      string
-	Kind           DCPV2ResultKind
-	Provider       string
-	ProofID        string
-	RunID          string
-	Actor          string
-	ManifestDigest string
-	ProofDigest    string
-	MergeSHA       string
-	ArtifactDigest string
-	DeployedSHA    string
-	Environment    string
-	Service        string
-	ProbeDigest    string
-	Verified       bool
-	ErrorCode      string
-	CreatedAt      time.Time
+	ResultID          string
+	TaskID            string
+	RevisionID        string
+	AdmissionID       string
+	CommandID         string
+	Kind              DCPV2ResultKind
+	Provider          string
+	ProofID           string
+	RunID             string
+	Actor             string
+	ManifestDigest    string
+	ProofDigest       string
+	MergeSHA          string
+	ArtifactSourceSHA string
+	ArtifactDigest    string
+	DeployedSHA       string
+	Environment       string
+	Service           string
+	ProbeDigest       string
+	Verified          bool
+	ErrorCode         string
+	CreatedAt         time.Time
 }
 
 // DCPV2LifecycleProjection is the one provider-neutral source for card,

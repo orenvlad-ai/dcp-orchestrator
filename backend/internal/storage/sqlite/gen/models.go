@@ -1092,27 +1092,28 @@ type DcpV2ModelTerminalReceipt struct {
 }
 
 type DcpV2Result struct {
-	ResultID       string
-	TaskID         string
-	RevisionID     string
-	AdmissionID    sql.NullString
-	CommandID      string
-	Kind           string
-	Provider       string
-	ProofID        string
-	RunID          string
-	Actor          string
-	ManifestDigest string
-	ProofDigest    string
-	MergeSha       string
-	ArtifactDigest string
-	DeployedSha    string
-	Environment    string
-	Service        string
-	ProbeDigest    string
-	Verified       int64
-	ErrorCode      string
-	CreatedAt      time.Time
+	ResultID          string
+	TaskID            string
+	RevisionID        string
+	AdmissionID       sql.NullString
+	CommandID         string
+	Kind              string
+	Provider          string
+	ProofID           string
+	RunID             string
+	Actor             string
+	ManifestDigest    string
+	ProofDigest       string
+	MergeSha          string
+	ArtifactSourceSha string
+	ArtifactDigest    string
+	DeployedSha       string
+	Environment       string
+	Service           string
+	ProbeDigest       string
+	Verified          int64
+	ErrorCode         string
+	CreatedAt         time.Time
 }
 
 type DcpV2Revision struct {
@@ -1125,6 +1126,7 @@ type DcpV2Revision struct {
 	BaseSha               string
 	HeadRef               string
 	HeadSha               string
+	TreeSha               string
 	PredecessorRevisionID string
 	CauseCommandID        string
 	PRNumber              int64

@@ -74,6 +74,36 @@ func TestTwinAdapterObservesOneExactPRAndNamedCheck(t *testing.T) {
 	}
 }
 
+func TestTwinAdapterRequiresCompleteZeroUnresolvedReviewThreads(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "zero", body: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`},
+		{name: "resolved", body: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":1,"nodes":[{"isResolved":true}],"pageInfo":{"hasNextPage":false}}}}}}`},
+		{name: "unresolved", body: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":1,"nodes":[{"isResolved":false}],"pageInfo":{"hasNextPage":false}}}}}}`, want: "unresolved review thread"},
+		{name: "paginated", body: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":101,"nodes":[],"pageInfo":{"hasNextPage":true}}}}}}`, want: "observation is incomplete"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := newTwinGitHubAdapterForTest(func(_ context.Context, input []byte, args ...string) ([]byte, error) {
+				if strings.Join(args, " ") != "--method POST graphql --input -" || !bytes.Contains(input, []byte(`"number":17`)) {
+					t.Fatalf("unexpected review-thread request args=%q input=%s", strings.Join(args, " "), input)
+				}
+				return []byte(tt.body), nil
+			})
+			err := adapter.ObserveZeroUnresolvedReviewThreads(t.Context(), 17)
+			if tt.want == "" && err != nil {
+				t.Fatal(err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("err=%v want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestTwinManifestAndDispatchAreExactAndIdempotencyBound(t *testing.T) {
 	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
 	task, revision, admission := twinManifestFixture(now)
@@ -105,19 +135,73 @@ func TestTwinManifestAndDispatchAreExactAndIdempotencyBound(t *testing.T) {
 	}
 }
 
+func TestDirectReviewFenceAndReconciliationAreExactAndInert(t *testing.T) {
+	facts := TwinRepositoryFacts{PRNumber: 17, BaseSHA: strings.Repeat("1", 40), MainSHA: strings.Repeat("1", 40),
+		HeadSHA: strings.Repeat("2", 40), HeadRef: "codex/dcp-v2/review", CheckRunID: 91,
+		CheckURL: "https://github.com/orenvlad-ai/dcp-wbc-integration-lab/actions/runs/91", CheckPassed: true,
+		ReviewThreadsObserved: true}
+	facts.EvidenceHash = digestCanonical(facts)
+	output := `{"verdict":"approved","headSha":"` + facts.HeadSHA + `","findings":[]}`
+	receipt := domain.DCPV2ModelTerminalReceipt{ReceiptID: "review-receipt-1", Status: domain.DCPV2ModelTerminalSucceeded,
+		OutputJSON: output, OutputDigest: digestCanonical(json.RawMessage(output))}
+	body, fence, err := directReviewRequest(facts, receipt)
+	if err != nil || !strings.HasPrefix(fence, "review:") || len(fence) != len("review:")+64 {
+		t.Fatalf("direct review request body=%q fence=%q err=%v", body, fence, err)
+	}
+	posts := 0
+	adapter := newTwinGitHubAdapterForTest(func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+		path := strings.Join(args, " ")
+		if path == "repos/"+TwinRepository+"/pulls/17/reviews?per_page=100" {
+			return []byte(`[{"id":55,"body":` + strconv.Quote(body) + `,"commit_id":"` + facts.HeadSHA + `","user":{"login":"` + TwinIssuerActor + `"}}]`), nil
+		}
+		if strings.Contains(path, "--method POST") {
+			posts++
+		}
+		return nil, errors.New("unexpected direct review call: " + path)
+	})
+	review, err := adapter.PublishExactDirectReview(context.Background(), facts, receipt)
+	if err != nil || review.ReviewID != 55 || !validV2Digest(review.ReviewDigest) || posts != 0 {
+		t.Fatalf("reconciled review=%+v posts=%d err=%v", review, posts, err)
+	}
+	crossed := facts
+	crossed.PRNumber++
+	crossed.EvidenceHash = ""
+	crossed.EvidenceHash = digestCanonical(crossed)
+	crossedFence, err := adapter.ExpectedDirectReviewFence(crossed, receipt)
+	if err != nil || crossedFence == fence {
+		t.Fatalf("crossed PR did not change review fence: got=%q want-not=%q err=%v", crossedFence, fence, err)
+	}
+	receipt.OutputJSON = `{"verdict":"approved","headSha":"` + strings.Repeat("3", 40) + `","findings":[]}`
+	if _, err := adapter.ExpectedDirectReviewFence(facts, receipt); err == nil {
+		t.Fatal("crossed review head was accepted")
+	}
+}
+
 func TestTwinAdapterVerifiesImmutableReleaseAndDeploymentProof(t *testing.T) {
 	now := time.Date(2026, 8, 20, 15, 0, 0, 0, time.UTC)
 	task, revision, admission := twinManifestFixture(now)
 	manifest, _ := BuildTwinManifest(task, revision, admission)
 	admission.ManifestDigest = manifest.ManifestDigest
 	proof := twinProof{Protocol: "dcp-deployment-proof/v1", TargetSpec: TwinTargetSpec,
-		TaskID: task.TaskID, RevisionID: revision.RevisionID, AdmissionID: admission.AdmissionID,
+		QualificationCase: "dcp_canary",
+		TaskID:            task.TaskID, RevisionID: revision.RevisionID, AdmissionID: admission.AdmissionID,
 		AdmissionSequence: admission.Sequence, AdmissionDigest: admission.ManifestDigest,
 		Repository: TwinRepository, RepositoryID: TwinRepositoryID, Base: TwinBase, PRNumber: admission.PRNumber,
 		AdmittedHead: admission.HeadSHA, CheckRunID: 91, ReviewID: 55, ReviewDigest: strings.Repeat("a", 64),
 		MergeSHA: "3333333333333333333333333333333333333333", MergeActor: "github-actions[bot]",
+		ArtifactID:        "dcp-wbc-integration-lab-3333333333333333333333333333333333333333",
+		ArtifactMediaType: "application/gzip", ArtifactSourceSHA: "3333333333333333333333333333333333333333",
 		ArtifactDigest: strings.Repeat("b", 64), DeployedSHA: "3333333333333333333333333333333333333333",
-		Environment: TwinEnvironment, Service: TwinServiceName, RunID: "700", DispatchActor: TwinIssuerActor}
+		Environment: TwinEnvironment, Service: TwinServiceName, Workflow: "release-train.yml", RunID: "700",
+		RunAttempt: "1", Job: "release", DispatchActor: TwinIssuerActor}
+	proof.Effects.RefUpdates, proof.Effects.Merges, proof.Effects.ReleaseArtifacts = 1, 1, 1
+	proof.Effects.Deploys, proof.Effects.TerminalProofs = 1, 1
+	proof.Timestamps.Validated = now.Format(time.RFC3339Nano)
+	proof.Timestamps.Merged = now.Add(time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Built = now.Add(2 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Installed = now.Add(3 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Probed = now.Add(4 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Published = now.Add(5 * time.Second).Format(time.RFC3339Nano)
 	for _, item := range [][2]string{{"healthz", "loopback"}, {"provenance", "loopback"}, {"post_job_readback", "forced-ssh-probe"}} {
 		proof.Probes = append(proof.Probes, struct {
 			Name           string `json:"name"`
@@ -217,7 +301,7 @@ func TestTwinReadmissionPreparesThenPublishesOneExpectedOldHead(t *testing.T) {
 	task.CurrentRevisionID = revision.RevisionID
 	currentMain, tree, newHead := strings.Repeat("4", 40), strings.Repeat("5", 40), strings.Repeat("6", 40)
 	worktree := filepath.Join(t.TempDir(), "worktree")
-	remoteHead, pushes := revision.HeadSHA, 0
+	remoteHead, localHead, pushes := revision.HeadSHA, revision.HeadSHA, 0
 	adapter := newTwinGitHubAdapterForTest(func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
 		path := strings.Join(args, " ")
 		switch {
@@ -241,7 +325,12 @@ func TestTwinReadmissionPreparesThenPublishesOneExpectedOldHead(t *testing.T) {
 		case command == "branch --show-current":
 			return revision.HeadRef, nil
 		case command == "rev-parse HEAD":
-			return revision.HeadSHA, nil
+			return localHead, nil
+		case command == "rev-parse HEAD^{tree}":
+			if localHead == revision.HeadSHA {
+				return revision.TreeSHA, nil
+			}
+			return tree, nil
 		case command == "fetch --no-tags origin main":
 			return "", nil
 		case command == "rev-parse refs/remotes/origin/main":
@@ -254,14 +343,20 @@ func TestTwinReadmissionPreparesThenPublishesOneExpectedOldHead(t *testing.T) {
 			return newHead, nil
 		case command == "cat-file -e "+newHead+"^{commit}":
 			return "", nil
-		case command == "push origin "+newHead+":refs/heads/"+revision.HeadRef:
+		case command == "rev-parse "+newHead+"^{tree}":
+			return tree, nil
+		case command == "push --force-with-lease=refs/heads/"+revision.HeadRef+":"+revision.HeadSHA+" origin "+newHead+":refs/heads/"+revision.HeadRef:
 			pushes++
 			remoteHead = newHead
+			return "", nil
+		case command == "reset --hard "+newHead:
+			localHead = newHead
 			return "", nil
 		default:
 			return "", errors.New("unexpected git call: " + command)
 		}
 	}
+	adapter.gitEnv = nil
 	effect, err := adapter.MaterializeReadmission(context.Background(), task, revision, currentMain, worktree)
 	if err != nil {
 		t.Fatal(err)
@@ -286,11 +381,12 @@ func twinManifestFixture(now time.Time) (domain.DCPV2Task, domain.DCPV2Revision,
 	task := domain.DCPV2Task{TaskID: TwinCanaryTaskID, TargetSpecVersion: TwinTargetSpec, Repository: TwinRepository,
 		RepositoryID: TwinRepositoryID, OwnerID: TwinOwnerID, BaseRef: TwinBase, Profile: TwinProfile}
 	revision := domain.DCPV2Revision{RevisionID: "revision-2", TaskID: task.TaskID, Sequence: 2,
-		Kind: domain.DCPV2RevisionWorker, Repository: TwinRepository, BaseRef: TwinBase, BaseSHA: base,
-		HeadRef: "ao/twin-1/root", HeadSHA: head, PRNumber: 7, CreatedAt: now}
+		Kind: domain.DCPV2RevisionProvider, Repository: TwinRepository, BaseRef: TwinBase, BaseSHA: base,
+		HeadRef: "ao/twin-1/root", HeadSHA: head, TreeSHA: strings.Repeat("3", 40), PRNumber: 7, CreatedAt: now}
+	task.CurrentRevisionID = revision.RevisionID
 	admission := domain.DCPV2Admission{Sequence: 1, AdmissionID: "admission-1", TaskID: task.TaskID,
 		RevisionID: revision.RevisionID, PRNumber: 7, HeadSHA: head, BaseSHA: base, MainSHA: base,
-		RequiredCheckID: "91", ReviewID: "55:" + strings.Repeat("a", 64)}
+		LineKey: TwinRepository + ":" + TwinBase, RequiredCheckID: "91", ReviewID: "55:" + strings.Repeat("a", 64)}
 	return task, revision, admission
 }
 
@@ -330,5 +426,21 @@ func TestStableIDsAndManifestDigestsAreDeterministic(t *testing.T) {
 	deployment := twinResultProofDigest(domain.DCPV2ResultDeployment, external, strings.Repeat("p", 64))
 	if release == deployment || len(release) != 64 || len(deployment) != 64 {
 		t.Fatalf("typed result proof digests are not distinct: release=%s deployment=%s", release, deployment)
+	}
+}
+
+func TestPublicationRequestRejectsCrossedRevisionTree(t *testing.T) {
+	task := domain.DCPV2Task{TaskID: "task", Repository: TwinRepository, BaseRef: TwinBase}
+	revision := domain.DCPV2Revision{RevisionID: "revision", TaskID: task.TaskID, Kind: domain.DCPV2RevisionWorker,
+		HeadRef: "codex/task", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("c", 40)}
+	payload, err := json.Marshal(map[string]string{"branch": revision.HeadRef, "commitSha": revision.HeadSHA,
+		"treeSha": strings.Repeat("d", 40), "baseSha": revision.BaseSHA, "expectedOldHead": "",
+		"worktree": filepath.Join(t.TempDir(), "worktree"), "worktreeDigest": strings.Repeat("e", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := domain.DCPV2Command{Kind: domain.DCPV2CommandPublication, PayloadJSON: string(payload)}
+	if _, err := publicationRequestFor(task, revision, command); err == nil {
+		t.Fatal("publication accepted a tree that was not bound to its immutable Revision")
 	}
 }

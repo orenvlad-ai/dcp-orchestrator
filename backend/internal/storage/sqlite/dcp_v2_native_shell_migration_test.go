@@ -15,6 +15,7 @@ import (
 
 const dcpV2Stage6Schema84CopyEnv = "DCP_V2_STAGE6_SCHEMA84_DB"
 const dcpV2Stage6Schema85DirectEnv = "DCP_V2_STAGE6_SCHEMA85_DB"
+const dcpV2Stage6Schema86ProviderEnv = "DCP_V2_STAGE6_SCHEMA86_DB"
 
 func TestDCPV2TwinNativeShellMigrationOpensOnlyExactIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ao.db")
@@ -260,6 +261,127 @@ provider_request_id, provider_request_digest, worktree_path, worktree_digest, st
 	}
 }
 
+func TestDCPV2ProviderBoundMigrationPreservesExactSchema86Copy(t *testing.T) {
+	source := os.Getenv(dcpV2Stage6Schema86ProviderEnv)
+	if source == "" {
+		t.Skip(dcpV2Stage6Schema86ProviderEnv + " is not set")
+	}
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "ao.db")
+	if err := os.WriteFile(destination, contents, 0o600); err != nil {
+		t.Fatalf("create disposable exact schema-86 byte copy: %v", err)
+	}
+	beforeDB := openReadOnlyDB(t, destination)
+	var version int64
+	if err := beforeDB.QueryRow(`SELECT max(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version); err != nil || version != 86 {
+		t.Fatalf("exact-copy source schema=%d want=86 err=%v", version, err)
+	}
+	preservedTables := []string{
+		"projects", "sessions", "dcp_review_lab_policy_task", "dcp_model_action", "review_run", "dcp_review_lab_admission",
+		"dcp_wbc_readmission_generation", "dcp_task_first_native_lifecycle_recovery_v1", "dcp_v2_stage5_activation",
+		"dcp_v2_task", "dcp_v2_command", "dcp_v2_action", "dcp_v2_admission",
+		"dcp_v2_external_event", "dcp_v2_incident", "dcp_v2_model_runtime",
+		"dcp_v2_model_terminal_receipt", "dcp_v2_stage6_worker_adoption_v1",
+	}
+	before := dcpV2TablesSnapshot(t, beforeDB, preservedTables)
+	beforeRevisions := dcpV2RevisionV86Snapshot(t, beforeDB)
+	beforeFence := dcpV2Stage6RawFence(t, beforeDB)
+	if err := beforeDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+destination+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateDCPV2TestTo(t, db, 87)
+	after := dcpV2TablesSnapshot(t, db, preservedTables)
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Fatalf("schema-87 changed frozen schema-86 rows\nbefore=%v\nafter=%v", before, after)
+	}
+	afterRevisions := dcpV2RevisionV86Snapshot(t, db)
+	if beforeRevisions != afterRevisions {
+		t.Fatalf("schema-87 changed the frozen Revision\nbefore=%s\nafter=%s", beforeRevisions, afterRevisions)
+	}
+	var migratedTreeSHA string
+	if err := db.QueryRow(`SELECT tree_sha FROM dcp_v2_revision WHERE revision_id='v2-13f81f321f99d1117dc931419e0bea3945ee35a5'`).Scan(&migratedTreeSHA); err != nil || migratedTreeSHA != "" {
+		t.Fatalf("schema-87 work-input tree marker=%q err=%v", migratedTreeSHA, err)
+	}
+	if afterFence := dcpV2Stage6RawFence(t, db); afterFence != beforeFence {
+		t.Fatalf("schema-87 changed durable Stage 6 fence\nbefore=%s\nafter=%s", beforeFence, afterFence)
+	}
+	var resultRows int64
+	if err := db.QueryRow(`SELECT count(*) FROM dcp_v2_result`).Scan(&resultRows); err != nil || resultRows != 0 {
+		t.Fatalf("schema-87 invented Result rows=%d err=%v", resultRows, err)
+	}
+	var revisionSchema, resultSchema string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_schema WHERE type='table' AND name='dcp_v2_revision'`).Scan(&revisionSchema); err != nil ||
+		!strings.Contains(revisionSchema, "provider_bound") {
+		t.Fatalf("schema-87 provider-bound Revision missing: %v", err)
+	}
+	if err := db.QueryRow(`SELECT sql FROM sqlite_schema WHERE type='table' AND name='dcp_v2_result'`).Scan(&resultSchema); err != nil ||
+		!strings.Contains(resultSchema, "artifact_source_sha") {
+		t.Fatalf("schema-87 artifact source missing: %v", err)
+	}
+	if err := db.QueryRow(`SELECT max(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version); err != nil || version != 87 {
+		t.Fatalf("migration version=%d err=%v", version, err)
+	}
+	migrateDCPV2TestTo(t, db, 87)
+	if replay := dcpV2TablesSnapshot(t, db, preservedTables); fmt.Sprint(after) != fmt.Sprint(replay) {
+		t.Fatalf("schema-87 equal restart replay changed rows\nafter=%v\nreplay=%v", after, replay)
+	}
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity=%q err=%v", integrity, err)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("schema-87 exact copy has a foreign-key violation")
+	}
+}
+
+func dcpV2RevisionV86Snapshot(t *testing.T, db interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}) string {
+	t.Helper()
+	columns := []string{
+		"revision_id", "task_id", "sequence", "kind", "repository", "base_ref", "base_sha", "head_ref", "head_sha",
+		"predecessor_revision_id", "cause_command_id", "pr_number", "evidence_digest", "created_at",
+	}
+	expressions := make([]string, 0, len(columns))
+	for _, column := range columns {
+		expressions = append(expressions, `quote(`+quoteDCPV2Identifier(column)+`)`)
+	}
+	rows, err := db.Query(`SELECT ` + strings.Join(expressions, `,`) + ` FROM dcp_v2_revision ORDER BY task_id, sequence`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var snapshot []string
+	for rows.Next() {
+		values := make([]string, len(columns))
+		pointers := make([]any, len(values))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			t.Fatal(err)
+		}
+		snapshot = append(snapshot, strings.Join(values, "\x1f"))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(snapshot, "\x1e")
+}
+
 func dcpV2Stage6RawFence(t *testing.T, db interface {
 	QueryRow(query string, args ...any) *sql.Row
 }) string {
@@ -289,10 +411,13 @@ SELECT
 		&taskID, &revisionID, &commandID, &commandStatus, &actionID, &actionStatus, &nativeTaskID); err != nil {
 		t.Fatal(err)
 	}
-	if tasks != 1 || revisions != 1 || commands != 1 || actions != 1 || admissions != 0 || results != 0 || incidents != 0 || events != 0 || native != 0 || sessions != 0 ||
+	validHistoricalShell := native == 0 && sessions == 0 && nativeTaskID == "" && actionStatus == "launching"
+	validFrozenLive := native == 1 && sessions == 1 && nativeTaskID == "dcp-v2-twin-canary-v1" && actionStatus == "running"
+	if tasks != 1 || revisions != 1 || commands != 1 || actions != 1 || admissions != 0 || results != 0 || incidents != 0 || events != 0 ||
+		(!validHistoricalShell && !validFrozenLive) ||
 		taskID != "dcp-v2-twin-canary-v1" || revisionID != "v2-13f81f321f99d1117dc931419e0bea3945ee35a5" ||
 		commandID != "v2-e028f779a18417e990911057f7db7c666f7487ca" || commandStatus != "leased" ||
-		actionID != "v2-40f87d048813533daa1108b4316c09139acf0a8f" || actionStatus != "launching" || nativeTaskID != "" {
+		actionID != "v2-40f87d048813533daa1108b4316c09139acf0a8f" {
 		t.Fatalf("unexpected exact Stage 6 fence counts=%d/%d/%d/%d/%d/%d/%d/%d native/session=%d/%d ids=%s/%s/%s/%s/%s/%s/%s",
 			tasks, revisions, commands, actions, admissions, results, incidents, events, native, sessions,
 			taskID, revisionID, commandID, commandStatus, actionID, actionStatus, nativeTaskID)

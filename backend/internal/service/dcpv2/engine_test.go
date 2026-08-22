@@ -44,20 +44,41 @@ func (p *scriptedProcessor) Process(_ context.Context, command domain.DCPV2Comma
 		}
 		revision := &domain.DCPV2Revision{
 			RevisionID: command.TaskID + "-r2", TaskID: command.TaskID, Sequence: 2, Kind: domain.DCPV2RevisionWorker,
-			Repository: "owner/repo", BaseRef: "main", BaseSHA: strings.Repeat("a", 40), HeadRef: "work", HeadSHA: strings.Repeat("b", 40),
-			PredecessorRevisionID: command.RevisionID, CauseCommandID: command.CommandID, PRNumber: 1,
+			Repository: "owner/repo", BaseRef: "main", BaseSHA: strings.Repeat("a", 40), HeadRef: "work", HeadSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("c", 40),
+			PredecessorRevisionID: command.RevisionID, CauseCommandID: command.CommandID,
 			EvidenceDigest: strings.Repeat("e", 64), CreatedAt: p.now.Add(time.Second),
 		}
 		next := &domain.DCPV2Command{
-			CommandID: command.TaskID + "-checks", TaskID: command.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
+			CommandID: command.TaskID + "-publication", TaskID: command.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandPublication,
 			PayloadJSON: `{}`, PayloadDigest: strings.Repeat("f", 64), PrerequisiteDigest: strings.Repeat("g", 64),
-			IdempotencyKey: command.TaskID + "/checks", Status: domain.DCPV2CommandPending,
+			IdempotencyKey: command.TaskID + "/publication", Status: domain.DCPV2CommandPending,
 			CreatedAt: p.now.Add(time.Second), UpdatedAt: p.now.Add(time.Second),
 		}
 		return dcpv2.Outcome{
 			PauseDrain: p.pauseWorker, NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: action.ResultDigest,
 			NextRevision: revision, NextCommand: next, ExternalEventDeliveryID: p.eventID,
 		}, nil
+	case domain.DCPV2CommandPublication:
+		if action != nil {
+			return dcpv2.Outcome{}, errors.New("publication received model action")
+		}
+		if err := fence("publication:" + command.PayloadDigest); err != nil {
+			return dcpv2.Outcome{}, err
+		}
+		revision := &domain.DCPV2Revision{
+			RevisionID: command.TaskID + "-r3", TaskID: command.TaskID, Sequence: 3, Kind: domain.DCPV2RevisionProvider,
+			Repository: "owner/repo", BaseRef: "main", BaseSHA: strings.Repeat("a", 40), HeadRef: "work", HeadSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("c", 40),
+			PredecessorRevisionID: command.RevisionID, CauseCommandID: command.CommandID, PRNumber: 1,
+			EvidenceDigest: strings.Repeat("j", 64), CreatedAt: p.now.Add(2 * time.Second),
+		}
+		next := &domain.DCPV2Command{
+			CommandID: command.TaskID + "-checks", TaskID: command.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
+			PayloadJSON: `{}`, PayloadDigest: strings.Repeat("k", 64), PrerequisiteDigest: revision.EvidenceDigest,
+			IdempotencyKey: command.TaskID + "/checks", Status: domain.DCPV2CommandPending,
+			CreatedAt: p.now.Add(2 * time.Second), UpdatedAt: p.now.Add(2 * time.Second),
+		}
+		return dcpv2.Outcome{NextTaskState: domain.DCPV2TaskChecksWaiting, CommandResultDigest: revision.EvidenceDigest,
+			NextRevision: revision, NextCommand: next}, nil
 	case domain.DCPV2CommandChecksObserve:
 		if action != nil {
 			return dcpv2.Outcome{}, errors.New("deterministic command received model action")
@@ -243,12 +264,13 @@ func TestRestartAfterCommittedFenceDoesNotDuplicatePriorCommand(t *testing.T) {
 	if err := second.Startup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(secondProcessor.calls) != 2 || secondProcessor.calls[0] != command.CommandID || secondProcessor.calls[1] != "restart-after-commit-checks" {
+	if len(secondProcessor.calls) != 3 || secondProcessor.calls[0] != command.CommandID ||
+		secondProcessor.calls[1] != "restart-after-commit-publication" || secondProcessor.calls[2] != "restart-after-commit-checks" {
 		t.Fatalf("restart duplicated or lost commands: %v", secondProcessor.calls)
 	}
 	commands, _ := s.ListDCPV2Commands(context.Background(), command.TaskID)
-	if len(commands) != 2 {
-		t.Fatalf("command count=%d want=2", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("command count=%d want=3", len(commands))
 	}
 }
 

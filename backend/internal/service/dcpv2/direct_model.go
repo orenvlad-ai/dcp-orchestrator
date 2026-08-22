@@ -59,6 +59,12 @@ func (s *TwinService) driveDirectModels(ctx context.Context) error {
 		if err != nil || workspace.Branch == "" || workspace.Worktree == "" || len(workspace.WorktreeDigest) != 64 {
 			return errors.Join(err, errors.New("DCP v2 direct model workspace receipt drifted"))
 		}
+		if action.Role != domain.DCPV2ActionWorker {
+			lineageWorktree, lineageErr := s.processor.worktreeForRevision(ctx, task.TaskID, revision.RevisionID)
+			if lineageErr != nil || workspace.Worktree != lineageWorktree {
+				return errors.Join(lineageErr, errors.New("DCP v2 direct model workspace lineage drifted"))
+			}
+		}
 		runtimeID := stableID("runtime", action.ActionID, "attempt-1")
 		claimed, runtime, created, err := s.store.ReserveDCPV2ModelLaunch(ctx, command.CommandID, command.LeaseOwner,
 			command.LeaseEpoch, command.LeaseToken, runtimeID, workspace.Worktree, workspace.WorktreeDigest, s.now().UTC())

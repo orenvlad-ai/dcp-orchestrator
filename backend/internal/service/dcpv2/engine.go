@@ -20,6 +20,7 @@ var (
 	ErrDrainLimit                         = errors.New("dcp v2 finite command drain limit reached")
 	ErrModelRuntimeReconciliationRequired = errors.New("dcp v2 active model runtime requires exact reconciliation")
 	ErrEffectReconciliationPending        = errors.New("dcp v2 fenced external effect awaits exact reconciliation")
+	ErrProviderWakePending                = errors.New("dcp v2 command awaits one exact provider event")
 )
 
 type Store interface {
@@ -164,11 +165,24 @@ func (e *Engine) Event(ctx context.Context, event domain.DCPV2ExternalEvent) err
 		return fmt.Errorf("list event commands: %w", err)
 	}
 	for _, command := range leased {
-		if command.Kind.ModelBacked() || command.EffectFence == "" {
+		if command.Kind.ModelBacked() {
 			continue
 		}
-		if _, err := e.reconcileEffect(ctx, command, &event); err != nil {
-			return err
+		if command.EffectFence != "" {
+			if _, err := e.reconcileEffect(ctx, command, &event); err != nil {
+				return err
+			}
+			continue
+		}
+		if command.Kind.WaitsForProviderEvent() {
+			recovered, recoverErr := e.store.RecoverDCPV2CommandLease(ctx, command, e.owner, e.epoch,
+				e.identities.Token("command-recovery", command.CommandID), e.now())
+			if recoverErr != nil {
+				return fmt.Errorf("recover provider-wake command %s: %w", command.CommandID, recoverErr)
+			}
+			if processErr := e.process(ctx, recovered, nil); processErr != nil && !errors.Is(processErr, errPauseDrain) {
+				return processErr
+			}
 		}
 	}
 	if err := e.reconcileCompletedModelCommands(ctx); err != nil {
@@ -221,6 +235,9 @@ func (e *Engine) process(ctx context.Context, command domain.DCPV2Command, actio
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, ErrProviderWakePending) && !effectFenced && command.Kind.WaitsForProviderEvent() {
+			return errPauseDrain
+		}
 		if errors.Is(err, ErrEffectReconciliationPending) && effectFenced {
 			return nil
 		}
