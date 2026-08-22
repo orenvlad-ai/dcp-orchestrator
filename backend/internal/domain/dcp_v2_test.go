@@ -13,7 +13,8 @@ func TestDCPV2CommandTransitionLaw(t *testing.T) {
 	}{
 		{"worker exact successor", DCPV2CommandWorkerExecute, DCPV2TaskWorkerQueued, DCPV2TaskChecksWaiting, true, true},
 		{"worker cannot omit revision", DCPV2CommandWorkerExecute, DCPV2TaskWorkerQueued, DCPV2TaskChecksWaiting, false, false},
-		{"publication preserves successor revision", DCPV2CommandPublication, DCPV2TaskChecksWaiting, DCPV2TaskChecksWaiting, false, true},
+		{"publication creates provider-bound successor revision", DCPV2CommandPublication, DCPV2TaskChecksWaiting, DCPV2TaskChecksWaiting, true, true},
+		{"publication cannot omit provider-bound revision", DCPV2CommandPublication, DCPV2TaskChecksWaiting, DCPV2TaskChecksWaiting, false, false},
 		{"checks lead to fresh review", DCPV2CommandChecksObserve, DCPV2TaskChecksWaiting, DCPV2TaskReviewQueued, false, true},
 		{"review may consume shared repair", DCPV2CommandReviewExecute, DCPV2TaskReviewQueued, DCPV2TaskRepairQueued, false, true},
 		{"repair makes successor revision", DCPV2CommandRepairExecute, DCPV2TaskRepairQueued, DCPV2TaskChecksWaiting, true, true},

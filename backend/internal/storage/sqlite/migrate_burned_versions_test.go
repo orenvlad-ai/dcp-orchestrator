@@ -102,6 +102,7 @@ var shippedMigrations = map[int64]string{
 	84: "0084_dcp_v2_core.sql",
 	85: "0085_dcp_v2_twin_native_shell_compatibility.sql",
 	86: "0086_dcp_v2_direct_model_authority.sql",
+	87: "0087_dcp_v2_provider_bound_revision.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

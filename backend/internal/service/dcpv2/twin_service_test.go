@@ -18,7 +18,7 @@ import (
 	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
 
-const dcpV2Stage6Schema85SnapshotEnv = "DCP_V2_STAGE6_SCHEMA85_DB"
+const dcpV2Stage6Schema86SnapshotEnv = "DCP_V2_STAGE6_SCHEMA86_DB"
 
 type fakeDirectRunner struct {
 	workspace  ports.DCPV2ModelWorkspaceReceipt
@@ -28,6 +28,7 @@ type fakeDirectRunner struct {
 	terminal   *domain.DCPV2ModelTerminalReceipt
 	observeErr error
 	startedAt  time.Time
+	now        func() time.Time
 }
 
 func (f *fakeDirectRunner) Prepare(context.Context, ports.DCPV2ModelPrepareRequest) (ports.DCPV2ModelWorkspaceReceipt, error) {
@@ -39,8 +40,13 @@ func (f *fakeDirectRunner) Launch(_ context.Context, request ports.DCPV2ModelLau
 	f.requests = append(f.requests, request)
 	f.alive = true
 	startedAt := f.startedAt
-	if startedAt.IsZero() {
+	if f.now != nil {
+		startedAt = f.now()
+		f.startedAt = startedAt
+	} else if startedAt.IsZero() {
 		startedAt = time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC)
+	} else if f.launches > 1 {
+		startedAt = startedAt.Add(20 * time.Second)
 	}
 	return ports.DCPV2ModelLaunchReceipt{ActionID: request.ActionID, LaunchFence: request.LaunchFence,
 		RuntimeID: request.RuntimeID, ProviderRequestID: "fake-request-1", ProviderRequestDigest: strings.Repeat("f", 64),
@@ -86,30 +92,65 @@ func activateDirectTwinForTest(t *testing.T, store *sqlite.Store, projectPath st
 
 func TestDirectTwinOwnsLaunchRestartTerminalAndCreatesNoLegacyRows(t *testing.T) {
 	now := time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
-	dataDir := t.TempDir()
+	labRoot := t.TempDir()
+	dataDir := filepath.Join(labRoot, "data")
 	store, err := sqlite.Open(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	projectPath := filepath.Join(t.TempDir(), "targets", TwinTarget)
+	projectPath := filepath.Join(labRoot, "targets", TwinTarget)
 	activateDirectTwinForTest(t, store, projectPath, now)
-	worktree := filepath.Join(t.TempDir(), "worktrees", "direct")
+	worktree := filepath.Join(dataDir, "worktrees", "dcp-v2", TwinCanaryTaskID)
 	if err := os.MkdirAll(worktree, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeDirectRunner{workspace: ports.DCPV2ModelWorkspaceReceipt{Branch: directWorkerBranch(TwinCanaryTaskID),
 		Worktree: worktree, WorktreeDigest: strings.Repeat("d", 64)}, startedAt: now.Add(4 * time.Second)}
-	pushes := 0
+	pushes, reviews, dispatches, proofReads := 0, 0, 0, 0
+	published := false
+	var proofZIP []byte
+	prJSON := `{"number":17,"state":"open","draft":false,"merged":false,"mergeable":true,"mergeable_state":"clean","base":{"ref":"main","sha":"` + stage6RecoveryBaseSHA + `"},"head":{"ref":"` + directWorkerBranch(TwinCanaryTaskID) + `","sha":"` + strings.Repeat("e", 40) + `","repo":{"full_name":"` + TwinRepository + `"}}}`
 	adapter := &TwinGitHubAdapter{gh: func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
 		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/git/ref/heads/"+TwinBase {
 			return []byte(`{"object":{"sha":"` + stage6RecoveryBaseSHA + `"}}`), nil
 		}
 		if len(args) == 1 && strings.HasPrefix(args[0], "repos/"+TwinRepository+"/pulls?") {
-			return []byte(`[]`), nil
+			if !published {
+				return []byte(`[]`), nil
+			}
+			return []byte(`[` + prJSON + `]`), nil
 		}
 		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/pulls" {
-			return []byte(`{"number":17,"state":"open","draft":false,"merged":false,"base":{"ref":"main","sha":"` + stage6RecoveryBaseSHA + `"},"head":{"ref":"` + directWorkerBranch(TwinCanaryTaskID) + `","sha":"` + strings.Repeat("e", 40) + `","repo":{"full_name":"` + TwinRepository + `"}}}`), nil
+			published = true
+			return []byte(prJSON), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/pulls/17" {
+			return []byte(prJSON), nil
+		}
+		if len(args) == 1 && strings.Contains(args[0], "/commits/"+strings.Repeat("e", 40)+"/check-runs") {
+			return []byte(`{"check_runs":[{"id":91,"name":"baseline","status":"completed","conclusion":"success","details_url":"https://github.com/orenvlad-ai/dcp-wbc-integration-lab/actions/runs/91","head_sha":"` + strings.Repeat("e", 40) + `"}]}`), nil
+		}
+		if strings.Join(args, " ") == "--method POST graphql --input -" {
+			return []byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/pulls/17/reviews?per_page=100" {
+			return []byte(`[]`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/pulls/17/reviews" {
+			reviews++
+			return []byte(`{"id":55}`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/dispatches" {
+			dispatches++
+			return []byte(`{}`), nil
+		}
+		if len(args) == 1 && strings.Contains(args[0], "/actions/artifacts?name=deploy-proof-") {
+			return []byte(`{"artifacts":[{"id":99,"expired":false,"workflow_run":{"id":700}}]}`), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/actions/artifacts/99/zip" {
+			proofReads++
+			return proofZIP, nil
 		}
 		return nil, errors.New("unexpected GitHub read: " + strings.Join(args, " "))
 	}, git: func(_ context.Context, _ string, args ...string) (string, error) {
@@ -120,6 +161,8 @@ func TestDirectTwinOwnsLaunchRestartTerminalAndCreatesNoLegacyRows(t *testing.T)
 			return directWorkerBranch(TwinCanaryTaskID), nil
 		case "rev-parse\x00HEAD":
 			return strings.Repeat("e", 40), nil
+		case "rev-parse\x00HEAD^{tree}":
+			return strings.Repeat("f", 40), nil
 		case "rev-parse\x00" + strings.Repeat("e", 40) + "^{tree}":
 			return strings.Repeat("f", 40), nil
 		case "merge-base\x00--is-ancestor\x00" + stage6RecoveryBaseSHA + "\x00" + strings.Repeat("e", 40):
@@ -174,11 +217,117 @@ func TestDirectTwinOwnsLaunchRestartTerminalAndCreatesNoLegacyRows(t *testing.T)
 	}
 	snapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
 	if err != nil || snapshot.Task.State != domain.DCPV2TaskChecksWaiting || snapshot.Task.CurrentRevisionID == request.RevisionID ||
-		len(snapshot.Revisions) != 2 || len(snapshot.Commands) != 3 || snapshot.Commands[1].Kind != domain.DCPV2CommandPublication ||
+		len(snapshot.Revisions) != 3 || snapshot.Revisions[2].Kind != domain.DCPV2RevisionProvider ||
+		len(snapshot.Commands) != 3 || snapshot.Commands[1].Kind != domain.DCPV2CommandPublication ||
 		snapshot.Commands[1].Status != domain.DCPV2CommandSucceeded || snapshot.Commands[2].Kind != domain.DCPV2CommandChecksObserve || pushes != 1 ||
 		len(snapshot.Actions) != 1 || snapshot.Actions[0].Status != domain.DCPV2ActionSucceeded || snapshot.Actions[0].Slot != 0 ||
 		snapshot.Projection.ModelActive || !snapshot.Projection.WorkflowActive {
 		t.Fatalf("direct terminal snapshot=%+v err=%v", snapshot, err)
+	}
+	runner.terminal = nil
+	if err := svc.Startup(t.Context()); err != nil {
+		t.Fatalf("checks-waiting restart did not remain steady: %v", err)
+	}
+	pendingChecks, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || pendingChecks.Task != snapshot.Task || len(pendingChecks.Commands) != len(snapshot.Commands) ||
+		pushes != 1 || runner.launches != 1 {
+		t.Fatalf("checks-waiting restart drifted snapshot=%+v pushes=%d launches=%d err=%v", pendingChecks, pushes, runner.launches, err)
+	}
+	facts, err := adapter.ObserveChecks(t.Context(), directWorkerBranch(TwinCanaryTaskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksSnapshot, err := svc.WakeChecks(t.Context(), TwinCanaryTaskID, "checks-delivery-91", 91, facts.EvidenceHash)
+	if err != nil || checksSnapshot.Task.State != domain.DCPV2TaskReviewQueued || runner.launches != 2 || len(runner.requests) != 2 {
+		t.Fatalf("model-free check/reviewer handoff snapshot=%+v launches=%d err=%v", checksSnapshot, runner.launches, err)
+	}
+	reviewRequest := runner.requests[1]
+	reviewJSON := `{"verdict":"approved","headSha":"` + strings.Repeat("e", 40) + `","findings":[]}`
+	reviewDigest := digestCanonical(json.RawMessage(reviewJSON))
+	clock = now.Add(30 * time.Second)
+	reviewReceipt := domain.DCPV2ModelTerminalReceipt{
+		ReceiptID: stableID("terminal-receipt", reviewRequest.ActionID, reviewDigest), ActionID: reviewRequest.ActionID,
+		CommandID: reviewRequest.CommandID, TaskID: reviewRequest.TaskID, RevisionID: reviewRequest.RevisionID,
+		RuntimeID: reviewRequest.RuntimeID, LaunchFence: reviewRequest.LaunchFence, Status: domain.DCPV2ModelTerminalSucceeded,
+		ResultDigest: digestCanonical(map[string]string{"output": reviewDigest, "head": reviewRequest.HeadSHA}),
+		OutputJSON:   reviewJSON, OutputDigest: reviewDigest, HeadRef: reviewRequest.HeadRef, HeadSHA: reviewRequest.HeadSHA,
+		BaseSHA: reviewRequest.BaseSHA, WorktreePath: reviewRequest.Worktree, WorktreeDigest: reviewRequest.WorktreeDigest,
+		CreatedAt: now.Add(25 * time.Second),
+	}
+	runner.alive, runner.terminal = false, &reviewReceipt
+	if err := svc.ReportDirectProcessExit(t.Context(), reviewRequest.ActionID); err != nil {
+		t.Fatal(err)
+	}
+	releaseSnapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || releaseSnapshot.Task.State != domain.DCPV2TaskMergeObserving || len(releaseSnapshot.Admissions) != 1 ||
+		releaseSnapshot.Admissions[0].Status != domain.DCPV2AdmissionDispatched || reviews != 1 || dispatches != 1 {
+		t.Fatalf("review/admission/release handoff snapshot=%+v reviews=%d dispatches=%d err=%v", releaseSnapshot, reviews, dispatches, err)
+	}
+	if err := svc.Startup(t.Context()); err != nil {
+		t.Fatalf("release-waiting restart did not remain steady: %v", err)
+	}
+	pendingRelease, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || pendingRelease.Task != releaseSnapshot.Task || len(pendingRelease.Commands) != len(releaseSnapshot.Commands) ||
+		dispatches != 1 || proofReads != 0 {
+		t.Fatalf("release-waiting restart drifted snapshot=%+v dispatches=%d proofReads=%d err=%v",
+			pendingRelease, dispatches, proofReads, err)
+	}
+	admission := releaseSnapshot.Admissions[0]
+	manifest, err := BuildTwinManifest(releaseSnapshot.Task, releaseSnapshot.Revisions[len(releaseSnapshot.Revisions)-1], admission)
+	if err != nil || manifest.ManifestDigest != admission.ManifestDigest {
+		t.Fatalf("terminal manifest=%+v admission=%+v err=%v", manifest, admission, err)
+	}
+	mergeSHA := strings.Repeat("9", 40)
+	proof := twinProof{
+		Protocol: "dcp-deployment-proof/v1", TargetSpec: TwinTargetSpec, QualificationCase: "dcp_canary",
+		TaskID: releaseSnapshot.Task.TaskID, RevisionID: releaseSnapshot.Task.CurrentRevisionID,
+		AdmissionID: admission.AdmissionID, AdmissionSequence: admission.Sequence, AdmissionDigest: admission.ManifestDigest,
+		Repository: TwinRepository, RepositoryID: TwinRepositoryID, Base: TwinBase, PRNumber: admission.PRNumber,
+		AdmittedHead: admission.HeadSHA, CheckRunID: manifest.CheckRunID, ReviewID: manifest.ReviewID,
+		ReviewDigest: manifest.ReviewDigest, MergeSHA: mergeSHA, MergeActor: "github-actions[bot]",
+		ArtifactID: "dcp-wbc-integration-lab-" + mergeSHA, ArtifactMediaType: "application/gzip",
+		ArtifactSourceSHA: mergeSHA, ArtifactDigest: strings.Repeat("8", 64), DeployedSHA: mergeSHA,
+		Environment: TwinEnvironment, Service: TwinServiceName, Workflow: "release-train.yml", RunID: "700",
+		RunAttempt: "1", Job: "release", DispatchActor: TwinIssuerActor,
+	}
+	proof.Effects.RefUpdates, proof.Effects.Merges, proof.Effects.ReleaseArtifacts = 1, 1, 1
+	proof.Effects.Deploys, proof.Effects.TerminalProofs = 1, 1
+	proof.Timestamps.Validated = clock.Add(time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Merged = clock.Add(2 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Built = clock.Add(3 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Installed = clock.Add(4 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Probed = clock.Add(5 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Published = clock.Add(6 * time.Second).Format(time.RFC3339Nano)
+	for _, item := range [][2]string{{"healthz", "loopback"}, {"provenance", "loopback"}, {"post_job_readback", "forced-ssh-probe"}} {
+		proof.Probes = append(proof.Probes, struct {
+			Name           string `json:"name"`
+			Target         string `json:"target"`
+			Result         string `json:"result"`
+			EvidenceDigest string `json:"evidence_digest"`
+		}{item[0], item[1], "success", strings.Repeat("7", 64)})
+	}
+	proof.ProofDigest = digestWithoutField(proof, "proof_digest")
+	manifestJSON, _ := json.Marshal(manifest)
+	proofJSON, _ := json.Marshal(proof)
+	proofZIP = proofArchive(t, manifestJSON, proofJSON)
+	terminalSnapshot, err := svc.WakeRelease(t.Context(), TwinCanaryTaskID, "release-delivery-700", 700, proof.ProofDigest)
+	if err != nil || terminalSnapshot.Task.State != domain.DCPV2TaskDeployed || len(terminalSnapshot.Results) != 2 ||
+		terminalSnapshot.Results[0].ArtifactSourceSHA != mergeSHA || terminalSnapshot.Results[1].ArtifactSourceSHA != mergeSHA ||
+		terminalSnapshot.Results[1].DeployedSHA != mergeSHA || terminalSnapshot.Projection.ModelActive || terminalSnapshot.Projection.WorkflowActive ||
+		proofReads != 2 || reviews != 1 || dispatches != 1 || pushes != 1 || runner.launches != 2 {
+		t.Fatalf("model-free terminal chain snapshot=%+v proofReads=%d reviews=%d dispatches=%d pushes=%d launches=%d err=%v",
+			terminalSnapshot, proofReads, reviews, dispatches, pushes, runner.launches, err)
+	}
+	if err := svc.Startup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || restarted.Task != terminalSnapshot.Task || len(restarted.Revisions) != len(terminalSnapshot.Revisions) ||
+		len(restarted.Commands) != len(terminalSnapshot.Commands) || len(restarted.Actions) != len(terminalSnapshot.Actions) ||
+		len(restarted.Admissions) != 1 || len(restarted.Results) != 2 || proofReads != 2 || reviews != 1 ||
+		dispatches != 1 || pushes != 1 || runner.launches != 2 {
+		t.Fatalf("terminal restart/dedupe drifted snapshot=%+v proofReads=%d reviews=%d dispatches=%d pushes=%d launches=%d err=%v",
+			restarted, proofReads, reviews, dispatches, pushes, runner.launches, err)
 	}
 	legacyTasks, taskErr := store.ListDCPReviewLabPolicyTasks(t.Context())
 	legacyActions, actionErr := store.ListDCPModelActions(t.Context())
@@ -220,7 +369,7 @@ func TestDirectReviewerRepairAndArbiterShareOneDCPAuthority(t *testing.T) {
 	processor := &twinProcessor{now: func() time.Time { return now }}
 	revision := domain.DCPV2Revision{RevisionID: "revision-2", TaskID: "task", Sequence: 2,
 		Kind: domain.DCPV2RevisionWorker, Repository: TwinRepository, BaseRef: TwinBase,
-		BaseSHA: strings.Repeat("a", 40), HeadRef: "codex/direct", HeadSHA: strings.Repeat("b", 40), CreatedAt: now.Add(-time.Minute)}
+		BaseSHA: strings.Repeat("a", 40), HeadRef: "codex/direct", HeadSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("c", 40), CreatedAt: now.Add(-time.Minute)}
 	task := domain.DCPV2Task{TaskID: "task", BaseRef: TwinBase, CurrentRevisionID: revision.RevisionID,
 		State: domain.DCPV2TaskReviewQueued, StateRevision: 4, RepairBudget: 1}
 	command := domain.DCPV2Command{CommandID: "review-command", TaskID: task.TaskID, RevisionID: revision.RevisionID,
@@ -318,14 +467,21 @@ func TestValidateTwinActivationBindsExactInstalledTuple(t *testing.T) {
 	}
 }
 
-func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *testing.T) {
-	destination := copyStage6Schema85Snapshot(t)
+func TestStage6Schema86SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *testing.T) {
+	destination := copyStage6Schema86Snapshot(t)
 	store, err := sqlite.Open(filepath.Dir(destination))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	driftedOutput := true
+	native, found, err := store.GetDCPReviewLabPolicyTaskByTaskID(t.Context(), TwinCanaryTaskID)
+	if err != nil || !found || !filepath.IsAbs(native.WorktreePath) {
+		t.Fatalf("read frozen native worktree: found=%t native=%+v err=%v", found, native, err)
+	}
+	driftedOutput, remotePublished, published := true, false, false
+	pushes, reviews, dispatches, proofReads := 0, 0, 0, 0
+	var proofZIP []byte
+	prJSON := `{"number":17,"state":"open","draft":false,"merged":false,"mergeable":true,"mergeable_state":"clean","base":{"ref":"main","sha":"` + stage6RecoveryBaseSHA + `"},"head":{"ref":"` + stage6CanaryBranch + `","sha":"` + stage6CanaryCommit + `","repo":{"full_name":"` + TwinRepository + `"}}}`
 	git := func(_ context.Context, _ string, args ...string) (string, error) {
 		switch strings.Join(args, "\x00") {
 		case "status\x00--porcelain":
@@ -339,6 +495,8 @@ func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *t
 			return stage6CanaryCommit, nil
 		case "rev-parse\x00HEAD^{tree}":
 			return stage6CanaryTree, nil
+		case "rev-parse\x00" + stage6CanaryCommit + "^{tree}":
+			return stage6CanaryTree, nil
 		case "diff-tree\x00--no-commit-id\x00--name-only\x00-r\x00HEAD":
 			return "docs/STAGE6_CANARY.md", nil
 		case "show\x00HEAD:docs/STAGE6_CANARY.md":
@@ -346,17 +504,72 @@ func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *t
 		case "merge-base\x00--is-ancestor\x00" + stage6RecoveryBaseSHA + "\x00" + stage6CanaryCommit:
 			return "", nil
 		case "ls-remote\x00--heads\x00origin\x00refs/heads/" + stage6CanaryBranch:
+			if remotePublished {
+				return stage6CanaryCommit + "\trefs/heads/" + stage6CanaryBranch, nil
+			}
 			return "", nil
 		default:
+			if len(args) == 4 && args[0] == "push" && strings.HasPrefix(args[1], "--force-with-lease=") {
+				pushes++
+				remotePublished = true
+				return "", nil
+			}
 			return "", errors.New("unexpected Git read: " + strings.Join(args, " "))
 		}
 	}
-	gh := func(_ context.Context, _ []byte, _ ...string) ([]byte, error) { return []byte(`[]`), nil }
+	gh := func(_ context.Context, _ []byte, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/git/ref/heads/"+TwinBase {
+			return []byte(`{"object":{"sha":"` + stage6RecoveryBaseSHA + `"}}`), nil
+		}
+		if len(args) == 1 && strings.HasPrefix(args[0], "repos/"+TwinRepository+"/pulls?") {
+			if !published {
+				return []byte(`[]`), nil
+			}
+			return []byte(`[` + prJSON + `]`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/pulls" {
+			published = true
+			return []byte(prJSON), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/pulls/17" {
+			return []byte(prJSON), nil
+		}
+		if len(args) == 1 && strings.Contains(args[0], "/commits/"+stage6CanaryCommit+"/check-runs") {
+			return []byte(`{"check_runs":[{"id":91,"name":"baseline","status":"completed","conclusion":"success","details_url":"https://github.com/orenvlad-ai/dcp-wbc-integration-lab/actions/runs/91","head_sha":"` + stage6CanaryCommit + `"}]}`), nil
+		}
+		if strings.Join(args, " ") == "--method POST graphql --input -" {
+			return []byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/pulls/17/reviews?per_page=100" {
+			return []byte(`[]`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/pulls/17/reviews" {
+			reviews++
+			return []byte(`{"id":55}`), nil
+		}
+		if len(args) == 5 && args[0] == "--method" && args[1] == "POST" && args[2] == "repos/"+TwinRepository+"/dispatches" {
+			dispatches++
+			return []byte(`{}`), nil
+		}
+		if len(args) == 1 && strings.Contains(args[0], "/actions/artifacts?name=deploy-proof-") {
+			return []byte(`{"artifacts":[{"id":99,"expired":false,"workflow_run":{"id":700}}]}`), nil
+		}
+		if len(args) == 1 && args[0] == "repos/"+TwinRepository+"/actions/artifacts/99/zip" {
+			proofReads++
+			return proofZIP, nil
+		}
+		return nil, errors.New("unexpected GitHub read: " + strings.Join(args, " "))
+	}
 	adapter := &TwinGitHubAdapter{git: git, gh: gh}
-	runner := &fakeDirectRunner{}
-	svc, err := NewTwinService(store, runner, adapter, "adoption-epoch", func() time.Time {
-		return time.Date(2026, 8, 21, 14, 0, 0, 0, time.UTC)
-	})
+	clock := time.Date(2026, 8, 21, 14, 0, 0, 0, time.UTC)
+	nextTime := func() time.Time {
+		clock = clock.Add(time.Second)
+		return clock
+	}
+	runner := &fakeDirectRunner{workspace: ports.DCPV2ModelWorkspaceReceipt{Branch: stage6CanaryBranch,
+		Worktree: native.WorktreePath, WorktreeDigest: digestCanonical(map[string]string{"branch": stage6CanaryBranch, "worktree": native.WorktreePath})},
+		now: nextTime}
+	svc, err := NewTwinService(store, runner, adapter, "adoption-epoch", nextTime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,6 +601,111 @@ func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *t
 		len(snapshot.Actions) != 1 || snapshot.Actions[0].Status != domain.DCPV2ActionSucceeded || snapshot.Actions[0].Slot != 0 || runner.launches != 0 {
 		t.Fatalf("adopted DCP state drifted: snapshot=%+v launches=%d err=%v", snapshot, runner.launches, err)
 	}
+	if err := svc.Startup(t.Context()); err != nil {
+		t.Fatalf("continue exact adopted schema-86 snapshot through publication: %v", err)
+	}
+	publishedSnapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || publishedSnapshot.Task.State != domain.DCPV2TaskChecksWaiting || len(publishedSnapshot.Revisions) != 3 ||
+		publishedSnapshot.Revisions[1].Kind != domain.DCPV2RevisionWorker || publishedSnapshot.Revisions[1].PRNumber != 0 ||
+		publishedSnapshot.Revisions[2].Kind != domain.DCPV2RevisionProvider || publishedSnapshot.Revisions[2].PRNumber != 17 ||
+		publishedSnapshot.Revisions[2].HeadSHA != stage6CanaryCommit || pushes != 1 || !remotePublished || !published {
+		t.Fatalf("provider-bound publication drifted snapshot=%+v pushes=%d remote=%t published=%t err=%v",
+			publishedSnapshot, pushes, remotePublished, published, err)
+	}
+	if err := svc.Startup(t.Context()); err != nil || pushes != 1 || len(publishedSnapshot.Revisions) != 3 {
+		t.Fatalf("equal publication restart duplicated effect: pushes=%d err=%v", pushes, err)
+	}
+	facts, err := adapter.ObserveChecks(t.Context(), stage6CanaryBranch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksSnapshot, err := svc.WakeChecks(t.Context(), TwinCanaryTaskID, "schema86-checks-delivery-91", 91, facts.EvidenceHash)
+	if err != nil || checksSnapshot.Task.State != domain.DCPV2TaskReviewQueued || runner.launches != 1 || len(runner.requests) != 1 ||
+		checksSnapshot.Projection.ModelActive != true || !checksSnapshot.Projection.WorkflowActive {
+		t.Fatalf("schema-86 check/reviewer handoff snapshot=%+v launches=%d err=%v", checksSnapshot, runner.launches, err)
+	}
+	reviewRequest := runner.requests[0]
+	reviewJSON := `{"verdict":"approved","headSha":"` + stage6CanaryCommit + `","findings":[]}`
+	reviewDigest := digestCanonical(json.RawMessage(reviewJSON))
+	reviewReceipt := domain.DCPV2ModelTerminalReceipt{
+		ReceiptID: stableID("terminal-receipt", reviewRequest.ActionID, reviewDigest), ActionID: reviewRequest.ActionID,
+		CommandID: reviewRequest.CommandID, TaskID: reviewRequest.TaskID, RevisionID: reviewRequest.RevisionID,
+		RuntimeID: reviewRequest.RuntimeID, LaunchFence: reviewRequest.LaunchFence, Status: domain.DCPV2ModelTerminalSucceeded,
+		ResultDigest: digestCanonical(map[string]string{"output": reviewDigest, "head": reviewRequest.HeadSHA}),
+		OutputJSON:   reviewJSON, OutputDigest: reviewDigest, HeadRef: reviewRequest.HeadRef, HeadSHA: reviewRequest.HeadSHA,
+		BaseSHA: reviewRequest.BaseSHA, WorktreePath: reviewRequest.Worktree, WorktreeDigest: reviewRequest.WorktreeDigest,
+		CreatedAt: runner.startedAt.Add(time.Second),
+	}
+	runner.alive, runner.terminal = false, &reviewReceipt
+	if err := svc.ReportDirectProcessExit(t.Context(), reviewRequest.ActionID); err != nil {
+		t.Fatalf("complete typed fake Reviewer receipt: %v", err)
+	}
+	releaseSnapshot, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || releaseSnapshot.Task.State != domain.DCPV2TaskMergeObserving || len(releaseSnapshot.Admissions) != 1 ||
+		releaseSnapshot.Admissions[0].Status != domain.DCPV2AdmissionDispatched || reviews != 1 || dispatches != 1 ||
+		releaseSnapshot.Projection.ModelActive || !releaseSnapshot.Projection.WorkflowActive {
+		t.Fatalf("schema-86 review/admission/release handoff snapshot=%+v reviews=%d dispatches=%d err=%v",
+			releaseSnapshot, reviews, dispatches, err)
+	}
+	admission := releaseSnapshot.Admissions[0]
+	manifest, err := BuildTwinManifest(releaseSnapshot.Task, releaseSnapshot.Revisions[len(releaseSnapshot.Revisions)-1], admission)
+	if err != nil || manifest.ManifestDigest != admission.ManifestDigest || manifest.RevisionID != releaseSnapshot.Task.CurrentRevisionID {
+		t.Fatalf("schema-86 terminal manifest=%+v admission=%+v err=%v", manifest, admission, err)
+	}
+	mergeSHA := strings.Repeat("9", 40)
+	proof := twinProof{
+		Protocol: "dcp-deployment-proof/v1", TargetSpec: TwinTargetSpec, QualificationCase: "dcp_canary",
+		TaskID: releaseSnapshot.Task.TaskID, RevisionID: releaseSnapshot.Task.CurrentRevisionID,
+		AdmissionID: admission.AdmissionID, AdmissionSequence: admission.Sequence, AdmissionDigest: admission.ManifestDigest,
+		Repository: TwinRepository, RepositoryID: TwinRepositoryID, Base: TwinBase, PRNumber: admission.PRNumber,
+		AdmittedHead: admission.HeadSHA, CheckRunID: manifest.CheckRunID, ReviewID: manifest.ReviewID,
+		ReviewDigest: manifest.ReviewDigest, MergeSHA: mergeSHA, MergeActor: "github-actions[bot]",
+		ArtifactID: "dcp-wbc-integration-lab-" + mergeSHA, ArtifactMediaType: "application/gzip",
+		ArtifactSourceSHA: mergeSHA, ArtifactDigest: strings.Repeat("8", 64), DeployedSHA: mergeSHA,
+		Environment: TwinEnvironment, Service: TwinServiceName, Workflow: "release-train.yml", RunID: "700",
+		RunAttempt: "1", Job: "release", DispatchActor: TwinIssuerActor,
+	}
+	proof.Effects.RefUpdates, proof.Effects.Merges, proof.Effects.ReleaseArtifacts = 1, 1, 1
+	proof.Effects.Deploys, proof.Effects.TerminalProofs = 1, 1
+	proof.Timestamps.Validated = clock.Add(time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Merged = clock.Add(2 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Built = clock.Add(3 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Installed = clock.Add(4 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Probed = clock.Add(5 * time.Second).Format(time.RFC3339Nano)
+	proof.Timestamps.Published = clock.Add(6 * time.Second).Format(time.RFC3339Nano)
+	for _, item := range [][2]string{{"healthz", "loopback"}, {"provenance", "loopback"}, {"post_job_readback", "forced-ssh-probe"}} {
+		proof.Probes = append(proof.Probes, struct {
+			Name           string `json:"name"`
+			Target         string `json:"target"`
+			Result         string `json:"result"`
+			EvidenceDigest string `json:"evidence_digest"`
+		}{item[0], item[1], "success", strings.Repeat("7", 64)})
+	}
+	proof.ProofDigest = digestWithoutField(proof, "proof_digest")
+	manifestJSON, _ := json.Marshal(manifest)
+	proofJSON, _ := json.Marshal(proof)
+	proofZIP = proofArchive(t, manifestJSON, proofJSON)
+	terminalSnapshot, err := svc.WakeRelease(t.Context(), TwinCanaryTaskID, "schema86-release-delivery-700", 700, proof.ProofDigest)
+	if err != nil || terminalSnapshot.Task.State != domain.DCPV2TaskDeployed || len(terminalSnapshot.Results) != 2 ||
+		terminalSnapshot.Results[0].ArtifactSourceSHA != mergeSHA || terminalSnapshot.Results[1].ArtifactSourceSHA != mergeSHA ||
+		terminalSnapshot.Results[1].DeployedSHA != mergeSHA || terminalSnapshot.Task.TerminalResultID != terminalSnapshot.Results[1].ResultID ||
+		terminalSnapshot.Projection.ModelActive || terminalSnapshot.Projection.WorkflowActive ||
+		proofReads != 2 || reviews != 1 || dispatches != 1 || pushes != 1 || runner.launches != 1 {
+		t.Fatalf("schema-86 terminal chain snapshot=%+v proofReads=%d reviews=%d dispatches=%d pushes=%d launches=%d err=%v",
+			terminalSnapshot, proofReads, reviews, dispatches, pushes, runner.launches, err)
+	}
+	runner.terminal = nil
+	if err := svc.Startup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
+	if err != nil || restarted.Task != terminalSnapshot.Task || len(restarted.Revisions) != len(terminalSnapshot.Revisions) ||
+		len(restarted.Commands) != len(terminalSnapshot.Commands) || len(restarted.Actions) != len(terminalSnapshot.Actions) ||
+		len(restarted.Admissions) != 1 || len(restarted.Results) != 2 || proofReads != 2 || reviews != 1 ||
+		dispatches != 1 || pushes != 1 || runner.launches != 1 {
+		t.Fatalf("schema-86 terminal restart/dedupe drifted snapshot=%+v proofReads=%d reviews=%d dispatches=%d pushes=%d launches=%d err=%v",
+			restarted, proofReads, reviews, dispatches, pushes, runner.launches, err)
+	}
 	db, err := sql.Open("sqlite", destination)
 	if err != nil {
 		t.Fatal(err)
@@ -397,27 +715,24 @@ func TestStage6Schema85SnapshotAdoptsFrozenWorkerOnceWithoutLegacyAuthority(t *t
 	}
 	_ = db.Close()
 	after, err := svc.Snapshot(t.Context(), TwinCanaryTaskID)
-	if err != nil || after.Task != snapshot.Task || len(after.Revisions) != len(snapshot.Revisions) || len(after.Commands) != len(snapshot.Commands) {
-		t.Fatalf("legacy mutation changed DCP authority: before=%+v after=%+v err=%v", snapshot.Task, after.Task, err)
+	if err != nil || after.Task != terminalSnapshot.Task || len(after.Revisions) != len(terminalSnapshot.Revisions) || len(after.Commands) != len(terminalSnapshot.Commands) {
+		t.Fatalf("legacy mutation changed DCP authority: before=%+v after=%+v err=%v", terminalSnapshot.Task, after.Task, err)
 	}
 }
 
-func copyStage6Schema85Snapshot(t *testing.T) string {
+func copyStage6Schema86Snapshot(t *testing.T) string {
 	t.Helper()
-	source := os.Getenv(dcpV2Stage6Schema85SnapshotEnv)
+	source := os.Getenv(dcpV2Stage6Schema86SnapshotEnv)
 	if source == "" {
-		t.Skip(dcpV2Stage6Schema85SnapshotEnv + " is not set")
+		t.Skip(dcpV2Stage6Schema86SnapshotEnv + " is not set")
 	}
-	readOnly, err := sql.Open("sqlite", "file:"+source+"?mode=ro")
+	contents, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(t.TempDir(), "ao.db")
-	if _, err := readOnly.Exec(`VACUUM INTO ?`, destination); err != nil {
-		t.Fatalf("copy exact schema-85 snapshot: %v", err)
-	}
-	if err := readOnly.Close(); err != nil {
-		t.Fatal(err)
+	if err := os.WriteFile(destination, contents, 0o600); err != nil {
+		t.Fatalf("copy exact schema-86 snapshot: %v", err)
 	}
 	return destination
 }

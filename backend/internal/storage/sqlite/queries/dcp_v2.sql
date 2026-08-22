@@ -45,9 +45,9 @@ WHERE task_id = ? AND state_revision = ? AND current_revision_id = ? AND state =
 -- name: InsertDCPV2Revision :exec
 INSERT INTO dcp_v2_revision (
     revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref,
-    head_sha, predecessor_revision_id, cause_command_id, pr_number,
+    head_sha, tree_sha, predecessor_revision_id, cause_command_id, pr_number,
     evidence_digest, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetDCPV2Revision :one
 SELECT * FROM dcp_v2_revision WHERE revision_id = ?;
@@ -268,9 +268,9 @@ SELECT * FROM dcp_v2_incident WHERE task_id = ? ORDER BY created_at, incident_id
 INSERT INTO dcp_v2_result (
     result_id, task_id, revision_id, admission_id, command_id, kind,
     provider, proof_id, run_id, actor, manifest_digest, proof_digest,
-    merge_sha, artifact_digest, deployed_sha, environment,
+    merge_sha, artifact_source_sha, artifact_digest, deployed_sha, environment,
     service, probe_digest, verified, error_code, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetDCPV2Result :one
 SELECT * FROM dcp_v2_result WHERE result_id = ?;

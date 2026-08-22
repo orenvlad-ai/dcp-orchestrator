@@ -94,6 +94,7 @@ type DCPV2RepositoryEffect struct {
 	ExternalID     string
 	OldHeadSHA     string
 	NewHeadSHA     string
+	TreeSHA        string
 	BaseSHA        string
 	EvidenceDigest string
 }
@@ -117,17 +118,18 @@ type DCPV2ReleaseReceipt struct {
 }
 
 type DCPV2ReleaseObservation struct {
-	ProofID        string
-	Provider       string
-	RunID          string
-	Actor          string
-	AdmissionID    string
-	ManifestDigest string
-	MergeSHA       string
-	ArtifactDigest string
-	Readmission    bool
-	CurrentMainSHA string
-	EvidenceDigest string
+	ProofID           string
+	Provider          string
+	RunID             string
+	Actor             string
+	AdmissionID       string
+	ManifestDigest    string
+	MergeSHA          string
+	ArtifactSourceSHA string
+	ArtifactDigest    string
+	Readmission       bool
+	CurrentMainSHA    string
+	EvidenceDigest    string
 }
 
 // DCPV2Deployment verifies an immutable target-owned deployment proof. The
@@ -137,19 +139,20 @@ type DCPV2Deployment interface {
 }
 
 type DCPV2DeploymentObservation struct {
-	ProofID        string
-	Provider       string
-	RunID          string
-	Actor          string
-	AdmissionID    string
-	ManifestDigest string
-	MergeSHA       string
-	ArtifactDigest string
-	DeployedSHA    string
-	Environment    string
-	Service        string
-	ProbeDigest    string
-	EvidenceDigest string
-	Succeeded      bool
-	FailureCode    string
+	ProofID           string
+	Provider          string
+	RunID             string
+	Actor             string
+	AdmissionID       string
+	ManifestDigest    string
+	MergeSHA          string
+	ArtifactSourceSHA string
+	ArtifactDigest    string
+	DeployedSHA       string
+	Environment       string
+	Service           string
+	ProbeDigest       string
+	EvidenceDigest    string
+	Succeeded         bool
+	FailureCode       string
 }

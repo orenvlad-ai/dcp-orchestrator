@@ -1056,20 +1056,32 @@ func validateDCPV2Transition(task domain.DCPV2Task, currentRevision domain.DCPV2
 		revision := tr.NextRevision
 		if revision.TaskID != task.TaskID || revision.Sequence != currentRevision.Sequence+1 || revision.Repository != task.Repository ||
 			revision.BaseRef != task.BaseRef || revision.PredecessorRevisionID != currentRevision.RevisionID ||
-			revision.CauseCommandID != command.CommandID || revision.BaseSHA == "" || revision.HeadSHA == "" || revision.CreatedAt.IsZero() {
+			revision.CauseCommandID != command.CommandID || revision.BaseSHA == "" || revision.HeadSHA == "" ||
+			len(revision.TreeSHA) != 40 || revision.CreatedAt.IsZero() {
 			return ErrDCPV2ProtocolViolation
 		}
 		switch revision.Kind {
 		case domain.DCPV2RevisionWorker:
-			if command.Kind != domain.DCPV2CommandWorkerExecute {
+			if command.Kind != domain.DCPV2CommandWorkerExecute || revision.PRNumber != 0 {
 				return ErrDCPV2ProtocolViolation
 			}
 		case domain.DCPV2RevisionRepair:
-			if command.Kind != domain.DCPV2CommandRepairExecute {
+			if command.Kind != domain.DCPV2CommandRepairExecute || revision.PRNumber != 0 {
+				return ErrDCPV2ProtocolViolation
+			}
+		case domain.DCPV2RevisionProvider:
+			if command.Kind != domain.DCPV2CommandPublication || revision.PRNumber <= 0 ||
+				(currentRevision.Kind != domain.DCPV2RevisionWorker && currentRevision.Kind != domain.DCPV2RevisionRepair) ||
+				currentRevision.PRNumber != 0 || revision.Repository != currentRevision.Repository ||
+				revision.BaseRef != currentRevision.BaseRef || revision.BaseSHA != currentRevision.BaseSHA ||
+				revision.HeadRef != currentRevision.HeadRef || revision.HeadSHA != currentRevision.HeadSHA ||
+				revision.TreeSHA != currentRevision.TreeSHA {
 				return ErrDCPV2ProtocolViolation
 			}
 		case domain.DCPV2RevisionReadmission:
-			if command.Kind != domain.DCPV2CommandReadmission {
+			if command.Kind != domain.DCPV2CommandReadmission || revision.PRNumber <= 0 ||
+				revision.PRNumber != currentRevision.PRNumber || revision.Repository != currentRevision.Repository ||
+				revision.BaseRef != currentRevision.BaseRef || revision.HeadRef != currentRevision.HeadRef {
 				return ErrDCPV2ProtocolViolation
 			}
 		default:
@@ -1099,7 +1111,11 @@ func validateDCPV2Transition(task domain.DCPV2Task, currentRevision domain.DCPV2
 		a := tr.Admission
 		if a.TaskID != task.TaskID || a.RevisionID != nextRevisionID || a.Status != domain.DCPV2AdmissionWaiting ||
 			a.LeaseOwner != "" || a.LeaseEpoch != "" || a.LeaseToken != "" || a.DispatchFence != "" || a.RecoveryGeneration != 0 ||
-			a.ResultID != "" || a.ErrorCode != "" || a.HeadSHA == "" || a.ManifestDigest == "" {
+			a.ResultID != "" || a.ErrorCode != "" || a.LineKey != task.Repository+":"+task.BaseRef ||
+			a.PRNumber <= 0 || a.PRNumber != currentRevision.PRNumber || a.HeadSHA != currentRevision.HeadSHA ||
+			a.BaseSHA != currentRevision.BaseSHA || a.MainSHA != currentRevision.BaseSHA ||
+			a.RequiredCheckID == "" || a.ReviewID == "" || len(a.ManifestDigest) != 64 ||
+			(currentRevision.Kind != domain.DCPV2RevisionProvider && currentRevision.Kind != domain.DCPV2RevisionReadmission) {
 			return ErrDCPV2ProtocolViolation
 		}
 	}
@@ -1149,10 +1165,11 @@ func validateDCPV2Transition(task domain.DCPV2Task, currentRevision domain.DCPV2
 		if r.Verified && (r.Provider == "" || r.ProofID == "" || r.RunID == "" || r.Actor == "" || len(r.ManifestDigest) != 64) {
 			return ErrDCPV2ProtocolViolation
 		}
-		if r.Kind == domain.DCPV2ResultDeployment && r.Verified && (r.MergeSHA == "" || r.DeployedSHA != r.MergeSHA || r.ArtifactDigest == "" || r.Environment == "" || r.Service == "" || r.ProbeDigest == "") {
+		if r.Kind == domain.DCPV2ResultDeployment && r.Verified && (r.MergeSHA == "" || r.ArtifactSourceSHA != r.MergeSHA ||
+			r.DeployedSHA != r.MergeSHA || r.ArtifactDigest == "" || r.Environment == "" || r.Service == "" || r.ProbeDigest == "") {
 			return ErrDCPV2ProtocolViolation
 		}
-		if r.Kind == domain.DCPV2ResultRelease && r.Verified && (r.MergeSHA == "" || r.ArtifactDigest == "") {
+		if r.Kind == domain.DCPV2ResultRelease && r.Verified && (r.MergeSHA == "" || r.ArtifactSourceSHA != r.MergeSHA || r.ArtifactDigest == "") {
 			return ErrDCPV2ProtocolViolation
 		}
 	}
@@ -1247,7 +1264,7 @@ func validateDCPV2ResultBinding(ctx context.Context, q *gen.Queries, task domain
 		for _, row := range prior {
 			if row.Kind == string(domain.DCPV2ResultRelease) && row.Verified == 1 && row.RevisionID == revisionID &&
 				row.AdmissionID.Valid && row.AdmissionID.String == result.AdmissionID && row.MergeSha == result.MergeSHA &&
-				row.ArtifactDigest == result.ArtifactDigest {
+				row.ArtifactSourceSha == result.ArtifactSourceSHA && row.ArtifactDigest == result.ArtifactDigest {
 				matched = true
 				break
 			}
@@ -1335,7 +1352,7 @@ func sameDCPV2Task(row gen.DcpV2Task, v domain.DCPV2Task) bool {
 func dcpV2RevisionParams(v domain.DCPV2Revision) gen.InsertDCPV2RevisionParams {
 	return gen.InsertDCPV2RevisionParams{
 		RevisionID: v.RevisionID, TaskID: v.TaskID, Sequence: v.Sequence, Kind: string(v.Kind), Repository: v.Repository,
-		BaseRef: v.BaseRef, BaseSha: v.BaseSHA, HeadRef: v.HeadRef, HeadSha: v.HeadSHA,
+		BaseRef: v.BaseRef, BaseSha: v.BaseSHA, HeadRef: v.HeadRef, HeadSha: v.HeadSHA, TreeSha: v.TreeSHA,
 		PredecessorRevisionID: v.PredecessorRevisionID, CauseCommandID: v.CauseCommandID, PRNumber: v.PRNumber,
 		EvidenceDigest: v.EvidenceDigest, CreatedAt: v.CreatedAt,
 	}
@@ -1344,7 +1361,7 @@ func dcpV2RevisionParams(v domain.DCPV2Revision) gen.InsertDCPV2RevisionParams {
 func dcpV2RevisionFromGen(v gen.DcpV2Revision) domain.DCPV2Revision {
 	return domain.DCPV2Revision{
 		RevisionID: v.RevisionID, TaskID: v.TaskID, Sequence: v.Sequence, Kind: domain.DCPV2RevisionKind(v.Kind),
-		Repository: v.Repository, BaseRef: v.BaseRef, BaseSHA: v.BaseSha, HeadRef: v.HeadRef, HeadSHA: v.HeadSha,
+		Repository: v.Repository, BaseRef: v.BaseRef, BaseSHA: v.BaseSha, HeadRef: v.HeadRef, HeadSHA: v.HeadSha, TreeSHA: v.TreeSha,
 		PredecessorRevisionID: v.PredecessorRevisionID, CauseCommandID: v.CauseCommandID, PRNumber: v.PRNumber,
 		EvidenceDigest: v.EvidenceDigest, CreatedAt: v.CreatedAt,
 	}
@@ -1353,7 +1370,7 @@ func dcpV2RevisionFromGen(v gen.DcpV2Revision) domain.DCPV2Revision {
 func sameDCPV2Revision(row gen.DcpV2Revision, v domain.DCPV2Revision) bool {
 	return row.RevisionID == v.RevisionID && row.TaskID == v.TaskID && row.Sequence == v.Sequence && row.Kind == string(v.Kind) &&
 		row.Repository == v.Repository && row.BaseRef == v.BaseRef && row.BaseSha == v.BaseSHA && row.HeadRef == v.HeadRef &&
-		row.HeadSha == v.HeadSHA && row.PredecessorRevisionID == v.PredecessorRevisionID && row.CauseCommandID == v.CauseCommandID &&
+		row.HeadSha == v.HeadSHA && row.TreeSha == v.TreeSHA && row.PredecessorRevisionID == v.PredecessorRevisionID && row.CauseCommandID == v.CauseCommandID &&
 		row.PRNumber == v.PRNumber && row.EvidenceDigest == v.EvidenceDigest
 }
 
@@ -1482,7 +1499,7 @@ func dcpV2ResultParams(v domain.DCPV2Result) gen.InsertDCPV2ResultParams {
 		ResultID: v.ResultID, TaskID: v.TaskID, RevisionID: v.RevisionID, AdmissionID: admissionID,
 		CommandID: v.CommandID, Kind: string(v.Kind), Provider: v.Provider, ProofID: v.ProofID, RunID: v.RunID,
 		Actor: v.Actor, ManifestDigest: v.ManifestDigest, ProofDigest: v.ProofDigest, MergeSha: v.MergeSHA,
-		ArtifactDigest: v.ArtifactDigest, DeployedSha: v.DeployedSHA, Environment: v.Environment,
+		ArtifactSourceSha: v.ArtifactSourceSHA, ArtifactDigest: v.ArtifactDigest, DeployedSha: v.DeployedSHA, Environment: v.Environment,
 		Service: v.Service, ProbeDigest: v.ProbeDigest, Verified: verified, ErrorCode: v.ErrorCode, CreatedAt: v.CreatedAt,
 	}
 }
@@ -1496,7 +1513,7 @@ func dcpV2ResultFromGen(v gen.DcpV2Result) domain.DCPV2Result {
 		ResultID: v.ResultID, TaskID: v.TaskID, RevisionID: v.RevisionID, AdmissionID: admissionID,
 		CommandID: v.CommandID, Kind: domain.DCPV2ResultKind(v.Kind), Provider: v.Provider, ProofID: v.ProofID,
 		RunID: v.RunID, Actor: v.Actor, ManifestDigest: v.ManifestDigest, ProofDigest: v.ProofDigest,
-		MergeSHA: v.MergeSha, ArtifactDigest: v.ArtifactDigest, DeployedSHA: v.DeployedSha,
+		MergeSHA: v.MergeSha, ArtifactSourceSHA: v.ArtifactSourceSha, ArtifactDigest: v.ArtifactDigest, DeployedSHA: v.DeployedSha,
 		Environment: v.Environment, Service: v.Service, ProbeDigest: v.ProbeDigest,
 		Verified: v.Verified == 1, ErrorCode: v.ErrorCode, CreatedAt: v.CreatedAt,
 	}

@@ -17,6 +17,7 @@ import (
 const (
 	v2BaseSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	v2HeadSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	v2TreeSHA = "cccccccccccccccccccccccccccccccccccccccc"
 )
 
 func v2Digest(letter string) string { return strings.Repeat(letter, 64) }
@@ -250,7 +251,7 @@ func TestDCPV2DirectTerminalReceiptAdvancesAtomicallyAndReplaysInert(t *testing.
 	resultDigest := v2Digest("r")
 	nextRevision := domain.DCPV2Revision{RevisionID: "direct-terminal-r2", TaskID: task.TaskID, Sequence: 2,
 		Kind: domain.DCPV2RevisionWorker, Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA,
-		HeadRef: "codex/direct-terminal", HeadSHA: v2HeadSHA, PredecessorRevisionID: current.RevisionID,
+		HeadRef: "codex/direct-terminal", HeadSHA: v2HeadSHA, TreeSHA: v2TreeSHA, PredecessorRevisionID: current.RevisionID,
 		CauseCommandID: leased.CommandID, EvidenceDigest: resultDigest, CreatedAt: now.Add(4 * time.Second)}
 	next := domain.DCPV2Command{CommandID: "direct-terminal-publication", TaskID: task.TaskID,
 		RevisionID: nextRevision.RevisionID, Kind: domain.DCPV2CommandPublication, PayloadJSON: `{}`,
@@ -350,32 +351,61 @@ func completeWorkerV2(t *testing.T, s *sqlite.Store, task domain.DCPV2Task, comm
 	leased := claimV2Command(t, s, command.CommandID, now.Add(time.Second))
 	fenceV2Command(t, s, leased, now.Add(2*time.Second))
 	finishV2ModelAction(t, s, leased, v2Digest("r"), now.Add(2*time.Second))
-	revision := domain.DCPV2Revision{
+	workerRevision := domain.DCPV2Revision{
 		RevisionID: task.TaskID + "-r2", TaskID: task.TaskID, Sequence: 2, Kind: domain.DCPV2RevisionWorker,
-		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA, HeadRef: "work", HeadSHA: v2HeadSHA,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA, HeadRef: "work", HeadSHA: v2HeadSHA, TreeSHA: v2TreeSHA,
 		PredecessorRevisionID: task.CurrentRevisionID, CauseCommandID: command.CommandID,
-		PRNumber: 1, EvidenceDigest: v2Digest("f"), CreatedAt: now.Add(3 * time.Second),
+		EvidenceDigest: v2Digest("f"), CreatedAt: now.Add(3 * time.Second),
 	}
-	next := domain.DCPV2Command{
-		CommandID: task.TaskID + "-c2", TaskID: task.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
+	publication := domain.DCPV2Command{
+		CommandID: task.TaskID + "-c2", TaskID: task.TaskID, RevisionID: workerRevision.RevisionID, Kind: domain.DCPV2CommandPublication,
 		PayloadJSON: `{}`, PayloadDigest: v2Digest("g"), PrerequisiteDigest: v2Digest("q"),
-		IdempotencyKey: task.TaskID + "/checks/2", Status: domain.DCPV2CommandPending,
+		IdempotencyKey: task.TaskID + "/publication/2", Status: domain.DCPV2CommandPending,
 		CreatedAt: now.Add(3 * time.Second), UpdatedAt: now.Add(3 * time.Second),
 	}
 	err := s.TransitionDCPV2(context.Background(), sqlitestore.DCPV2Transition{
 		CommandID: leased.CommandID, LeaseOwner: leased.LeaseOwner, LeaseEpoch: leased.LeaseEpoch, LeaseToken: leased.LeaseToken,
 		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: task.CurrentRevisionID,
 		NextTaskState: domain.DCPV2TaskChecksWaiting, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
-		CommandResultDigest: v2Digest("r"), NextRevision: &revision, NextCommand: &next, UpdatedAt: now.Add(3 * time.Second),
+		CommandResultDigest: v2Digest("r"), NextRevision: &workerRevision, NextCommand: &publication, UpdatedAt: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("complete worker: %v", err)
+	}
+	workerTask, err := s.GetDCPV2Task(context.Background(), task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leasedPublication := claimV2Command(t, s, publication.CommandID, now.Add(4*time.Second))
+	fenceV2Command(t, s, leasedPublication, now.Add(5*time.Second))
+	providerRevision := domain.DCPV2Revision{
+		RevisionID: task.TaskID + "-r3", TaskID: task.TaskID, Sequence: 3, Kind: domain.DCPV2RevisionProvider,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: workerRevision.BaseSHA,
+		HeadRef: workerRevision.HeadRef, HeadSHA: workerRevision.HeadSHA, TreeSHA: workerRevision.TreeSHA,
+		PredecessorRevisionID: workerRevision.RevisionID, CauseCommandID: publication.CommandID,
+		PRNumber: 1, EvidenceDigest: v2Digest("p"), CreatedAt: now.Add(6 * time.Second),
+	}
+	checks := domain.DCPV2Command{
+		CommandID: task.TaskID + "-c3", TaskID: task.TaskID, RevisionID: providerRevision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
+		PayloadJSON: `{}`, PayloadDigest: v2Digest("j"), PrerequisiteDigest: providerRevision.EvidenceDigest,
+		IdempotencyKey: task.TaskID + "/checks/3", Status: domain.DCPV2CommandPending,
+		CreatedAt: now.Add(6 * time.Second), UpdatedAt: now.Add(6 * time.Second),
+	}
+	if err := s.TransitionDCPV2(context.Background(), sqlitestore.DCPV2Transition{
+		CommandID: leasedPublication.CommandID, LeaseOwner: leasedPublication.LeaseOwner, LeaseEpoch: leasedPublication.LeaseEpoch,
+		LeaseToken: leasedPublication.LeaseToken, ExpectedTaskState: workerTask.State,
+		ExpectedStateRevision: workerTask.StateRevision, ExpectedRevisionID: workerTask.CurrentRevisionID,
+		NextTaskState: domain.DCPV2TaskChecksWaiting, RepairUsed: workerTask.RepairUsed, ReadmissionCount: workerTask.ReadmissionCount,
+		CommandResultDigest: providerRevision.EvidenceDigest, NextRevision: &providerRevision, NextCommand: &checks,
+		UpdatedAt: now.Add(6 * time.Second),
+	}); err != nil {
+		t.Fatalf("complete publication: %v", err)
 	}
 	updated, err := s.GetDCPV2Task(context.Background(), task.TaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return updated, revision, next
+	return updated, providerRevision, checks
 }
 
 func transitionV2NoRevision(t *testing.T, s *sqlite.Store, task domain.DCPV2Task, command domain.DCPV2Command, nextState domain.DCPV2TaskState, nextKind domain.DCPV2CommandKind, repairIncrement bool, now time.Time) (domain.DCPV2Task, domain.DCPV2Command) {
@@ -460,15 +490,18 @@ func TestDCPV2TransitionCommitsStateRevisionAndNextCommandTogether(t *testing.T)
 	s := newTestStore(t)
 	task, initialRevision, command, now := createV2Fixture(t, s, "transition")
 	updated, revision, next := completeWorkerV2(t, s, task, command, now)
-	if updated.State != domain.DCPV2TaskChecksWaiting || updated.StateRevision != 2 || updated.CurrentRevisionID != revision.RevisionID {
+	if updated.State != domain.DCPV2TaskChecksWaiting || updated.StateRevision != 3 || updated.CurrentRevisionID != revision.RevisionID {
 		t.Fatalf("updated task=%+v", updated)
 	}
 	commands, err := s.ListDCPV2Commands(context.Background(), task.TaskID)
-	if err != nil || len(commands) != 2 || commands[0].Status != domain.DCPV2CommandSucceeded || commands[1].CommandID != next.CommandID || commands[1].Status != domain.DCPV2CommandPending {
+	if err != nil || len(commands) != 3 || commands[0].Status != domain.DCPV2CommandSucceeded ||
+		commands[1].Kind != domain.DCPV2CommandPublication || commands[1].Status != domain.DCPV2CommandSucceeded ||
+		commands[2].CommandID != next.CommandID || commands[2].Status != domain.DCPV2CommandPending {
 		t.Fatalf("commands=%+v err=%v", commands, err)
 	}
 	revisions, err := s.ListDCPV2Revisions(context.Background(), task.TaskID)
-	if err != nil || len(revisions) != 2 || revisions[1].PredecessorRevisionID != revisions[0].RevisionID {
+	if err != nil || len(revisions) != 3 || revisions[1].PredecessorRevisionID != revisions[0].RevisionID ||
+		revisions[2].PredecessorRevisionID != revisions[1].RevisionID || revisions[2].Kind != domain.DCPV2RevisionProvider {
 		t.Fatalf("revisions=%+v err=%v", revisions, err)
 	}
 	if created, err := s.CreateDCPV2Task(context.Background(), task, initialRevision, command, actionForV2Command(command, command.CreatedAt)); err != nil || created {
@@ -484,7 +517,7 @@ func TestDCPV2TransitionRollbackLosesNothingAndDuplicatesNothing(t *testing.T) {
 	finishV2ModelAction(t, s, leased, v2Digest("x"), now.Add(2*time.Second))
 	revision := domain.DCPV2Revision{
 		RevisionID: "tx-rollback-r2", TaskID: task.TaskID, Sequence: 2, Kind: domain.DCPV2RevisionWorker,
-		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA, HeadRef: "work", HeadSHA: v2HeadSHA,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA, HeadRef: "work", HeadSHA: v2HeadSHA, TreeSHA: v2TreeSHA,
 		PredecessorRevisionID: task.CurrentRevisionID, CauseCommandID: command.CommandID, EvidenceDigest: v2Digest("u"), CreatedAt: now.Add(3 * time.Second),
 	}
 	next := domain.DCPV2Command{
@@ -571,7 +604,7 @@ func TestDCPV2ProviderEventReplayAndExactBinding(t *testing.T) {
 	event := domain.DCPV2ExternalEvent{
 		DeliveryID: "delivery-1", Provider: "github", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID,
 		Kind: "check.completed", ProviderSequence: 1, PayloadDigest: v2Digest("k"), PrerequisiteDigest: checks.PrerequisiteDigest,
-		CreatedAt: now.Add(4 * time.Second), UpdatedAt: now.Add(4 * time.Second),
+		CreatedAt: now.Add(7 * time.Second), UpdatedAt: now.Add(7 * time.Second),
 	}
 	if outcome, err := s.RecordDCPV2ExternalEvent(ctx, event); err != nil || !outcome.Created {
 		t.Fatalf("record event outcome=%+v err=%v", outcome, err)
@@ -589,11 +622,11 @@ func TestDCPV2ProviderEventReplayAndExactBinding(t *testing.T) {
 	if _, err := s.RecordDCPV2ExternalEvent(ctx, stale); err != nil {
 		t.Fatal(err)
 	}
-	leased := claimV2Command(t, s, checks.CommandID, now.Add(5*time.Second))
+	leased := claimV2Command(t, s, checks.CommandID, now.Add(8*time.Second))
 	next := domain.DCPV2Command{
-		CommandID: "event-c3", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, Kind: domain.DCPV2CommandReviewExecute,
-		PayloadJSON: `{}`, PayloadDigest: v2Digest("m"), PrerequisiteDigest: v2Digest("n"), IdempotencyKey: "event/review/2",
-		Status: domain.DCPV2CommandPending, CreatedAt: now.Add(6 * time.Second), UpdatedAt: now.Add(6 * time.Second),
+		CommandID: "event-c4", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, Kind: domain.DCPV2CommandReviewExecute,
+		PayloadJSON: `{}`, PayloadDigest: v2Digest("m"), PrerequisiteDigest: v2Digest("n"), IdempotencyKey: "event/review/4",
+		Status: domain.DCPV2CommandPending, CreatedAt: now.Add(9 * time.Second), UpdatedAt: now.Add(9 * time.Second),
 	}
 	nextAction := actionForV2Command(next, next.CreatedAt)
 	err := s.TransitionDCPV2(ctx, sqlitestore.DCPV2Transition{
@@ -601,7 +634,7 @@ func TestDCPV2ProviderEventReplayAndExactBinding(t *testing.T) {
 		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: task.CurrentRevisionID,
 		NextTaskState: domain.DCPV2TaskReviewQueued, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
 		CommandResultDigest: v2Digest("o"), ExternalEventDeliveryID: event.DeliveryID,
-		NextCommand: &next, NextAction: &nextAction, UpdatedAt: now.Add(6 * time.Second),
+		NextCommand: &next, NextAction: &nextAction, UpdatedAt: now.Add(9 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -623,21 +656,45 @@ func TestDCPV2SharedRepairAllowanceIsTaskLevelAndFinite(t *testing.T) {
 	fenceV2Command(t, s, leasedRepair, now.Add(31*time.Second))
 	finishV2ModelAction(t, s, leasedRepair, v2Digest("c"), now.Add(31*time.Second))
 	revision := domain.DCPV2Revision{
-		RevisionID: "repair-ceiling-r3", TaskID: task.TaskID, Sequence: 3, Kind: domain.DCPV2RevisionRepair,
-		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2BaseSHA, HeadRef: "repair", HeadSHA: strings.Repeat("c", 40),
-		PredecessorRevisionID: task.CurrentRevisionID, CauseCommandID: repair.CommandID, PRNumber: 1,
+		RevisionID: "repair-ceiling-r4", TaskID: task.TaskID, Sequence: 4, Kind: domain.DCPV2RevisionRepair,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: v2HeadSHA, HeadRef: "work", HeadSHA: strings.Repeat("c", 40), TreeSHA: strings.Repeat("d", 40),
+		PredecessorRevisionID: task.CurrentRevisionID, CauseCommandID: repair.CommandID,
 		EvidenceDigest: v2Digest("y"), CreatedAt: now.Add(32 * time.Second),
 	}
-	nextChecks := domain.DCPV2Command{
-		CommandID: "repair-ceiling-c5", TaskID: task.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
-		PayloadJSON: `{}`, PayloadDigest: v2Digest("a"), PrerequisiteDigest: v2Digest("b"), IdempotencyKey: "repair-ceiling/checks/3",
+	publication := domain.DCPV2Command{
+		CommandID: "repair-ceiling-c6", TaskID: task.TaskID, RevisionID: revision.RevisionID, Kind: domain.DCPV2CommandPublication,
+		PayloadJSON: `{}`, PayloadDigest: v2Digest("a"), PrerequisiteDigest: v2Digest("b"), IdempotencyKey: "repair-ceiling/publication/4",
 		Status: domain.DCPV2CommandPending, CreatedAt: now.Add(32 * time.Second), UpdatedAt: now.Add(32 * time.Second),
 	}
 	if err := s.TransitionDCPV2(ctx, sqlitestore.DCPV2Transition{
 		CommandID: leasedRepair.CommandID, LeaseOwner: leasedRepair.LeaseOwner, LeaseEpoch: leasedRepair.LeaseEpoch, LeaseToken: leasedRepair.LeaseToken,
 		ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision, ExpectedRevisionID: task.CurrentRevisionID,
 		NextTaskState: domain.DCPV2TaskChecksWaiting, RepairUsed: task.RepairUsed, ReadmissionCount: task.ReadmissionCount,
-		CommandResultDigest: v2Digest("c"), NextRevision: &revision, NextCommand: &nextChecks, UpdatedAt: now.Add(32 * time.Second),
+		CommandResultDigest: v2Digest("c"), NextRevision: &revision, NextCommand: &publication, UpdatedAt: now.Add(32 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = s.GetDCPV2Task(ctx, task.TaskID)
+	leasedPublication := claimV2Command(t, s, publication.CommandID, now.Add(33*time.Second))
+	fenceV2Command(t, s, leasedPublication, now.Add(34*time.Second))
+	providerRevision := domain.DCPV2Revision{
+		RevisionID: "repair-ceiling-r5", TaskID: task.TaskID, Sequence: 5, Kind: domain.DCPV2RevisionProvider,
+		Repository: task.Repository, BaseRef: task.BaseRef, BaseSHA: revision.BaseSHA, HeadRef: revision.HeadRef, HeadSHA: revision.HeadSHA, TreeSHA: revision.TreeSHA,
+		PredecessorRevisionID: revision.RevisionID, CauseCommandID: publication.CommandID, PRNumber: 1,
+		EvidenceDigest: v2Digest("q"), CreatedAt: now.Add(35 * time.Second),
+	}
+	nextChecks := domain.DCPV2Command{
+		CommandID: "repair-ceiling-c7", TaskID: task.TaskID, RevisionID: providerRevision.RevisionID, Kind: domain.DCPV2CommandChecksObserve,
+		PayloadJSON: `{}`, PayloadDigest: v2Digest("u"), PrerequisiteDigest: providerRevision.EvidenceDigest,
+		IdempotencyKey: "repair-ceiling/checks/5", Status: domain.DCPV2CommandPending,
+		CreatedAt: now.Add(35 * time.Second), UpdatedAt: now.Add(35 * time.Second),
+	}
+	if err := s.TransitionDCPV2(ctx, sqlitestore.DCPV2Transition{
+		CommandID: leasedPublication.CommandID, LeaseOwner: leasedPublication.LeaseOwner, LeaseEpoch: leasedPublication.LeaseEpoch,
+		LeaseToken: leasedPublication.LeaseToken, ExpectedTaskState: task.State, ExpectedStateRevision: task.StateRevision,
+		ExpectedRevisionID: task.CurrentRevisionID, NextTaskState: domain.DCPV2TaskChecksWaiting, RepairUsed: task.RepairUsed,
+		ReadmissionCount: task.ReadmissionCount, CommandResultDigest: providerRevision.EvidenceDigest,
+		NextRevision: &providerRevision, NextCommand: &nextChecks, UpdatedAt: now.Add(35 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +768,7 @@ func TestDCPV2ArbiterCanOnlyOpenTypedSteadyHumanGate(t *testing.T) {
 	task, _ = s.GetDCPV2Task(ctx, task.TaskID)
 	commands, _ := s.ListDCPV2Commands(ctx, task.TaskID)
 	incidents, _ := s.ListDCPV2Incidents(ctx, task.TaskID)
-	if task.State != domain.DCPV2TaskHumanGate || task.HumanGateQuestion != question || len(commands) != 4 ||
+	if task.State != domain.DCPV2TaskHumanGate || task.HumanGateQuestion != question || len(commands) != 5 ||
 		commands[len(commands)-1].Status != domain.DCPV2CommandSucceeded || len(incidents) != 1 ||
 		incidents[0].Disposition != domain.DCPV2IncidentArbiter || incidents[0].CauseCommandID != review.CommandID {
 		t.Fatalf("typed Human Gate task=%+v commands=%+v incidents=%+v", task, commands, incidents)
@@ -721,10 +778,22 @@ func TestDCPV2ArbiterCanOnlyOpenTypedSteadyHumanGate(t *testing.T) {
 func enqueueAdmissionV2(t *testing.T, s *sqlite.Store, task domain.DCPV2Task, command domain.DCPV2Command, suffix string, now time.Time) domain.DCPV2Admission {
 	t.Helper()
 	leased := claimV2Command(t, s, command.CommandID, now)
+	fenceV2Command(t, s, leased, now.Add(time.Second))
+	revisions, err := s.ListDCPV2Revisions(context.Background(), task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current domain.DCPV2Revision
+	for _, revision := range revisions {
+		if revision.RevisionID == task.CurrentRevisionID {
+			current = revision
+		}
+	}
 	admission := domain.DCPV2Admission{
-		AdmissionID: "admission-" + suffix, LineKey: "owner/repo:main", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID,
-		PRNumber: 1, HeadSHA: v2HeadSHA, BaseSHA: v2BaseSHA, MainSHA: v2BaseSHA,
-		RequiredCheckID: "baseline/run", ReviewID: "review-" + suffix, ManifestDigest: v2Digest(suffix),
+		Sequence: task.ReadmissionCount + 1, AdmissionID: "admission-" + suffix, LineKey: "owner/repo:main",
+		TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, PRNumber: current.PRNumber,
+		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA, MainSHA: current.BaseSHA,
+		RequiredCheckID: "91", ReviewID: "55:" + v2Digest(suffix), ManifestDigest: v2Digest(suffix),
 		Status: domain.DCPV2AdmissionWaiting, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
 	}
 	next := domain.DCPV2Command{
@@ -747,45 +816,48 @@ func TestDCPV2AdmissionLeaseIsDurableFIFO(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	task1, _, worker1, now := createV2Fixture(t, s, "fifo-1")
-	task2, _, worker2, _ := createV2Fixture(t, s, "fifo-2")
 	task1, _, checks1 := completeWorkerV2(t, s, task1, worker1, now)
-	task2, _, checks2 := completeWorkerV2(t, s, task2, worker2, now)
 	task1, review1 := transitionV2NoRevision(t, s, task1, checks1, domain.DCPV2TaskReviewQueued, domain.DCPV2CommandReviewExecute, false, now.Add(10*time.Second))
-	task2, review2 := transitionV2NoRevision(t, s, task2, checks2, domain.DCPV2TaskReviewQueued, domain.DCPV2CommandReviewExecute, false, now.Add(11*time.Second))
 	task1, admissionCommand1 := transitionV2NoRevision(t, s, task1, review1, domain.DCPV2TaskAdmissionWaiting, domain.DCPV2CommandAdmissionEnqueue, false, now.Add(20*time.Second))
-	task2, admissionCommand2 := transitionV2NoRevision(t, s, task2, review2, domain.DCPV2TaskAdmissionWaiting, domain.DCPV2CommandAdmissionEnqueue, false, now.Add(21*time.Second))
 	admission1 := enqueueAdmissionV2(t, s, task1, admissionCommand1, "1", now.Add(30*time.Second))
-	admission2 := enqueueAdmissionV2(t, s, task2, admissionCommand2, "2", now.Add(31*time.Second))
+	commands1, _ := s.ListDCPV2Commands(ctx, task1.TaskID)
+	_ = claimV2Command(t, s, commands1[len(commands1)-1].CommandID, now.Add(32*time.Second))
 
-	first, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-1", "epoch-1", "fifo-lease-1", now.Add(40*time.Second))
+	task2, _, worker2, _ := createV2Fixture(t, s, "fifo-2")
+	task2, _, checks2 := completeWorkerV2(t, s, task2, worker2, now.Add(100*time.Second))
+	task2, review2 := transitionV2NoRevision(t, s, task2, checks2, domain.DCPV2TaskReviewQueued, domain.DCPV2CommandReviewExecute, false, now.Add(110*time.Second))
+	task2, admissionCommand2 := transitionV2NoRevision(t, s, task2, review2, domain.DCPV2TaskAdmissionWaiting, domain.DCPV2CommandAdmissionEnqueue, false, now.Add(120*time.Second))
+	admission2 := enqueueAdmissionV2(t, s, task2, admissionCommand2, "2", now.Add(130*time.Second))
+
+	first, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-1", "epoch-1", "fifo-lease-1", now.Add(140*time.Second))
 	if err != nil || first == nil || first.AdmissionID != admission1.AdmissionID {
 		t.Fatalf("first admission=%+v err=%v", first, err)
 	}
-	if second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(41*time.Second)); err != nil || second != nil {
+	if second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(141*time.Second)); err != nil || second != nil {
 		t.Fatalf("second crossed durable lease: %+v err=%v", second, err)
 	}
-	recovered, err := s.RecoverDCPV2AdmissionLease(ctx, *first, "owner-r", "epoch-r", "fifo-lease-r", now.Add(42*time.Second))
+	recovered, err := s.RecoverDCPV2AdmissionLease(ctx, *first, "owner-r", "epoch-r", "fifo-lease-r", now.Add(142*time.Second))
 	if err != nil || recovered.RecoveryGeneration != 1 {
 		t.Fatalf("recover unfenced admission=%+v err=%v", recovered, err)
 	}
 	first = &recovered
-	if err := s.FenceDCPV2AdmissionDispatch(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, "dispatch-1", now.Add(43*time.Second)); err != nil {
+	if err := s.FenceDCPV2AdmissionDispatch(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, "dispatch-1", now.Add(143*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	first.DispatchFence = "dispatch-1"
-	if _, err := s.RecoverDCPV2AdmissionLease(ctx, *first, "owner-x", "epoch-x", "fifo-lease-x", now.Add(44*time.Second)); !errors.Is(err, sqlitestore.ErrDCPV2EffectFenced) {
+	if _, err := s.RecoverDCPV2AdmissionLease(ctx, *first, "owner-x", "epoch-x", "fifo-lease-x", now.Add(144*time.Second)); !errors.Is(err, sqlitestore.ErrDCPV2EffectFenced) {
 		t.Fatalf("fenced admission recovered: %v", err)
 	}
-	if err := s.DispatchDCPV2Admission(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, now.Add(45*time.Second)); err != nil {
+	if err := s.DispatchDCPV2Admission(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, now.Add(145*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(46*time.Second)); err != nil || second != nil {
+	if second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(146*time.Second)); err != nil || second != nil {
 		t.Fatalf("second crossed dispatched fence: %+v err=%v", second, err)
 	}
-	if err := s.FinishDCPV2Admission(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, domain.DCPV2AdmissionFailed, "", "bounded-test-stop", now.Add(47*time.Second)); err != nil {
+	if err := s.FinishDCPV2Admission(ctx, first.AdmissionID, first.LeaseOwner, first.LeaseEpoch, first.LeaseToken, domain.DCPV2AdmissionFailed, "", "bounded-test-stop", now.Add(147*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(48*time.Second))
+	second, err := s.ClaimNextDCPV2Admission(ctx, admission1.LineKey, "owner-2", "epoch-2", "fifo-lease-2", now.Add(148*time.Second))
 	if err != nil || second == nil || second.AdmissionID != admission2.AdmissionID {
 		t.Fatalf("second admission=%+v err=%v", second, err)
 	}
@@ -878,10 +950,11 @@ func materializeV2Readmission(t *testing.T, s *sqlite.Store, task domain.DCPV2Ta
 	fenceV2Command(t, s, leased, now.Add(3*time.Second))
 	revisions, _ := s.ListDCPV2Revisions(context.Background(), task.TaskID)
 	headLetters := []string{"e", "f"}
+	treeLetters := []string{"g", "h"}
 	revision := domain.DCPV2Revision{
 		RevisionID: fmt.Sprintf("%s-r%d", task.TaskID, len(revisions)+1), TaskID: task.TaskID, Sequence: int64(len(revisions) + 1),
 		Kind: domain.DCPV2RevisionReadmission, Repository: task.Repository, BaseRef: task.BaseRef,
-		BaseSHA: strings.Repeat("c", 40), HeadRef: "work", HeadSHA: strings.Repeat(headLetters[generation-1], 40),
+		BaseSHA: strings.Repeat("c", 40), HeadRef: "work", HeadSHA: strings.Repeat(headLetters[generation-1], 40), TreeSHA: strings.Repeat(treeLetters[generation-1], 40),
 		PredecessorRevisionID: task.CurrentRevisionID, CauseCommandID: readmission.CommandID, PRNumber: 1,
 		EvidenceDigest: v2Digest("m"), CreatedAt: now.Add(4 * time.Second),
 	}
@@ -935,7 +1008,7 @@ func TestDCPV2ReadmissionGenerationsAreFiniteAndNeverCreateSecondWorker(t *testi
 			workerCount++
 		}
 	}
-	if task.ReadmissionCount != 2 || len(revisions) != 4 || workerCount != 1 {
+	if task.ReadmissionCount != 2 || len(revisions) != 5 || workerCount != 1 {
 		t.Fatalf("finite readmission task=%+v revisions=%d workerActions=%d", task, len(revisions), workerCount)
 	}
 }
@@ -949,7 +1022,8 @@ func TestDCPV2VerifiedReleaseAndTerminalVerificationAreExactAndAtomic(t *testing
 		ResultID: "repo-release-result", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, AdmissionID: admission.AdmissionID,
 		CommandID: mergeCommand.CommandID, Kind: domain.DCPV2ResultRelease, Provider: "github", ProofID: "release-proof-3",
 		RunID: "run-3", Actor: "release-train", ManifestDigest: admission.ManifestDigest, ProofDigest: v2Digest("u"),
-		MergeSHA: strings.Repeat("d", 40), ArtifactDigest: v2Digest("a"), Verified: true, CreatedAt: now.Add(51 * time.Second),
+		MergeSHA: strings.Repeat("d", 40), ArtifactSourceSHA: strings.Repeat("d", 40),
+		ArtifactDigest: v2Digest("a"), Verified: true, CreatedAt: now.Add(51 * time.Second),
 	}
 	terminalCommand := domain.DCPV2Command{
 		CommandID: task.TaskID + "-terminal", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, Kind: domain.DCPV2CommandTerminalVerify,
@@ -997,7 +1071,8 @@ func TestDCPV2DeploymentMustMatchVerifiedReleaseBeforeTerminalization(t *testing
 		ResultID: "deploy-release-result", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, AdmissionID: admission.AdmissionID,
 		CommandID: merge.CommandID, Kind: domain.DCPV2ResultRelease, Provider: "github", ProofID: "release-proof-4",
 		RunID: "run-4", Actor: "release-train", ManifestDigest: admission.ManifestDigest, ProofDigest: v2Digest("w"),
-		MergeSHA: strings.Repeat("d", 40), ArtifactDigest: v2Digest("a"), Verified: true, CreatedAt: now.Add(51 * time.Second),
+		MergeSHA: strings.Repeat("d", 40), ArtifactSourceSHA: strings.Repeat("d", 40),
+		ArtifactDigest: v2Digest("a"), Verified: true, CreatedAt: now.Add(51 * time.Second),
 	}
 	deploymentCommand := domain.DCPV2Command{
 		CommandID: task.TaskID + "-deployment", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, Kind: domain.DCPV2CommandDeploymentObserve,
@@ -1036,7 +1111,8 @@ func TestDCPV2DeploymentMustMatchVerifiedReleaseBeforeTerminalization(t *testing
 		ResultID: "deployment-result", TaskID: task.TaskID, RevisionID: task.CurrentRevisionID, AdmissionID: admission.AdmissionID,
 		CommandID: deployment.CommandID, Kind: domain.DCPV2ResultDeployment, Provider: "github", ProofID: "deployment-proof-4",
 		RunID: "deploy-run-4", Actor: "release-train", ManifestDigest: admission.ManifestDigest, ProofDigest: terminalCommand.PrerequisiteDigest,
-		MergeSHA: release.MergeSHA, ArtifactDigest: v2Digest("q"), DeployedSHA: release.MergeSHA,
+		MergeSHA: release.MergeSHA, ArtifactSourceSHA: release.ArtifactSourceSHA,
+		ArtifactDigest: v2Digest("q"), DeployedSHA: release.MergeSHA,
 		Environment: "lab", Service: "inert", ProbeDigest: v2Digest("h"), Verified: true, CreatedAt: now.Add(53 * time.Second),
 	}
 	transition := sqlitestore.DCPV2Transition{

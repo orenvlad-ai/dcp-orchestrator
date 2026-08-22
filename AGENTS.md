@@ -29,6 +29,7 @@ repository:
 17. [Stage 5 adapter, install and preflight authority](https://github.com/orenvlad-ai/dev-control-plane/blob/4143982eb054a40537d963356c209bfe8447ba31/docs/DCP_WBC_INTEGRATION_TWIN_STAGE5_INSTALL_ACTIVATION_CONTRACT.md)
 18. [Stage 6 post-submit native-shell correction](https://github.com/orenvlad-ai/dev-control-plane/blob/9be4575e9eed39ae5bea9f1665f71fd4f64cd89b/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_POST_SUBMIT_NATIVE_SHELL_CORRECTION_CONTRACT.md)
 19. [Stage 6 direct DCP-v2 model authority](https://github.com/orenvlad-ai/dev-control-plane/blob/3aa42b7afda620331d111ba24299e2917821e720/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_DIRECT_MODEL_AUTHORITY_CONTRACT.md)
+20. [Stage 6 final viability authority](https://github.com/orenvlad-ai/dev-control-plane/blob/03d9f9943d06e5507dc1fc9c02c53cee782407c8/docs/DCP_WBC_INTEGRATION_TWIN_STAGE6_FINAL_VIABILITY_CONTRACT.md)
 
 Item 11 and the merged root/current authorities at exact
 `036b1101284f626c931f7edb1750ddd228634832`, operating revision
@@ -108,6 +109,20 @@ transport. The exact frozen Worker output may be consumed once by its bounded
 identity-specific adoption record, then only a model-free publication Command
 may continue it. Schema 0086 and this source package remain inactive until a
 separate reviewed pin, install/migration and stopped-preflight authority.
+
+Item 20 and the merged root/current authority at exact
+`03d9f9943d06e5507dc1fc9c02c53cee782407c8`, operating revision
+`2026-08-22.4`, authorize one aggregate managed-source correction for the
+stopped Stage 6 identity. Forward migration 0087 adds an immutable
+`provider_bound` Revision: the Worker/repair output keeps `PRNumber=0`, while
+publication atomically creates one same-head successor bound to the real PR,
+advances the same Task and enqueues exact checks. The same package closes
+review-effect reconciliation, lineage-safe worktree reuse, deterministic
+readmission, exact Admission bindings and complete target-owned terminal proof
+validation including `artifact_source_sha = merge_sha = deployed_sha`. It
+does not itself authorize installation, adoption, startup, provider effects,
+WBC or production; those remain behind one separately reviewed exact pin and
+live authority.
 
 The happy-path v1 contract remains the rule for future synthetic review-lab
 tasks; the current real-target entry is exact target `wb-browser-extension`,

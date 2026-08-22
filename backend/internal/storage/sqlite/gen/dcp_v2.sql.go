@@ -573,7 +573,7 @@ func (q *Queries) GetDCPV2ModelTerminalReceiptByAction(ctx context.Context, acti
 }
 
 const getDCPV2Result = `-- name: GetDCPV2Result :one
-SELECT result_id, task_id, revision_id, admission_id, command_id, kind, provider, proof_id, run_id, actor, manifest_digest, proof_digest, merge_sha, artifact_digest, deployed_sha, environment, service, probe_digest, verified, error_code, created_at FROM dcp_v2_result WHERE result_id = ?
+SELECT result_id, task_id, revision_id, admission_id, command_id, kind, provider, proof_id, run_id, actor, manifest_digest, proof_digest, merge_sha, artifact_source_sha, artifact_digest, deployed_sha, environment, service, probe_digest, verified, error_code, created_at FROM dcp_v2_result WHERE result_id = ?
 `
 
 func (q *Queries) GetDCPV2Result(ctx context.Context, resultID string) (DcpV2Result, error) {
@@ -593,6 +593,7 @@ func (q *Queries) GetDCPV2Result(ctx context.Context, resultID string) (DcpV2Res
 		&i.ManifestDigest,
 		&i.ProofDigest,
 		&i.MergeSha,
+		&i.ArtifactSourceSha,
 		&i.ArtifactDigest,
 		&i.DeployedSha,
 		&i.Environment,
@@ -606,7 +607,7 @@ func (q *Queries) GetDCPV2Result(ctx context.Context, resultID string) (DcpV2Res
 }
 
 const getDCPV2Revision = `-- name: GetDCPV2Revision :one
-SELECT revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref, head_sha, predecessor_revision_id, cause_command_id, pr_number, evidence_digest, created_at FROM dcp_v2_revision WHERE revision_id = ?
+SELECT revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref, head_sha, tree_sha, predecessor_revision_id, cause_command_id, pr_number, evidence_digest, created_at FROM dcp_v2_revision WHERE revision_id = ?
 `
 
 func (q *Queries) GetDCPV2Revision(ctx context.Context, revisionID string) (DcpV2Revision, error) {
@@ -622,6 +623,7 @@ func (q *Queries) GetDCPV2Revision(ctx context.Context, revisionID string) (DcpV
 		&i.BaseSha,
 		&i.HeadRef,
 		&i.HeadSha,
+		&i.TreeSha,
 		&i.PredecessorRevisionID,
 		&i.CauseCommandID,
 		&i.PRNumber,
@@ -1112,33 +1114,34 @@ const insertDCPV2Result = `-- name: InsertDCPV2Result :exec
 INSERT INTO dcp_v2_result (
     result_id, task_id, revision_id, admission_id, command_id, kind,
     provider, proof_id, run_id, actor, manifest_digest, proof_digest,
-    merge_sha, artifact_digest, deployed_sha, environment,
+    merge_sha, artifact_source_sha, artifact_digest, deployed_sha, environment,
     service, probe_digest, verified, error_code, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertDCPV2ResultParams struct {
-	ResultID       string
-	TaskID         string
-	RevisionID     string
-	AdmissionID    sql.NullString
-	CommandID      string
-	Kind           string
-	Provider       string
-	ProofID        string
-	RunID          string
-	Actor          string
-	ManifestDigest string
-	ProofDigest    string
-	MergeSha       string
-	ArtifactDigest string
-	DeployedSha    string
-	Environment    string
-	Service        string
-	ProbeDigest    string
-	Verified       int64
-	ErrorCode      string
-	CreatedAt      time.Time
+	ResultID          string
+	TaskID            string
+	RevisionID        string
+	AdmissionID       sql.NullString
+	CommandID         string
+	Kind              string
+	Provider          string
+	ProofID           string
+	RunID             string
+	Actor             string
+	ManifestDigest    string
+	ProofDigest       string
+	MergeSha          string
+	ArtifactSourceSha string
+	ArtifactDigest    string
+	DeployedSha       string
+	Environment       string
+	Service           string
+	ProbeDigest       string
+	Verified          int64
+	ErrorCode         string
+	CreatedAt         time.Time
 }
 
 func (q *Queries) InsertDCPV2Result(ctx context.Context, arg InsertDCPV2ResultParams) error {
@@ -1156,6 +1159,7 @@ func (q *Queries) InsertDCPV2Result(ctx context.Context, arg InsertDCPV2ResultPa
 		arg.ManifestDigest,
 		arg.ProofDigest,
 		arg.MergeSha,
+		arg.ArtifactSourceSha,
 		arg.ArtifactDigest,
 		arg.DeployedSha,
 		arg.Environment,
@@ -1171,9 +1175,9 @@ func (q *Queries) InsertDCPV2Result(ctx context.Context, arg InsertDCPV2ResultPa
 const insertDCPV2Revision = `-- name: InsertDCPV2Revision :exec
 INSERT INTO dcp_v2_revision (
     revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref,
-    head_sha, predecessor_revision_id, cause_command_id, pr_number,
+    head_sha, tree_sha, predecessor_revision_id, cause_command_id, pr_number,
     evidence_digest, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertDCPV2RevisionParams struct {
@@ -1186,6 +1190,7 @@ type InsertDCPV2RevisionParams struct {
 	BaseSha               string
 	HeadRef               string
 	HeadSha               string
+	TreeSha               string
 	PredecessorRevisionID string
 	CauseCommandID        string
 	PRNumber              int64
@@ -1204,6 +1209,7 @@ func (q *Queries) InsertDCPV2Revision(ctx context.Context, arg InsertDCPV2Revisi
 		arg.BaseSha,
 		arg.HeadRef,
 		arg.HeadSha,
+		arg.TreeSha,
 		arg.PredecessorRevisionID,
 		arg.CauseCommandID,
 		arg.PRNumber,
@@ -1831,7 +1837,7 @@ func (q *Queries) ListDCPV2IncidentsByTask(ctx context.Context, taskID string) (
 }
 
 const listDCPV2ResultsByTask = `-- name: ListDCPV2ResultsByTask :many
-SELECT result_id, task_id, revision_id, admission_id, command_id, kind, provider, proof_id, run_id, actor, manifest_digest, proof_digest, merge_sha, artifact_digest, deployed_sha, environment, service, probe_digest, verified, error_code, created_at FROM dcp_v2_result WHERE task_id = ? ORDER BY created_at, result_id
+SELECT result_id, task_id, revision_id, admission_id, command_id, kind, provider, proof_id, run_id, actor, manifest_digest, proof_digest, merge_sha, artifact_source_sha, artifact_digest, deployed_sha, environment, service, probe_digest, verified, error_code, created_at FROM dcp_v2_result WHERE task_id = ? ORDER BY created_at, result_id
 `
 
 func (q *Queries) ListDCPV2ResultsByTask(ctx context.Context, taskID string) ([]DcpV2Result, error) {
@@ -1857,6 +1863,7 @@ func (q *Queries) ListDCPV2ResultsByTask(ctx context.Context, taskID string) ([]
 			&i.ManifestDigest,
 			&i.ProofDigest,
 			&i.MergeSha,
+			&i.ArtifactSourceSha,
 			&i.ArtifactDigest,
 			&i.DeployedSha,
 			&i.Environment,
@@ -1880,7 +1887,7 @@ func (q *Queries) ListDCPV2ResultsByTask(ctx context.Context, taskID string) ([]
 }
 
 const listDCPV2RevisionsByTask = `-- name: ListDCPV2RevisionsByTask :many
-SELECT revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref, head_sha, predecessor_revision_id, cause_command_id, pr_number, evidence_digest, created_at FROM dcp_v2_revision WHERE task_id = ? ORDER BY sequence
+SELECT revision_id, task_id, sequence, kind, repository, base_ref, base_sha, head_ref, head_sha, tree_sha, predecessor_revision_id, cause_command_id, pr_number, evidence_digest, created_at FROM dcp_v2_revision WHERE task_id = ? ORDER BY sequence
 `
 
 func (q *Queries) ListDCPV2RevisionsByTask(ctx context.Context, taskID string) ([]DcpV2Revision, error) {
@@ -1902,6 +1909,7 @@ func (q *Queries) ListDCPV2RevisionsByTask(ctx context.Context, taskID string) (
 			&i.BaseSha,
 			&i.HeadRef,
 			&i.HeadSha,
+			&i.TreeSha,
 			&i.PredecessorRevisionID,
 			&i.CauseCommandID,
 			&i.PRNumber,
